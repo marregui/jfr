@@ -1,0 +1,9 @@
+.gradle/
+build/
+*.jfr
+*.html
+!docs/**/*.html
+.idea/
+*.iml
+out/
+.DS_Store

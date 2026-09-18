@@ -1,0 +1,486 @@
+package dev.jfrq.core.report;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+import dev.jfrq.core.alloc.AllocationDiff;
+import dev.jfrq.core.alloc.AllocationReport;
+import dev.jfrq.core.jfr.RecordingInfo;
+import dev.jfrq.core.locks.ContentionReport;
+import dev.jfrq.core.locks.Wait;
+import dev.jfrq.core.model.Interval;
+import dev.jfrq.core.model.Stack;
+import dev.jfrq.core.stalls.Stall;
+import dev.jfrq.core.stalls.StallReport;
+import dev.jfrq.core.stalls.Timeline.Pause;
+import dev.jfrq.core.util.Bytes;
+import dev.jfrq.core.util.ClassNames;
+import dev.jfrq.core.util.Durations;
+
+/**
+ * Self-contained HTML reports: one file, no scripts, no external resources, so they can
+ * be attached to a ticket and opened anywhere. Timelines are inline SVG.
+ */
+public final class Html {
+
+    private static final int TIMELINE_WIDTH = 1000;
+    private static final int ROW_HEIGHT = 22;
+    private static final int LABEL_WIDTH = 220;
+
+    private Html() {
+    }
+
+    /** Rows listed in the stalls table; the timeline always shows every stall. */
+    static final int MIN_LISTED = 100;
+
+    public static String stalls(StallReport report, int top) {
+        Page p = new Page("jfrq stalls", report.info());
+        p.kv("Gap", Durations.format(report.gapNanos()));
+        p.warnings(report.warnings());
+
+        p.h2("Threads");
+        p.tableStart("Thread", "Samples", "Java cadence", "Native cadence", "Stalls", "Stalled", "Worst");
+        for (StallReport.ThreadSummary t : report.threads()) {
+            p.row(t.thread().name(), t.samples(), Durations.format(t.javaCadenceNanos()),
+                    Durations.format(t.nativeCadenceNanos()), t.stalls(), Durations.format(t.stalledNanos()),
+                    Durations.format(t.worstNanos()));
+        }
+        p.tableEnd();
+
+        p.h2("By verdict");
+        p.tableStart("Verdict", "Stalls", "Stalled", "Worst");
+        for (StallReport.VerdictSummary v : report.byVerdict()) {
+            p.row(v.verdict(), v.count(), Durations.format(v.totalNanos()), Durations.format(v.worstNanos()));
+        }
+        p.tableEnd();
+
+        p.h2("Timeline");
+        p.raw(stallTimeline(report));
+
+        List<Stall> listed = report.top(Math.max(top, MIN_LISTED));
+        p.h2(listed.size() < report.stalls().size()
+                ? "Stalls, longest first (" + listed.size() + " of " + report.stalls().size() + ")"
+                : "Stalls, longest first");
+        p.tableStart("#", "Thread", "At", "Duration", "Verdict", "Detail", "Evidence");
+        int n = 1;
+        for (Stall s : listed) {
+            p.row(n++, s.thread().name(), Durations.offset(s.start() - report.info().startNanos()),
+                    Durations.format(s.duration()), s.verdict(), s.detail(), s.evidence().name().toLowerCase(Locale.ROOT));
+            if (!s.stack().isEmpty()) {
+                p.stackRow(7, s.stack());
+            }
+        }
+        p.tableEnd();
+
+        if (!report.pauses().isEmpty()) {
+            p.h2("JVM-wide pauses ≥ gap");
+            p.tableStart("At", "Duration", "Kind", "Detail");
+            for (Pause pause : report.pauses()) {
+                p.row(Durations.offset(pause.interval().start() - report.info().startNanos()),
+                        Durations.format(pause.length()), pause.kind().label(), pause.detail());
+            }
+            p.tableEnd();
+        }
+        return p.finish();
+    }
+
+    private static String stallTimeline(StallReport report) {
+        Interval span = report.info().span();
+        List<String> labels = new ArrayList<>();
+        List<List<Box>> rows = new ArrayList<>();
+        for (StallReport.ThreadSummary t : report.threads()) {
+            labels.add(t.thread().name());
+            List<Box> boxes = new ArrayList<>();
+            for (Stall s : report.stallsOf(t.thread())) {
+                boxes.add(new Box(s.interval(), colour(s.verdict()),
+                        s.verdict() + " " + Durations.format(s.duration()) + ": " + s.detail()));
+            }
+            rows.add(boxes);
+        }
+        if (!report.pauses().isEmpty()) {
+            labels.add("JVM pauses");
+            List<Box> boxes = new ArrayList<>();
+            for (Pause pause : report.pauses()) {
+                boxes.add(new Box(pause.interval(), "#9e9e9e",
+                        pause.kind().label() + " " + Durations.format(pause.length()) + ": " + pause.detail()));
+            }
+            rows.add(boxes);
+        }
+        StringBuilder legend = new StringBuilder("<p class=\"legend\">");
+        for (Stall.Verdict v : Stall.Verdict.values()) {
+            legend.append("<span style=\"background:").append(colour(v)).append("\"></span>").append(v.name()).append(' ');
+        }
+        legend.append("</p>");
+        return timeline(span, labels, rows) + legend;
+    }
+
+    public static String locks(ContentionReport report, int top) {
+        Page p = new Page("jfrq locks", report.info());
+        p.kv("Total blocked time", Durations.format(report.totalNanos()) + " across " + report.waits().size()
+                + " waits");
+        thresholds(p, report.info(), "jdk.JavaMonitorEnter", "jdk.ThreadPark");
+
+        p.h2("Locks by total wait");
+        p.tableStart("Lock", "Kind", "Total", "Waits", "Max", "Waiters", "Held by");
+        for (ContentionReport.LockStats l : report.locks(top)) {
+            p.row(l.lock().pretty(), l.lock().kind().label(), Durations.format(l.totalNanos()), l.count(),
+                    Durations.format(l.maxNanos()), names(l.waiters()), names(l.owners()));
+        }
+        p.tableEnd();
+
+        p.h2("Threads by time blocked");
+        p.tableStart("Thread", "Total", "Waits", "Max");
+        for (ContentionReport.ThreadStats t : report.waiters(top)) {
+            p.row(t.thread().name(), Durations.format(t.totalNanos()), t.count(), Durations.format(t.maxNanos()));
+        }
+        p.tableEnd();
+
+        p.h2("Timeline");
+        p.raw(lockTimeline(report, top));
+
+        List<ContentionReport.Convoy> convoys = report.convoys(5, top);
+        if (!convoys.isEmpty()) {
+            p.h2("Convoys: the holder was itself blocked");
+            p.tableStart("At", "Chain");
+            for (ContentionReport.Convoy c : convoys) {
+                StringBuilder chain = new StringBuilder();
+                for (Wait w : c.links()) {
+                    if (chain.length() > 0) {
+                        chain.append(" → ");
+                    }
+                    chain.append(w.waiter().name()).append(" waited ").append(Durations.format(w.duration()))
+                            .append(" for ").append(w.lock().pretty());
+                    if (w.owner() != null) {
+                        chain.append(' ').append(w.heldBy());
+                    }
+                }
+                p.row(Durations.offset(c.head().start() - report.info().startNanos()), chain.toString());
+            }
+            p.tableEnd();
+        }
+
+        p.h2("Longest waits");
+        p.tableStart("At", "Duration", "Waiter", "Lock", "Held by");
+        for (Wait w : report.longest(top)) {
+            p.row(Durations.offset(w.start() - report.info().startNanos()), Durations.format(w.duration()),
+                    w.waiter().name(), w.lock().pretty(), w.heldBy());
+            if (!w.stack().isEmpty()) {
+                p.stackRow(5, w.stack());
+            }
+        }
+        p.tableEnd();
+        return p.finish();
+    }
+
+    private static String lockTimeline(ContentionReport report, int top) {
+        Interval span = report.info().span();
+        List<String> labels = new ArrayList<>();
+        List<List<Box>> rows = new ArrayList<>();
+        Map<String, String> threadColours = new LinkedHashMap<>();
+        for (ContentionReport.LockStats l : report.locks(top)) {
+            labels.add(l.lock().pretty());
+            List<Box> boxes = new ArrayList<>();
+            for (Wait w : report.waits()) {
+                if (!w.lock().equals(l.lock())) {
+                    continue;
+                }
+                String colour = threadColours.computeIfAbsent(w.waiter().name(),
+                        k -> PALETTE[threadColours.size() % PALETTE.length]);
+                boxes.add(new Box(w.interval(), colour, w.waiter().name() + " waited "
+                        + Durations.format(w.duration()) + (w.owner() == null ? "" : ", " + w.heldBy())));
+            }
+            rows.add(boxes);
+        }
+        StringBuilder legend = new StringBuilder("<p class=\"legend\">");
+        threadColours.forEach((name, colour) -> legend.append("<span style=\"background:").append(colour)
+                .append("\"></span>").append(escape(name)).append(' '));
+        legend.append("</p>");
+        return timeline(span, labels, rows) + legend;
+    }
+
+    public static String alloc(AllocationReport report, int top) {
+        Page p = new Page("jfrq alloc", report.info());
+        p.kv("Source", report.source());
+        p.kv("Estimated allocation", Bytes.format(report.totalBytes()) + " over "
+                + Durations.format(report.info().duration()) + " = " + Bytes.rate(report.rate())
+                + " from " + report.samples() + " samples");
+
+        p.h2("By thread");
+        p.tableStart("Thread", "Bytes", "Rate", "Share", "Top classes");
+        for (AllocationReport.Row<String> r : report.threads(top)) {
+            StringBuilder classes = new StringBuilder();
+            for (AllocationReport.Row<String> c : report.classesOf(r.key(), 3)) {
+                if (classes.length() > 0) {
+                    classes.append(", ");
+                }
+                classes.append(ClassNames.simple(c.key())).append(' ').append(pct(c.bytes(), r.bytes()));
+            }
+            p.row(r.key(), Bytes.format(r.bytes()), Bytes.rate(report.rate(r.bytes())), pct(r.share()), classes);
+        }
+        p.tableEnd();
+
+        p.h2("By class");
+        p.tableStart("Class", "Bytes", "Rate", "Share");
+        for (AllocationReport.Row<String> r : report.classes(top)) {
+            p.row(ClassNames.pretty(r.key()), Bytes.format(r.bytes()), Bytes.rate(report.rate(r.bytes())), pct(r.share()));
+        }
+        p.tableEnd();
+
+        p.h2("By site");
+        p.tableStart("Site", "Bytes", "Rate", "Share");
+        for (AllocationReport.Row<Stack> r : report.sites(top)) {
+            p.row(r.key().top().map(f -> f.pretty()).orElse("<no stack>"), Bytes.format(r.bytes()),
+                    Bytes.rate(report.rate(r.bytes())), pct(r.share()));
+            p.stackRow(4, r.key());
+        }
+        p.tableEnd();
+        return p.finish();
+    }
+
+    public static String allocDiff(AllocationDiff diff, int top) {
+        Page p = new Page("jfrq alloc diff", diff.current().info());
+        p.kv("Baseline", diff.baseline().info().file().toString() + " (" + Bytes.rate(diff.baseline().rate()) + ")");
+        p.kv("Current", diff.current().info().file().toString() + " (" + Bytes.rate(diff.current().rate()) + ")");
+        p.kv("Change", Bytes.signedRate(diff.total().delta()) + " (" + ratio(diff.total().ratio()) + ")");
+
+        p.h2("By thread");
+        deltaTable(p, diff.threads(top), k -> k);
+        p.h2("By class");
+        deltaTable(p, diff.classes(top), ClassNames::pretty);
+        p.h2("By site");
+        p.tableStart("Site", "Before", "After", "Change");
+        for (AllocationDiff.Delta<Stack> d : diff.sites(top)) {
+            p.row(d.key().top().map(f -> f.pretty()).orElse("<no stack>"), Bytes.rate(d.beforeRate()),
+                    Bytes.rate(d.afterRate()), Bytes.signedRate(d.delta()) + " (" + ratio(d.ratio()) + ")");
+            p.stackRow(4, d.key());
+        }
+        p.tableEnd();
+        return p.finish();
+    }
+
+    private static <K> void deltaTable(Page p, List<AllocationDiff.Delta<K>> deltas,
+                                       java.util.function.Function<K, String> name) {
+        p.tableStart("Key", "Before", "After", "Change");
+        for (AllocationDiff.Delta<K> d : deltas) {
+            p.row(name.apply(d.key()), Bytes.rate(d.beforeRate()), Bytes.rate(d.afterRate()),
+                    Bytes.signedRate(d.delta()) + " (" + ratio(d.ratio()) + ")");
+        }
+        p.tableEnd();
+    }
+
+    /** {@code +25%}, {@code -96%}, {@code ×2349} beyond tenfold, {@code new} from nothing. */
+    static String ratio(double r) {
+        if (Double.isInfinite(r)) {
+            return "new";
+        }
+        if (r >= 10) {
+            return String.format(Locale.ROOT, "×%.0f", r + 1);
+        }
+        return String.format(Locale.ROOT, "%+.0f%%", r * 100);
+    }
+
+    static String pct(double share) {
+        return String.format(Locale.ROOT, "%.1f%%", share * 100);
+    }
+
+    static String pct(long part, long whole) {
+        return whole == 0 ? "0%" : String.format(Locale.ROOT, "%.0f%%", 100.0 * part / whole);
+    }
+
+    private static void thresholds(Page p, RecordingInfo info, String... types) {
+        StringBuilder sb = new StringBuilder();
+        for (String t : types) {
+            info.threshold(t).ifPresent(d -> sb.append(t).append(' ').append(Durations.format(d)).append("; "));
+        }
+        if (sb.length() > 0) {
+            p.kv("Thresholds", sb.toString());
+        }
+    }
+
+    private static String names(java.util.Set<dev.jfrq.core.model.ThreadRef> threads) {
+        StringBuilder sb = new StringBuilder();
+        for (var t : threads) {
+            if (sb.length() > 0) {
+                sb.append(", ");
+            }
+            sb.append(t.name());
+        }
+        return sb.toString();
+    }
+
+    private static final String[] PALETTE = {
+            "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#17becf"};
+
+    static String colour(Stall.Verdict v) {
+        return switch (v) {
+            case GC_PAUSE, SAFEPOINT -> "#9e9e9e";
+            case BLOCKED_MONITOR -> "#d62728";
+            case PARKED, OBJECT_WAIT -> "#e377c2";
+            case SLEEP -> "#9467bd";
+            case BLOCKING_IO -> "#ff7f0e";
+            case BUSY -> "#1f77b4";
+            case SATURATED -> "#17becf";
+            case UNEXPLAINED -> "#bcbd22";
+        };
+    }
+
+    private record Box(Interval interval, String colour, String title) {
+    }
+
+    private static String timeline(Interval span, List<String> labels, List<List<Box>> rows) {
+        double scale = span.length() <= 0 ? 0 : (double) TIMELINE_WIDTH / span.length();
+        int height = rows.size() * ROW_HEIGHT + 20;
+        StringBuilder svg = new StringBuilder();
+        svg.append("<svg class=\"timeline\" viewBox=\"0 0 ").append(LABEL_WIDTH + TIMELINE_WIDTH + 10).append(' ')
+                .append(height).append("\" xmlns=\"http://www.w3.org/2000/svg\">\n");
+        for (int r = 0; r < rows.size(); r++) {
+            int y = r * ROW_HEIGHT;
+            svg.append("<text x=\"0\" y=\"").append(y + 15).append("\" class=\"lbl\">").append(escape(trunc(labels.get(r))))
+                    .append("</text>\n");
+            svg.append("<rect x=\"").append(LABEL_WIDTH).append("\" y=\"").append(y + 3).append("\" width=\"")
+                    .append(TIMELINE_WIDTH).append("\" height=\"").append(ROW_HEIGHT - 6).append("\" class=\"track\"/>\n");
+            for (Box b : rows.get(r)) {
+                double x = LABEL_WIDTH + (b.interval.start() - span.start()) * scale;
+                double w = Math.max(1.5, b.interval.length() * scale);
+                svg.append("<rect x=\"").append(fmt(x)).append("\" y=\"").append(y + 3).append("\" width=\"").append(fmt(w))
+                        .append("\" height=\"").append(ROW_HEIGHT - 6).append("\" fill=\"").append(b.colour)
+                        .append("\"><title>").append(escape(b.title)).append("</title></rect>\n");
+            }
+        }
+        int axisY = rows.size() * ROW_HEIGHT + 12;
+        for (int t = 0; t <= 10; t++) {
+            double x = LABEL_WIDTH + t * (TIMELINE_WIDTH / 10.0);
+            long nanos = (long) (span.length() * (t / 10.0));
+            svg.append("<text x=\"").append(fmt(x)).append("\" y=\"").append(axisY).append("\" class=\"axis\">")
+                    .append(Durations.offset(nanos)).append("</text>\n");
+        }
+        svg.append("</svg>\n");
+        return svg.toString();
+    }
+
+    private static String trunc(String s) {
+        return s.length() > 34 ? s.substring(0, 31) + "…" : s;
+    }
+
+    private static String fmt(double d) {
+        return String.format(Locale.ROOT, "%.1f", d);
+    }
+
+    static String escape(String s) {
+        int first = -1;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '<' || c == '>' || c == '&' || c == '"') {
+                first = i;
+                break;
+            }
+        }
+        if (first < 0) {
+            return s;
+        }
+        StringBuilder sb = new StringBuilder(s.length() + 16);
+        for (char c : s.toCharArray()) {
+            switch (c) {
+                case '<' -> sb.append("&lt;");
+                case '>' -> sb.append("&gt;");
+                case '&' -> sb.append("&amp;");
+                case '"' -> sb.append("&quot;");
+                default -> sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
+    /** Accumulates a page. */
+    private static final class Page {
+        private final StringBuilder sb = new StringBuilder();
+
+        Page(String title, RecordingInfo info) {
+            sb.append("<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>").append(escape(title))
+                    .append(" · ").append(escape(info.file().getFileName().toString())).append("</title>\n<style>\n")
+                    .append(CSS).append("</style></head><body>\n<h1>").append(escape(title)).append("</h1>\n<dl>");
+            kv("Recording", info.file().toString());
+            kv("Span", Durations.format(info.duration()) + " from " + info.start());
+        }
+
+        void kv(String k, String v) {
+            sb.append("<dt>").append(escape(k)).append("</dt><dd>").append(escape(v)).append("</dd>\n");
+        }
+
+        void warnings(List<String> warnings) {
+            if (warnings.isEmpty()) {
+                return;
+            }
+            sb.append("</dl><ul class=\"warn\">");
+            for (String w : warnings) {
+                sb.append("<li>").append(escape(w)).append("</li>");
+            }
+            sb.append("</ul><dl>");
+        }
+
+        void h2(String text) {
+            sb.append("</dl>\n<h2>").append(escape(text)).append("</h2>\n<dl>");
+        }
+
+        void raw(String html) {
+            sb.append("</dl>\n").append(html).append("<dl>");
+        }
+
+        void tableStart(String... headers) {
+            sb.append("</dl>\n<table><thead><tr>");
+            for (String h : headers) {
+                sb.append("<th>").append(escape(h)).append("</th>");
+            }
+            sb.append("</tr></thead><tbody>\n");
+        }
+
+        private static final java.util.regex.Pattern NUMERIC =
+                java.util.regex.Pattern.compile("^[+\\-]?[0-9.]+( ?[a-zA-Zµ%/]+)?$");
+
+        void row(Object... cells) {
+            sb.append("<tr>");
+            for (Object c : cells) {
+                String text = c == null ? "" : String.valueOf(c);
+                boolean numeric = !text.isEmpty() && (Character.isDigit(text.charAt(0)) || text.charAt(0) == '+'
+                        || text.charAt(0) == '-') && NUMERIC.matcher(text).matches();
+                sb.append(numeric ? "<td class=\"n\">" : "<td>").append(escape(text)).append("</td>");
+            }
+            sb.append("</tr>\n");
+        }
+
+        void stackRow(int colspan, Stack stack) {
+            sb.append("<tr class=\"stack\"><td colspan=\"").append(colspan).append("\"><pre>")
+                    .append(escape(stack.pretty("", 12))).append("</pre></td></tr>\n");
+        }
+
+        void tableEnd() {
+            sb.append("</tbody></table>\n<dl>");
+        }
+
+        String finish() {
+            sb.append("</dl>\n<p class=\"foot\">Generated by jfrq.</p></body></html>\n");
+            return sb.toString();
+        }
+    }
+
+    private static final String CSS = """
+            body { font: 14px/1.4 -apple-system, Segoe UI, Helvetica, Arial, sans-serif; margin: 2em; color: #222; }
+            h1 { font-size: 1.5em; } h2 { font-size: 1.15em; margin-top: 1.6em; border-bottom: 1px solid #ddd; }
+            dl { display: grid; grid-template-columns: max-content auto; gap: 0.2em 1em; margin: 0.6em 0; }
+            dl:empty { display: none; }
+            dt { font-weight: 600; } dd { margin: 0; }
+            table { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
+            th, td { text-align: left; padding: 0.3em 0.6em; border-bottom: 1px solid #eee; vertical-align: top; }
+            th { background: #f5f5f5; } td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+            tr.stack td { padding: 0 0.6em 0.6em 2em; border-bottom: 1px solid #eee; }
+            pre { margin: 0; font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; color: #555; }
+            ul.warn { background: #fff7e0; border-left: 4px solid #e6a700; padding: 0.6em 1em 0.6em 2em; }
+            svg.timeline { width: 100%; height: auto; font: 11px sans-serif; }
+            svg .track { fill: #f0f0f0; } svg .lbl { fill: #333; } svg .axis { fill: #777; text-anchor: middle; }
+            p.legend span { display: inline-block; width: 12px; height: 12px; margin: 0 4px 0 10px; vertical-align: middle; }
+            p.foot { color: #999; margin-top: 3em; }
+            """;
+}
