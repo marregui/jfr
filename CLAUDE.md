@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build and test
 
-Gradle (Kotlin DSL), three modules, no convention plugins: each `*/build.gradle.kts` is self-contained on purpose. JDK 25 toolchain is required; `core` has no runtime dependency beyond `jdk.jfr`.
+Gradle (Kotlin DSL), three modules, no convention plugins: each `*/build.gradle.kts` is self-contained on purpose. JDK 25 everywhere: the module toolchains, the Gradle daemon (`gradle/gradle-daemon-jvm.properties`, so the launching `java` may be older), the `.sdkmanrc` for the shell that runs the installed launcher. No toolchain auto-download: a local Temurin 25 must be installed. `core` has no runtime dependency beyond `jdk.jfr`.
 
 ```
 ./gradlew build                       # compile + tests + JaCoCo coverage gates (85 % core, 80 % cli)
