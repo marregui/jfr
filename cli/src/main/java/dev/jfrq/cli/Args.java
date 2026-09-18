@@ -1,5 +1,9 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.cli;
 
+import java.io.Serial;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -116,7 +120,7 @@ final class Args {
 
     /** A usage error: the message is printed with the command's help and exit code 2. */
     static final class UsageException extends RuntimeException {
-        @java.io.Serial
+        @Serial
         private static final long serialVersionUID = 1L;
 
         UsageException(String message) {

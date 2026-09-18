@@ -1,9 +1,16 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.alloc;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
+import dev.jfrq.core.coll.LongList;
+import dev.jfrq.core.coll.ObjLongHashMap;
+import dev.jfrq.core.coll.ObjObjHashMap;
+import dev.jfrq.core.jfr.EventKinds;
 import dev.jfrq.core.jfr.Events;
 import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
@@ -40,19 +47,30 @@ import jdk.jfr.consumer.RecordedEvent;
  * counter is what it allocated in between; the report shows it next to the estimate, so
  * a reader knows how far the sampling is from the truth for the threads that matter.
  * A thread that started and ended between two counter events is never counted.
+ *
+ * <p>The aggregation runs on primitive-valued maps and the counters on a flat list
+ * (G-1.3, G-1.8); the {@code java.util} maps the report exposes are built once at the end.
  */
 public final class AllocationCollector implements JfrReader.Sink {
 
-    public static final String SAMPLE = "jdk.ObjectAllocationSample";
-    public static final String IN_TLAB = "jdk.ObjectAllocationInNewTLAB";
-    public static final String OUTSIDE_TLAB = "jdk.ObjectAllocationOutsideTLAB";
-    public static final String THREAD_STATISTICS = "jdk.ThreadAllocationStatistics";
+    public static final String SAMPLE = EventKinds.nameOf(EventKinds.OBJECT_ALLOCATION_SAMPLE);
+    public static final String IN_TLAB = EventKinds.nameOf(EventKinds.OBJECT_ALLOCATION_IN_NEW_TLAB);
+    public static final String OUTSIDE_TLAB = EventKinds.nameOf(EventKinds.OBJECT_ALLOCATION_OUTSIDE_TLAB);
+    public static final String THREAD_STATISTICS = EventKinds.nameOf(EventKinds.THREAD_ALLOCATION_STATISTICS);
+
+    private static final Set<String> TYPES = Set.of(SAMPLE, IN_TLAB, OUTSIDE_TLAB, THREAD_STATISTICS);
+
+    /** Per thread, three longs at a stride of four: the smallest and largest counter seen, and how often. */
+    private static final int COUNTER_STRIDE = 4;
+    private static final int COUNTER_MIN = 0;
+    private static final int COUNTER_MAX = 1;
+    private static final int COUNTER_SEEN = 2;
 
     private final Accumulator sampled = new Accumulator(true);
     /** TLAB events each stand for one buffer, so the first one carries no history. */
     private final Accumulator tlab = new Accumulator(false);
-    /** Per thread: the smallest and largest {@code allocated} counter seen, and how many times it was seen. */
-    private final Map<ThreadRef, long[]> counters = new HashMap<>();
+    private final ObjLongHashMap<ThreadRef> counterSlot = new ObjLongHashMap<>(256);
+    private final LongList counters = new LongList(256 * COUNTER_STRIDE);
     private Interner interner = new Interner();
     private AllocationReport report;
 
@@ -63,16 +81,22 @@ public final class AllocationCollector implements JfrReader.Sink {
 
     @Override
     public Set<String> eventTypes() {
-        return Set.of(SAMPLE, IN_TLAB, OUTSIDE_TLAB, THREAD_STATISTICS);
+        return TYPES;
     }
 
     @Override
     public void accept(RecordedEvent e) {
-        switch (e.getEventType().getName()) {
-            case SAMPLE -> sampled.add(e, Events.longOr(e, "weight", 0), interner);
-            case IN_TLAB -> tlab.add(e, Events.longOr(e, "tlabSize", 0), interner);
-            case OUTSIDE_TLAB -> tlab.add(e, Events.longOr(e, "allocationSize", 0), interner);
-            case THREAD_STATISTICS -> counter(e);
+        accept(e, EventKinds.kindOf(e.getEventType().getName()));
+    }
+
+    @Override
+    public void accept(RecordedEvent e, int kind) {
+        switch (kind) {
+            case EventKinds.OBJECT_ALLOCATION_SAMPLE -> sampled.add(e, Events.longOr(e, "weight", 0), interner);
+            case EventKinds.OBJECT_ALLOCATION_IN_NEW_TLAB -> tlab.add(e, Events.longOr(e, "tlabSize", 0), interner);
+            case EventKinds.OBJECT_ALLOCATION_OUTSIDE_TLAB ->
+                    tlab.add(e, Events.longOr(e, "allocationSize", 0), interner);
+            case EventKinds.THREAD_ALLOCATION_STATISTICS -> counter(e);
             default -> {
             }
         }
@@ -91,10 +115,21 @@ public final class AllocationCollector implements JfrReader.Sink {
         if (allocated < 0) {
             return;
         }
-        long[] c = counters.computeIfAbsent(thread, _ -> new long[] {Long.MAX_VALUE, Long.MIN_VALUE, 0});
-        c[0] = Math.min(c[0], allocated);
-        c[1] = Math.max(c[1], allocated);
-        c[2]++;
+        int index = counterSlot.keyIndex(thread);
+        int base;
+        if (index < 0) {
+            base = (int) counterSlot.valueAtQuick(index);
+        } else {
+            base = counters.size();
+            counters.add(Long.MAX_VALUE);
+            counters.add(Long.MIN_VALUE);
+            counters.add(0);
+            counters.add(0);
+            counterSlot.putAt(index, thread, base);
+        }
+        counters.setQuick(base + COUNTER_MIN, Math.min(counters.getQuick(base + COUNTER_MIN), allocated));
+        counters.setQuick(base + COUNTER_MAX, Math.max(counters.getQuick(base + COUNTER_MAX), allocated));
+        counters.setQuick(base + COUNTER_SEEN, counters.getQuick(base + COUNTER_SEEN) + 1);
     }
 
     @Override
@@ -104,17 +139,25 @@ public final class AllocationCollector implements JfrReader.Sink {
         Accumulator chosen = sampled.events > 0 ? sampled : tlab;
         String source = sampled.events > 0 ? SAMPLE : IN_TLAB + " + " + OUTSIDE_TLAB;
         report = new AllocationReport(info, source, chosen.total, chosen.samples, chosen.events, countedByThread(),
-                chosen.byThread, chosen.byClass, chosen.bySite, chosen.classByThread, chosen.siteByThread);
+                toMap(chosen.byThread), toMap(chosen.byClass), toMap(chosen.bySite), toMaps(chosen.classByThread),
+                toMaps(chosen.siteByThread));
     }
 
-    /** Per thread name, what the JVM's counter grew by between its first and last event; threads seen once are left out. */
+    /**
+     * Per thread name, what the JVM's counter grew by between its first and last event;
+     * threads seen once are left out. */
     private Map<String, Long> countedByThread() {
         Map<String, Long> counted = new HashMap<>();
-        counters.forEach((thread, c) -> {
-            if (c[2] >= 2) {
-                counted.merge(thread.name(), c[1] - c[0], Long::sum);
+        for (int s = 0, n = counterSlot.slots(); s < n; s++) {
+            if (!counterSlot.hasKeyAtSlot(s)) {
+                continue;
             }
-        });
+            int base = (int) counterSlot.valueAtSlot(s);
+            if (counters.getQuick(base + COUNTER_SEEN) >= 2) {
+                counted.merge(counterSlot.keyAtSlot(s).name(),
+                        counters.getQuick(base + COUNTER_MAX) - counters.getQuick(base + COUNTER_MIN), Long::sum);
+            }
+        }
         return counted;
     }
 
@@ -126,25 +169,63 @@ public final class AllocationCollector implements JfrReader.Sink {
         return report;
     }
 
+    private static <K> Map<K, Long> toMap(ObjLongHashMap<K> map) {
+        Map<K, Long> out = new HashMap<>(map.size() * 2);
+        for (int s = 0, n = map.slots(); s < n; s++) {
+            if (map.hasKeyAtSlot(s)) {
+                out.put(map.keyAtSlot(s), map.valueAtSlot(s));
+            }
+        }
+        return out;
+    }
+
+    private static <K> Map<String, Map<K, Long>> toMaps(ObjObjHashMap<String, ObjLongHashMap<K>> maps) {
+        Map<String, Map<K, Long>> out = new HashMap<>(maps.size() * 2);
+        for (int s = 0, n = maps.slots(); s < n; s++) {
+            if (maps.hasKeyAtSlot(s)) {
+                out.put(maps.keyAtSlot(s), toMap(maps.valueAtSlot(s)));
+            }
+        }
+        return out;
+    }
+
     private static final class Accumulator {
+        private static final String NO_THREAD = "<no thread>";
+        private static final String NO_CLASS = "?";
+
         long total;
         /** Samples in the totals. */
         long samples;
         /** Events seen, discarded or not. */
         long events;
-        final Map<String, Long> byThread = new HashMap<>();
-        final Map<String, Long> byClass = new HashMap<>();
-        final Map<Stack, Long> bySite = new HashMap<>();
-        final Map<String, Map<String, Long>> classByThread = new HashMap<>();
-        final Map<String, Map<Stack, Long>> siteByThread = new HashMap<>();
+        final ObjLongHashMap<String> byThread = new ObjLongHashMap<>(64);
+        final ObjLongHashMap<String> byClass = new ObjLongHashMap<>(1024);
+        final ObjLongHashMap<Stack> bySite = new ObjLongHashMap<>(4096);
+        final ObjObjHashMap<String, ObjLongHashMap<String>> classByThread = new ObjObjHashMap<>(64);
+        final ObjObjHashMap<String, ObjLongHashMap<Stack>> siteByThread = new ObjObjHashMap<>(64);
         /** Per thread, the earliest sample seen (delivery is file order, not time order). */
-        private final Map<ThreadRef, First> firsts;
+        private final ObjObjHashMap<ThreadRef, First> firsts;
 
-        private record First(long time, long bytes, String threadName, String cls, Stack site) {
+        /** One thread's earliest sample, re-pointed when an earlier one turns up (G-3.1). */
+        private static final class First {
+            long time;
+            long bytes;
+            String threadName;
+            String cls;
+            Stack site;
+
+            First of(long time, long bytes, String threadName, String cls, Stack site) {
+                this.time = time;
+                this.bytes = bytes;
+                this.threadName = threadName;
+                this.cls = cls;
+                this.site = site;
+                return this;
+            }
         }
 
         Accumulator(boolean dropFirstPerThread) {
-            this.firsts = dropFirstPerThread ? new HashMap<>() : null;
+            this.firsts = dropFirstPerThread ? new ObjObjHashMap<>(64) : null;
         }
 
         void add(RecordedEvent e, long bytes, Interner interner) {
@@ -152,18 +233,23 @@ public final class AllocationCollector implements JfrReader.Sink {
                 return;
             }
             ThreadRef thread = interner.thread(e);
-            String threadName = thread == null ? "<no thread>" : thread.name();
+            String threadName = thread == null ? NO_THREAD : thread.name();
             String cls = Events.className(e, "objectClass", interner);
             if (cls == null) {
-                cls = "?";
+                cls = NO_CLASS;
             }
             Stack site = Events.stack(e, interner);
             add(bytes, threadName, cls, site);
             if (firsts != null && thread != null) {
                 long time = Events.startNanos(e);
-                First known = firsts.get(thread);
-                if (known == null || time < known.time()) {
-                    firsts.put(thread, new First(time, bytes, threadName, cls, site));
+                int index = firsts.keyIndex(thread);
+                if (index >= 0) {
+                    firsts.putAt(index, thread, new First().of(time, bytes, threadName, cls, site));
+                } else {
+                    First known = firsts.valueAtQuick(index);
+                    if (time < known.time) {
+                        known.of(time, bytes, threadName, cls, site);
+                    }
                 }
             }
         }
@@ -172,11 +258,16 @@ public final class AllocationCollector implements JfrReader.Sink {
             total += bytes;
             samples++;
             events++;
-            byThread.merge(threadName, bytes, Long::sum);
-            byClass.merge(cls, bytes, Long::sum);
-            bySite.merge(site, bytes, Long::sum);
-            classByThread.computeIfAbsent(threadName, _ -> new HashMap<>()).merge(cls, bytes, Long::sum);
-            siteByThread.computeIfAbsent(threadName, _ -> new HashMap<>()).merge(site, bytes, Long::sum);
+            byThread.increment(threadName, bytes);
+            byClass.increment(cls, bytes);
+            bySite.increment(site, bytes);
+            perThread(classByThread, threadName).increment(cls, bytes);
+            perThread(siteByThread, threadName).increment(site, bytes);
+        }
+
+        private static <K> ObjLongHashMap<K> perThread(ObjObjHashMap<String, ObjLongHashMap<K>> maps, String thread) {
+            int index = maps.keyIndex(thread);
+            return index < 0 ? maps.valueAtQuick(index) : maps.putAt(index, thread, new ObjLongHashMap<>(64));
         }
 
         /** Takes every thread's first sample back out of the totals. */
@@ -184,33 +275,42 @@ public final class AllocationCollector implements JfrReader.Sink {
             if (firsts == null) {
                 return;
             }
-            for (First f : firsts.values()) {
-                total -= f.bytes();
+            for (int s = 0, n = firsts.slots(); s < n; s++) {
+                if (!firsts.hasKeyAtSlot(s)) {
+                    continue;
+                }
+                First f = firsts.valueAtSlot(s);
+                total -= f.bytes;
                 samples--;
-                subtract(byThread, f.threadName(), f.bytes());
-                subtract(byClass, f.cls(), f.bytes());
-                subtract(bySite, f.site(), f.bytes());
+                subtract(byThread, f.threadName, f.bytes);
+                subtract(byClass, f.cls, f.bytes);
+                subtract(bySite, f.site, f.bytes);
                 // Two threads can share a name (a pool that recycles them); the per-name maps may
                 // already be gone after the first of them.
-                subtract(classByThread.get(f.threadName()), f.cls(), f.bytes());
-                subtract(siteByThread.get(f.threadName()), f.site(), f.bytes());
-                if (!byThread.containsKey(f.threadName())) {
-                    classByThread.remove(f.threadName());
-                    siteByThread.remove(f.threadName());
+                subtract(classByThread.get(f.threadName), f.cls, f.bytes);
+                subtract(siteByThread.get(f.threadName), f.site, f.bytes);
+                if (byThread.excludes(f.threadName)) {
+                    classByThread.remove(f.threadName);
+                    siteByThread.remove(f.threadName);
                 }
             }
             firsts.clear();
         }
 
-        private static <K> void subtract(Map<K, Long> map, K key, long bytes) {
+        private static <K> void subtract(ObjLongHashMap<K> map, K key, long bytes) {
             if (map == null) {
                 return;
             }
-            long left = map.getOrDefault(key, 0L) - bytes;
+            int index = map.keyIndex(key);
+            long left = (index < 0 ? map.valueAtQuick(index) : 0) - bytes;
             if (left > 0) {
-                map.put(key, left);
-            } else {
-                map.remove(key);
+                if (index < 0) {
+                    map.put(key, left);
+                } else {
+                    map.putAt(index, key, left);
+                }
+            } else if (index < 0) {
+                map.removeAt(index);
             }
         }
     }

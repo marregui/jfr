@@ -1,10 +1,15 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.locks;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Predicate;
 
+import dev.jfrq.core.coll.LongObjHashMap;
+import dev.jfrq.core.coll.ObjList;
+import dev.jfrq.core.jfr.EventKinds;
 import dev.jfrq.core.jfr.Events;
 import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
@@ -26,19 +31,23 @@ import jdk.jfr.consumer.RecordedEvent;
  */
 public final class ContentionCollector implements JfrReader.Sink {
 
-    public static final String MONITOR_ENTER = "jdk.JavaMonitorEnter";
-    public static final String THREAD_PARK = "jdk.ThreadPark";
+    public static final String MONITOR_ENTER = EventKinds.nameOf(EventKinds.JAVA_MONITOR_ENTER);
+    public static final String THREAD_PARK = EventKinds.nameOf(EventKinds.THREAD_PARK);
+
+    private static final Set<String> TYPES = Set.of(MONITOR_ENTER, THREAD_PARK);
 
     private final long minNanos;
     private final Predicate<String> waiterFilter;
-    private final List<Wait> waits = new ArrayList<>();
+    private final ObjList<Wait> waits = new ObjList<>(1024);
+    /**
+     * One {@link Wait.LockKey} per lock, keyed by address: a recording holds a few locks
+     * and hundreds of thousands of waits. An address reused by another class (the object
+     * moved) replaces the entry; the earlier key stays alive through its waits and still
+     * compares by value.
+     */
+    private final LongObjHashMap<Wait.LockKey> locks = new LongObjHashMap<>(64, Long.MIN_VALUE);
     private Interner interner = new Interner();
     private ContentionReport report;
-
-    @Override
-    public void begin(Interner interner) {
-        this.interner = interner;
-    }
 
     /**
      * @param minNanos     waits shorter than this are left out of the report
@@ -54,8 +63,18 @@ public final class ContentionCollector implements JfrReader.Sink {
     }
 
     @Override
+    public void begin(Interner interner) {
+        this.interner = interner;
+    }
+
+    @Override
     public Set<String> eventTypes() {
-        return Set.of(MONITOR_ENTER, THREAD_PARK);
+        return TYPES;
+    }
+
+    @Override
+    public void accept(RecordedEvent e) {
+        accept(e, EventKinds.kindOf(e.getEventType().getName()));
     }
 
     /**
@@ -64,26 +83,43 @@ public final class ContentionCollector implements JfrReader.Sink {
      * the one that says who really held it. The filters apply in the report.
      */
     @Override
-    public void accept(RecordedEvent e) {
+    public void accept(RecordedEvent e, int kind) {
         Interval interval = Events.interval(e);
         ThreadRef waiter = interner.thread(e);
         if (waiter == null) {
             return;
         }
-        boolean monitor = MONITOR_ENTER.equals(e.getEventType().getName());
-        Wait.Kind kind = monitor ? Wait.Kind.MONITOR_ENTER : Wait.Kind.PARK;
+        boolean monitor = kind == EventKinds.JAVA_MONITOR_ENTER;
         String cls = Events.className(e, monitor ? "monitorClass" : "parkedClass", interner);
         if (!monitor && cls == null) {
             return;
         }
-        Wait.LockKey lock = new Wait.LockKey(cls, Events.longOr(e, "address", 0), kind);
+        Wait.Kind waitKind = monitor ? Wait.Kind.MONITOR_ENTER : Wait.Kind.PARK;
+        Wait.LockKey lock = lock(cls, Events.longOr(e, "address", 0), waitKind);
         ThreadRef owner = monitor ? Events.thread(e, "previousOwner", interner) : null;
         waits.add(new Wait(interval, waiter, lock, owner, Events.stack(e, interner)));
     }
 
+    private Wait.LockKey lock(String cls, long address, Wait.Kind kind) {
+        int index = locks.keyIndex(address);
+        if (index < 0) {
+            Wait.LockKey known = locks.valueAtQuick(index);
+            if (known.kind() == kind && Objects.equals(known.className(), cls)) {
+                return known;
+            }
+        }
+        Wait.LockKey created = new Wait.LockKey(cls, address, kind);
+        if (index < 0) {
+            locks.put(address, created);
+        } else {
+            locks.putAt(index, address, created);
+        }
+        return created;
+    }
+
     @Override
     public void finish(RecordingInfo info) {
-        report = new ContentionReport(info, waits, minNanos, waiterFilter);
+        report = new ContentionReport(info, waits.toList(), minNanos, waiterFilter);
     }
 
     public ContentionReport report() {

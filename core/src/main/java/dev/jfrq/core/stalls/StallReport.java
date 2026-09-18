@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.stalls;
 
 import java.util.ArrayList;
@@ -55,16 +58,28 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
     public record VerdictSummary(Stall.Verdict verdict, int count, long totalNanos, long worstNanos) {
     }
 
+    /** Totals per verdict, indexed by ordinal (G-1.9): three longs per verdict. */
+    private static final int TOTALS_STRIDE = 4;
+    private static final int COUNT = 0;
+    private static final int TOTAL = 1;
+    private static final int WORST = 2;
+
     public List<VerdictSummary> byVerdict() {
-        java.util.EnumMap<Stall.Verdict, long[]> totals = new java.util.EnumMap<>(Stall.Verdict.class);
+        Stall.Verdict[] verdicts = Stall.Verdict.values();
+        long[] totals = new long[verdicts.length * TOTALS_STRIDE];
         for (Stall s : stalls) {
-            long[] t = totals.computeIfAbsent(s.verdict(), _ -> new long[3]);
-            t[0]++;
-            t[1] += s.duration();
-            t[2] = Math.max(t[2], s.duration());
+            int base = s.verdict().ordinal() * TOTALS_STRIDE;
+            totals[base + COUNT]++;
+            totals[base + TOTAL] += s.duration();
+            totals[base + WORST] = Math.max(totals[base + WORST], s.duration());
         }
         List<VerdictSummary> out = new ArrayList<>();
-        totals.forEach((v, t) -> out.add(new VerdictSummary(v, (int) t[0], t[1], t[2])));
+        for (Stall.Verdict v : verdicts) {
+            int base = v.ordinal() * TOTALS_STRIDE;
+            if (totals[base + COUNT] > 0) {
+                out.add(new VerdictSummary(v, (int) totals[base + COUNT], totals[base + TOTAL], totals[base + WORST]));
+            }
+        }
         out.sort(Comparator.comparingLong(VerdictSummary::totalNanos).reversed());
         return out;
     }

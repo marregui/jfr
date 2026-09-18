@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.report;
 
 import java.util.ArrayList;
@@ -7,6 +10,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.regex.Pattern;
 
 import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
@@ -308,7 +313,7 @@ public final class Html {
     }
 
     private static <K> void deltaTable(Page p, List<AllocationDiff.Delta<K>> deltas,
-                                       java.util.function.Function<K, String> name) {
+                                       Function<K, String> name) {
         p.tableStart("Key", "Before", "After", "Change");
         for (AllocationDiff.Delta<K> d : deltas) {
             p.row(name.apply(d.key()), Bytes.rate(d.beforeRate()), Bytes.rate(d.afterRate()),
@@ -496,8 +501,8 @@ public final class Html {
             sb.append("</tr></thead><tbody>\n");
         }
 
-        private static final java.util.regex.Pattern NUMERIC =
-                java.util.regex.Pattern.compile("^[+\\-]?[0-9.]+( ?[a-zA-Zµ%/]+)?$");
+        private static final Pattern NUMERIC =
+                Pattern.compile("^[+\\-]?[0-9.]+( ?[a-zA-Zµ%/]+)?$");
 
         void row(Object... cells) {
             sb.append("<tr>");

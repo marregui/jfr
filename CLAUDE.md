@@ -40,7 +40,7 @@ jfrq stalls demo-lock.jfr --thread 'event-loop-*' --timing
 2. `setOrdered(false)`: delivery is file order, not time order — sinks sort what they keep in `finish()`.
 3. Anchor events (`jdk.ActiveSetting`, `jdk.ActiveRecording`, `jdk.PhysicalMemory`) are always read so `RecordingInfo` (span, settings/thresholds, threads, counts) is the same on a filtered pass as on a full one.
 
-`Sink` lifecycle: `begin(Interner)` → `accept(RecordedEvent)` × N → `finish(RecordingInfo)`.
+`Sink` lifecycle: `begin(Interner)` → `accept(RecordedEvent, int kind)` × N → `finish(RecordingInfo)`. The `kind` is the `EventKinds` tag of the event type, resolved once per `EventType` object (by identity) rather than per event; collectors switch on it, and the one-argument `accept(RecordedEvent)` is the fallback for sinks that do not (tests). A `@Transient` parameter is one the callee does not retain.
 
 **Per command:** a collector (sink) and a report.
 
@@ -51,7 +51,9 @@ jfrq stalls demo-lock.jfr --thread 'event-loop-*' --timing
 | `stalls` | `stalls/StallCollector` | `StallAnalysis` + `IdleMatcher` + `Timeline` → `StallReport` |
 | `info` | everything | `RecordingInfo` |
 
-**Model (`core/model`).** Timestamps are epoch nanoseconds in `long`; `Interval` is half-open `[start, end)`. `Interner` dedups `Stack`/`Frame`/`ThreadRef` by identity of the JDK's constant-pool objects (a `RecordedObject` field lookup is a linear by-name scan, so every resolution is done once); its caches are bounded and rebuilt when full. `Stack` is a class with a cached hash, not a record, so aggregation maps compare by identity first. `core/jfr/Events` is the only place that reads fields off a `RecordedEvent`.
+**Model (`core/model`).** Timestamps are epoch nanoseconds in `long`; absence is `Nulls.LONG_NULL`, not `Optional` (the `Optional`/`Duration` accessors on `RecordingInfo` and `Stack` exist for reports and tests; per-event and analysis code uses `periodNanos`, `culpritOrNull`, `depth()`/`frameQuick(i)`). `Interval` is half-open `[start, end)`. `Interner` dedups `Stack`/`Frame`/`ThreadRef`/method names by identity of the JDK's constant-pool objects (a `RecordedObject` field lookup is a linear by-name scan, so every resolution is done once), and its value tables are probed with raw components (a frame's type/method/line/kind, a stack's frame buffer) so a hit allocates nothing; the identity caches are bounded and cleared when full. `Stack` is a class with a cached hash, not a record, so aggregation maps compare by identity first. `core/jfr/Events` is the only place that reads fields off a `RecordedEvent`.
+
+**Collections (`core/coll`).** The per-event path runs on the project's own open-addressing tables and flat lists, not `java.util`: `ObjObjHashMap`, `IdentityObjObjHashMap`, `ObjLongHashMap`, `LongObjHashMap`, `ObjHashSet`, `ObjList`, `LongList`. They follow `CODING_GUIDELINES-SEP-18.md` §1: `keyIndex()` returns a negative index for a hit and the free slot for a miss, so get-or-insert is one probe (`int i = m.keyIndex(k); v = i < 0 ? m.valueAtQuick(i) : m.putAt(i, k, newValue())`); `getQuick`/`valueAtQuick` are assert-only; iteration is `for (s = 0; s < slots(); s++) if (hasKeyAtSlot(s))`; deletes backward-shift, never tombstone. Each table is a self-contained class (no shared base with virtual hooks: that made the probe loop megamorphic). `java.util` collections appear only in report objects (`AllocationReport`'s maps, `List`s on the records) and are built once in `finish()`. `HashTablesTest` cross-checks every table against `java.util` with a printed, replayable seed.
 
 **Rendering.** Text (`cli/Text`, `core/util/TextTable`) and HTML (`core/report/Html`) are both derived from the same report objects; HTML is built behind a supplier only when `--html` is given.
 
@@ -61,6 +63,7 @@ jfrq stalls demo-lock.jfr --thread 'event-loop-*' --timing
 
 ## Coding rules for this repo
 
-- `CODING_GUIDELINES-SEP-18.md` is the standard for a planned zero-allocation refactor of the per-event path; cite rules by `G-<section>.<n>`. §12 lists where the code currently departs (java.util collections, `Duration`/`Instant`, records and streams on the per-event path) — that list came from a skim, verify before acting on it.
+- `CODING_GUIDELINES-SEP-18.md` is the coding standard; cite rules by `G-<section>.<n>`. It was applied to the per-event path on 2026-09-18 (see §12 for what transfers, what was applied and what deliberately was not); the report/rendering layer (`Text`, `Html`, the report records) is final reporting and stays on `java.util`, `String.format` and `Optional` by the guidelines' own exemption (G-2.3).
+- Per-event allocations that remain are the `Sample`/`Block`/`Wait` records and their `Interval`s (the analysis API and its tests are built on those records) and the `Instant` inside `RecordedEvent.getStartTime()`/`getEndTime()` (the only way the JDK exposes event timestamps). Everything else on the per-event path is a probe into a pre-allocated table: thread filter verdicts, lock and peer detail strings, idle verdicts per frame, event kinds per `EventType`.
 - The guidelines doc, and anything derived from it here, must stay standalone: no references to the codebase they were distilled from, every example original.
 - Anything a blocking event or pause explains is exact; anything resting on samples alone is bounded by the measured sampling cadence (`docs/DESIGN.md` §4.3). Do not add a sample-based verdict without the cadence check.

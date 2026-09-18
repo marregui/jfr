@@ -351,6 +351,39 @@ in order of effect:
    (`-Xlog:cds*=off`). `-XX:TieredStopAtLevel=1` was tried and rejected: it saves a few
    milliseconds on small files and costs 25 % on a full parse.
 
+### 8.1 The per-event path after the coding-guidelines pass (2026-09-18)
+
+`CODING_GUIDELINES-SEP-18.md` was applied to everything that runs per event: the reader
+resolves an `EventType` object once (by identity) to its name, its `int` tag, its
+counter and its sinks, so no string is hashed per event; the interner's value tables are
+probed with a frame's components and a stack's frame buffer, so a hit allocates nothing;
+thread-filter verdicts, idle verdicts, lock and peer detail strings are decided once and
+looked up by probe; aggregation runs on primitive-valued open-addressing maps; safepoints
+and GC pauses are kept flat until `finish()`. What still allocates per event is the
+`Sample`/`Block`/`Wait` record the analysis consumes and the `Instant` the JDK returns for
+an event timestamp.
+
+Measured A/B on a 22 MB, 60-second `netty-demo --scenario all --rate 0` recording (58 k
+allocation samples, 11 k sampler events, 3.6 k socket reads), same JVM flags, alternating
+runs, read phase as `--timing` reports it (read plus `finish()`), cold start on the left
+and the median of 20 in-process iterations on the right:
+
+| Command | Cold, before | Cold, after | Warm, before | Warm, after |
+|---|---|---|---|---|
+| `alloc` | 151 ms | 137 ms | 37 ms | 28 ms |
+| `stalls` | 166 ms | 150 ms | 22 ms | 19 ms |
+| `locks` | 109 ms | 98 ms | 14 ms | 13 ms |
+| `info` | 225 ms | 212 ms | 95 ms | 89 ms |
+| `alloc --baseline` | 296 ms | 269 ms | | |
+
+The warm numbers say where the floor is: the JDK parser. `info`, which parses every
+event and does nothing with it, costs 89 ms warm; the analyses add 15–30 ms on top of a
+filtered parse. The refactor's value is the allocation it removed from that 15–30 ms
+(and the cold-start time, which class loading and JIT of a smaller working set improve),
+not a change in the order of magnitude. Text and HTML output are byte-identical before
+and after on every command; the one exception is the order of rows with an identical
+delta in `alloc --baseline`, which was hash-map order before and is hash-map order now.
+
 ## 9. Known limits, in one place
 
 - A wait shorter than the recording's threshold for its event does not exist in the

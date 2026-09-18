@@ -950,11 +950,34 @@ baseline the tests can assert"; G-7 applies only if a parallel pass over the
 file is introduced, and then G-7.1, G-7.2, G-7.3 and G-7.5 are the ones to
 follow.
 
-Where the code currently departs (from a skim of `core/src/main/java`, not an
-audit): `java.util` collections and `Duration` / `Instant` objects on the
-per-event path, records allocated per event, streams and `String`
-concatenation in analysis code, exceptions constructed on validation paths.
-Each maps to a rule above. The refactor order is: introduce the primitive
-collections, the sink protocol, the sentinel conventions and the `of()` /
-`clear()` reuse cycle; then move per-event allocations onto them; measure with
-`--timing` before and after each step.
+Applied on 2026-09-18 to the per-event path, in the order this section originally
+prescribed (collections, then sentinels and reuse, then the per-event allocations):
+the primitive collections (`core/coll`: `ObjObjHashMap`,
+`IdentityObjObjHashMap`, `ObjLongHashMap`, `LongObjHashMap`, `ObjHashSet`,
+`ObjList`, `LongList`, with the `keyIndex()` sign convention, backward-shift delete and
+the `Quick` / `At` / `AtSlot` naming), the sentinel conventions (`Nulls`,
+`parseNanosQuiet`, `periodNanos` / `thresholdNanos`, `culpritOrNull`), the reuse cycle
+(`of()` on the scratch objects, `clear()` per candidate, interner tables probed with raw
+components so a hit allocates nothing), and `int` event tags resolved once per event
+type. Two departures are kept on purpose and should not be "fixed" without a design
+change:
+
+- The analysis input is records (`Sample`, `Block`, `Wait`, `Pause`) with an
+  `Interval` each, allocated per event. The analysis API and the pure-logic tests are
+  built on them; flattening them (G-1.8) means a new timeline representation and a new
+  test fixture, not a local edit.
+- Report objects (`AllocationReport`, `ContentionReport`, `StallReport`) and the text and
+  HTML writers use `java.util` collections, `Optional`, `String.format` and
+  `StringBuilder`. That is final reporting, which G-2.3 exempts; the sink protocol
+  (G-2.4) would not change what the user sees or how long it takes.
+
+Two rules were judged not to earn their weight here and were not applied: G-9.2/G-9.3
+(facades and three classes per configuration: there is one implementation of each and
+the tests exercise the real filesystem and the real JFR parser) and G-3.3 object pools
+(every per-event object that is not interned is retained by the analysis, so there is
+nothing to return to a pool). One rule cannot be applied: the JDK exposes event
+timestamps only as `Instant`, so `getStartTime()` allocates once per read; the value is
+converted to `long` immediately and nothing else is kept.
+
+Measure with `--timing` before and after each further step; `docs/DESIGN.md` §8 holds the
+numbers.

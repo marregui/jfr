@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.jfr;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -86,6 +89,10 @@ class RecordingTest {
         assertTrue(info.threshold("jdk.NoSuchEvent").isEmpty());
         // Chunk-relative periods are not durations and must not throw.
         assertTrue(info.period("jdk.JVMInformation").isEmpty());
+        assertEquals(dev.jfrq.core.coll.Nulls.LONG_NULL, info.periodNanos("jdk.JVMInformation"));
+        assertEquals(20_000_000L, info.periodNanos("jdk.ExecutionSample"));
+        assertEquals(0L, info.thresholdNanos("jdk.ThreadSleep"));
+        assertEquals(dev.jfrq.core.coll.Nulls.LONG_NULL, info.thresholdNanos("jdk.NoSuchEvent"));
         assertEquals(0, info.count("jdk.NoSuchEvent"));
         assertNotNull(info.start());
         assertTrue(info.endNanos() > info.startNanos());

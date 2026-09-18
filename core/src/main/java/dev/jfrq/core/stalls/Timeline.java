@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.stalls;
 
 import java.util.List;
@@ -85,6 +88,10 @@ public final class Timeline {
             this(interval, kind, detail, stack, null, List.of(), bytes);
         }
 
+        public long start() {
+            return interval.start();
+        }
+
         public long length() {
             return interval.length();
         }
@@ -107,6 +114,10 @@ public final class Timeline {
     }
 
     public record Pause(Interval interval, PauseKind kind, String detail) {
+        public long start() {
+            return interval.start();
+        }
+
         public long length() {
             return interval.length();
         }

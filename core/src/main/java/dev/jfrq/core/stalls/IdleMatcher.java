@@ -1,11 +1,13 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.stalls;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.regex.Pattern;
 
+import dev.jfrq.core.coll.ObjLongHashMap;
 import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Stack;
 
@@ -35,12 +37,15 @@ public final class IdleMatcher {
             "java\\.util\\.concurrent\\.locks\\.LockSupport\\.park\\w*",
             "java\\.lang\\.Object\\.wait\\w*");
 
-    private final List<Pattern> patterns;
-    private final String source;
-    /** Frames recur across every sample; regex matching runs once per distinct frame. */
-    private final Map<Frame, Boolean> decided = new HashMap<>(1024);
+    private static final long IDLE = 1;
+    private static final long BUSY = 0;
 
-    private IdleMatcher(String source, List<Pattern> patterns) {
+    private final Pattern[] patterns;
+    private final String source;
+    /** Frames recur across every sample; regex matching runs once per distinct frame (G-2.2). */
+    private final ObjLongHashMap<Frame> decided = new ObjLongHashMap<>(1024);
+
+    private IdleMatcher(String source, Pattern[] patterns) {
         this.source = source;
         this.patterns = patterns;
     }
@@ -61,14 +66,13 @@ public final class IdleMatcher {
         if (compiled.isEmpty()) {
             throw new IllegalArgumentException("idle pattern list is empty");
         }
-        return new IdleMatcher(spec, List.copyOf(compiled));
+        return new IdleMatcher(spec, compiled.toArray(new Pattern[0]));
     }
 
     public boolean isIdle(Stack stack) {
-        List<Frame> frames = stack.frames();
-        int depth = Math.min(DEPTH, frames.size());
+        int depth = Math.min(DEPTH, stack.depth());
         for (int i = 0; i < depth; i++) {
-            if (isIdle(frames.get(i))) {
+            if (isIdle(stack.frameQuick(i))) {
                 return true;
             }
         }
@@ -76,20 +80,20 @@ public final class IdleMatcher {
     }
 
     private boolean isIdle(Frame frame) {
-        Boolean known = decided.get(frame);
-        if (known != null) {
-            return known;
+        int index = decided.keyIndex(frame);
+        if (index < 0) {
+            return decided.valueAtQuick(index) == IDLE;
         }
-        boolean idle = false;
+        long verdict = BUSY;
         String name = frame.qualifiedName();
         for (Pattern p : patterns) {
             if (p.matcher(name).matches()) {
-                idle = true;
+                verdict = IDLE;
                 break;
             }
         }
-        decided.put(frame, idle);
-        return idle;
+        decided.putAt(index, frame, verdict);
+        return verdict == IDLE;
     }
 
     @Override

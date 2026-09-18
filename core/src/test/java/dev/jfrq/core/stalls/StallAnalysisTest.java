@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.stalls;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -11,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import dev.jfrq.core.coll.LongList;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Interval;
@@ -47,6 +51,14 @@ class StallAnalysisTest {
 
     static Stack stack(Frame... frames) {
         return new Stack(List.of(frames), false);
+    }
+
+    static LongList longs(long... values) {
+        LongList list = new LongList(values.length);
+        for (long v : values) {
+            list.add(v);
+        }
+        return list;
     }
 
     static RecordingInfo info(long spanMillis, Map<String, Map<String, String>> settings, String... presentTypes) {
@@ -366,9 +378,9 @@ class StallAnalysisTest {
         StallAnalysis.Cadence c = StallAnalysis.Cadence.of(List.of(), 10 * MS);
         assertEquals(0, c.java());
         assertEquals(10 * MS, c.period());
-        assertEquals(0, StallAnalysis.Cadence.percentile(List.of(), 0.9));
-        assertEquals(20L, StallAnalysis.Cadence.percentile(List.of(10L, 20L, 30L), 0.5));
-        assertEquals(30L, StallAnalysis.Cadence.percentile(List.of(10L, 20L, 30L), 0.9));
+        assertEquals(0, StallAnalysis.Cadence.percentile(new LongList(), 0.9));
+        assertEquals(20L, StallAnalysis.Cadence.percentile(longs(10L, 20L, 30L), 0.5));
+        assertEquals(30L, StallAnalysis.Cadence.percentile(longs(10L, 20L, 30L), 0.9));
         StallAnalysis.Cadence mixed = StallAnalysis.Cadence.of(List.of(
                 new Sample(0, BURN, false, false), new Sample(10 * MS, BURN, false, false),
                 new Sample(110 * MS, IDLE, true, true), new Sample(210 * MS, IDLE, true, true)), 0);

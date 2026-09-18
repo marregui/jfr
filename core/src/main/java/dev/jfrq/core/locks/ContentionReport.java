@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.locks;
 
 import java.util.ArrayList;
@@ -10,6 +13,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 
+import dev.jfrq.core.coll.ObjHashSet;
+import dev.jfrq.core.coll.ObjList;
+import dev.jfrq.core.coll.ObjLongHashMap;
+import dev.jfrq.core.coll.ObjObjHashMap;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.ThreadRef;
@@ -45,15 +52,28 @@ public final class ContentionReport {
         }
     }
 
+    private static final Comparator<Wait> BY_INTERVAL = Comparator.comparing(Wait::interval);
+    private static final long PASSES = 1;
+    private static final long FAILS = 0;
+
     private final RecordingInfo info;
     /** The reported waits, after the filters, in start order. */
     private final List<Wait> waits;
     /** How many waits the recording holds before the filters. */
     private final int unfilteredCount;
     /** Every thread's waits, filters or not, so that a convoy can be followed into any thread. */
-    private final Map<ThreadRef, List<Wait>> byWaiter = new HashMap<>();
-    /** Per waiter, the longest wait: bounds the window a lookup by start has to scan. */
-    private final Map<ThreadRef, Long> longestByWaiter = new HashMap<>();
+    private final ObjObjHashMap<ThreadRef, Waits> byWaiter = new ObjObjHashMap<>(256);
+
+    /** One thread's waits in start order, and the longest of them: bounds the window a lookup by start scans. */
+    private static final class Waits {
+        final ObjList<Wait> list = new ObjList<>(8);
+        long longest;
+
+        void add(Wait w) {
+            list.add(w);
+            longest = Math.max(longest, w.duration());
+        }
+    }
 
     public ContentionReport(RecordingInfo info, List<Wait> waits) {
         this(info, waits, 0, _ -> true);
@@ -66,26 +86,47 @@ public final class ContentionReport {
      */
     public ContentionReport(RecordingInfo info, List<Wait> waits, long minNanos, Predicate<String> waiterFilter) {
         this.info = info;
-        List<Wait> sorted = new ArrayList<>(waits);
-        sorted.sort(Comparator.comparing(Wait::interval));
-        Map<ThreadRef, List<Wait>> raw = new HashMap<>();
-        Map<ThreadRef, Long> rawLongest = new HashMap<>();
-        for (Wait w : sorted) {
-            raw.computeIfAbsent(w.waiter(), _ -> new ArrayList<>()).add(w);
-            rawLongest.merge(w.waiter(), w.duration(), Math::max);
+        ObjList<Wait> sorted = new ObjList<>(waits.size());
+        for (int i = 0, n = waits.size(); i < n; i++) {
+            sorted.add(waits.get(i));
         }
-        List<Wait> reported = new ArrayList<>(sorted.size());
-        for (Wait w : sorted) {
-            Wait resolved = resolveHolder(w, raw, rawLongest);
+        sorted.sort(BY_INTERVAL);
+        ObjObjHashMap<ThreadRef, Waits> raw = new ObjObjHashMap<>(256);
+        for (int i = 0, n = sorted.size(); i < n; i++) {
+            Wait w = sorted.getQuick(i);
+            waitsOf(raw, w.waiter()).add(w);
+        }
+        // The filter runs once per thread, not once per wait (G-2.2).
+        ObjLongHashMap<ThreadRef> filterVerdict = new ObjLongHashMap<>(256);
+        ObjList<ThreadRef> via = new ObjList<>();
+        ObjHashSet<ThreadRef> seen = new ObjHashSet<>();
+        ObjList<Wait> reported = new ObjList<>(sorted.size());
+        for (int i = 0, n = sorted.size(); i < n; i++) {
+            Wait w = sorted.getQuick(i);
+            Wait resolved = resolveHolder(w, raw, via, seen);
             // Every thread's waits stay reachable for convoy following; the report lists the filtered ones.
-            byWaiter.computeIfAbsent(w.waiter(), _ -> new ArrayList<>()).add(resolved);
-            longestByWaiter.merge(w.waiter(), w.duration(), Math::max);
-            if (w.duration() >= minNanos && waiterFilter.test(w.waiter().name())) {
+            waitsOf(byWaiter, w.waiter()).add(resolved);
+            if (w.duration() >= minNanos && passes(filterVerdict, waiterFilter, w.waiter())) {
                 reported.add(resolved);
             }
         }
-        this.waits = List.copyOf(reported);
+        this.waits = reported.toList();
         this.unfilteredCount = sorted.size();
+    }
+
+    private static Waits waitsOf(ObjObjHashMap<ThreadRef, Waits> map, ThreadRef thread) {
+        int index = map.keyIndex(thread);
+        return index < 0 ? map.valueAtQuick(index) : map.putAt(index, thread, new Waits());
+    }
+
+    private static boolean passes(ObjLongHashMap<ThreadRef> verdicts, Predicate<String> filter, ThreadRef thread) {
+        int index = verdicts.keyIndex(thread);
+        if (index < 0) {
+            return verdicts.valueAtQuick(index) == PASSES;
+        }
+        boolean passes = filter.test(thread.name());
+        verdicts.putAt(index, thread, passes ? PASSES : FAILS);
+        return passes;
     }
 
     /** Whether the filters left anything out. */
@@ -103,27 +144,31 @@ public final class ContentionReport {
      * back: while the recorded owner was itself waiting for the same lock during this wait,
      * take its owner instead and remember the intermediary.
      */
-    private static Wait resolveHolder(Wait wait, Map<ThreadRef, List<Wait>> byWaiter, Map<ThreadRef, Long> longest) {
+    private static Wait resolveHolder(Wait wait, ObjObjHashMap<ThreadRef, Waits> byWaiter, ObjList<ThreadRef> via,
+                                      ObjHashSet<ThreadRef> seen) {
         ThreadRef owner = wait.owner();
         if (owner == null) {
             return wait;
         }
-        List<ThreadRef> via = new ArrayList<>();
-        Set<ThreadRef> seen = new LinkedHashSet<>();
+        via.clear();
+        seen.clear();
         seen.add(wait.waiter());
         seen.add(owner);
         while (true) {
             Wait ownersWait = null;
-            List<Wait> theirs = byWaiter.getOrDefault(owner, List.of());
-            int from = Sorted.lowerBound(theirs, Wait::start, wait.start() - longest.getOrDefault(owner, 0L));
-            for (int i = from; i < theirs.size(); i++) {
-                Wait w = theirs.get(i);
-                if (w.start() >= wait.end()) {
-                    break;
-                }
-                if (w.lock().equals(wait.lock()) && w.interval().overlaps(wait.interval())
-                        && (ownersWait == null || w.duration() > ownersWait.duration())) {
-                    ownersWait = w;
+            Waits theirs = byWaiter.get(owner);
+            if (theirs != null) {
+                ObjList<Wait> list = theirs.list;
+                int from = Sorted.lowerBound(list, Wait::start, wait.start() - theirs.longest);
+                for (int i = from, n = list.size(); i < n; i++) {
+                    Wait w = list.getQuick(i);
+                    if (w.start() >= wait.end()) {
+                        break;
+                    }
+                    if (w.lock().equals(wait.lock()) && w.interval().overlaps(wait.interval())
+                            && (ownersWait == null || w.duration() > ownersWait.duration())) {
+                        ownersWait = w;
+                    }
                 }
             }
             // Stop at an unknown owner, and at a cycle (a thread cannot hold what it waits for).
@@ -136,7 +181,7 @@ public final class ContentionReport {
         if (via.isEmpty()) {
             return wait;
         }
-        return new Wait(wait.interval(), wait.waiter(), wait.lock(), owner, wait.stack(), via);
+        return new Wait(wait.interval(), wait.waiter(), wait.lock(), owner, wait.stack(), via.toList());
     }
 
     public RecordingInfo info() {
@@ -241,10 +286,14 @@ public final class ContentionReport {
     private Wait longestOverlapping(ThreadRef thread, Interval during, Wait.LockKey notThisLock) {
         Wait best = null;
         long bestOverlap = 0;
-        List<Wait> theirs = byWaiter.getOrDefault(thread, List.of());
-        int from = Sorted.lowerBound(theirs, Wait::start, during.start() - longestByWaiter.getOrDefault(thread, 0L));
-        for (int i = from; i < theirs.size(); i++) {
-            Wait w = theirs.get(i);
+        Waits theirs = byWaiter.get(thread);
+        if (theirs == null) {
+            return null;
+        }
+        ObjList<Wait> list = theirs.list;
+        int from = Sorted.lowerBound(list, Wait::start, during.start() - theirs.longest);
+        for (int i = from, n = list.size(); i < n; i++) {
+            Wait w = list.getQuick(i);
             if (w.start() >= during.end()) {
                 break;
             }

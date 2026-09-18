@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.jfr;
 
 import java.nio.file.Path;
@@ -9,6 +12,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 
+import dev.jfrq.core.coll.Nulls;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.util.Durations;
@@ -95,8 +99,18 @@ public record RecordingInfo(
         return durationSetting(eventType, "threshold");
     }
 
+    /** {@link #threshold} as nanoseconds, or {@link Nulls#LONG_NULL} when unknown (G-1.1). */
+    public long thresholdNanos(String eventType) {
+        return nanosSetting(eventType, "threshold");
+    }
+
     public Optional<Duration> period(String eventType) {
         return durationSetting(eventType, "period");
+    }
+
+    /** {@link #period} as nanoseconds, or {@link Nulls#LONG_NULL} when unknown (G-1.1). */
+    public long periodNanos(String eventType) {
+        return nanosSetting(eventType, "period");
     }
 
     /**
@@ -108,13 +122,14 @@ public record RecordingInfo(
     }
 
     private Optional<Duration> durationSetting(String eventType, String name) {
-        return setting(eventType, name).flatMap(v -> {
-            try {
-                return Optional.of(Durations.parse(v));
-            } catch (IllegalArgumentException notADuration) {
-                // "everyChunk", "beginChunk", "endChunk" are periods without a duration.
-                return Optional.empty();
-            }
-        });
+        long nanos = nanosSetting(eventType, name);
+        return nanos == Nulls.LONG_NULL ? Optional.empty() : Optional.of(Duration.ofNanos(nanos));
+    }
+
+    /** "everyChunk", "beginChunk", "endChunk" are periods without a duration: a sentinel, not an exception (G-5.1). */
+    private long nanosSetting(String eventType, String name) {
+        Map<String, String> s = settings.get(eventType);
+        String value = s == null ? null : s.get(name);
+        return value == null ? Nulls.LONG_NULL : Durations.parseNanosQuiet(value);
     }
 }

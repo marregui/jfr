@@ -1,10 +1,15 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.util;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 
+import dev.jfrq.core.coll.Nulls;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -38,6 +43,23 @@ class DurationsTest {
     @Test
     void rejectsNull() {
         assertThrows(IllegalArgumentException.class, () -> Durations.parse(null));
+    }
+
+    @Test
+    void quietVariantAnswersTheSentinelInsteadOfThrowing() {
+        assertEquals(50_000_000L, Durations.parseNanosQuiet("50ms"));
+        assertEquals(20_000_000L, Durations.parseNanosQuiet(new StringBuilder(" 20 MS ")));
+        assertEquals(1_050_000_000L, Durations.parseNanosQuiet("1.05s"));
+        assertEquals(120_000_000_000L, Durations.parseNanosQuiet("2min"));
+        assertEquals(Nulls.LONG_NULL, Durations.parseNanosQuiet("everyChunk"));
+        assertEquals(Nulls.LONG_NULL, Durations.parseNanosQuiet("10 parsecs"));
+        assertEquals(Nulls.LONG_NULL, Durations.parseNanosQuiet("1.s"));
+        assertEquals(Nulls.LONG_NULL, Durations.parseNanosQuiet("5 m s"));
+        assertEquals(Nulls.LONG_NULL, Durations.parseNanosQuiet(null));
+        // Past eighteen digits the mantissa is parsed as a double rather than overflowing a long.
+        assertEquals(Math.round(1e19), Durations.parseNanosQuiet("10000000000000000000"));
+        String unit = assertThrows(IllegalArgumentException.class, () -> Durations.parse("10 parsecs")).getMessage();
+        assertTrue(unit.startsWith("unknown duration unit"), unit);
     }
 
     @ParameterizedTest

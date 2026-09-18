@@ -1,12 +1,23 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.cli;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.io.Serial;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.function.Supplier;
 
 import dev.jfrq.core.alloc.AllocationCollector;
 import dev.jfrq.core.alloc.AllocationDiff;
@@ -17,6 +28,7 @@ import dev.jfrq.core.locks.ContentionCollector;
 import dev.jfrq.core.report.Html;
 import dev.jfrq.core.stalls.IdleMatcher;
 import dev.jfrq.core.stalls.StallCollector;
+import dev.jfrq.core.util.Durations;
 import dev.jfrq.core.util.Glob;
 
 /**
@@ -75,8 +87,8 @@ public final class Main {
 
     /** The options each command accepts, so an option in the wrong place is a usage error. */
     private static Args parse(String command, String[] rest) {
-        Set<String> valued = new java.util.HashSet<>(COMMON_VALUED);
-        Set<String> flags = new java.util.HashSet<>(COMMON_FLAGS);
+        Set<String> valued = new HashSet<>(COMMON_VALUED);
+        Set<String> flags = new HashSet<>(COMMON_FLAGS);
         switch (command) {
             case "info" -> valued.remove("top");
             case "alloc" -> {
@@ -103,7 +115,7 @@ public final class Main {
     private void phase(String name) {
         long now = System.nanoTime();
         if (timing && name != null && phaseStart != 0) {
-            err.printf("timing: %-10s %s%n", name, dev.jfrq.core.util.Durations.format(now - phaseStart));
+            err.printf("timing: %-10s %s%n", name, Durations.format(now - phaseStart));
         }
         phaseStart = now;
     }
@@ -124,7 +136,7 @@ public final class Main {
                 return 0;
             }
             String command = argv[0];
-            String[] rest = java.util.Arrays.copyOfRange(argv, 1, argv.length);
+            String[] rest = Arrays.copyOfRange(argv, 1, argv.length);
             Args args = parse(command, rest);
             if (args.flag("help")) {
                 out.print(USAGE);
@@ -245,12 +257,12 @@ public final class Main {
      * per file, so a diff otherwise costs two sequential passes.
      */
     private static void readBoth(Path a, JfrReader.Sink sinkA, Path b, JfrReader.Sink sinkB) throws IOException {
-        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
-            var first = executor.submit(() -> JfrReader.read(a, sinkA));
-            var second = executor.submit(() -> JfrReader.read(b, sinkB));
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<RecordingInfo> first = executor.submit(() -> JfrReader.read(a, sinkA));
+            Future<RecordingInfo> second = executor.submit(() -> JfrReader.read(b, sinkB));
             first.get();
             second.get();
-        } catch (java.util.concurrent.ExecutionException e) {
+        } catch (ExecutionException e) {
             if (e.getCause() instanceof IOException io) {
                 throw io;
             }
@@ -279,7 +291,7 @@ public final class Main {
     }
 
     /** Writes the HTML report if {@code --html} was given; the page is only built then. */
-    private void html(Args args, java.util.function.Supplier<String> html) throws HtmlWriteException {
+    private void html(Args args, Supplier<String> html) throws HtmlWriteException {
         if (args.option("html").isEmpty()) {
             return;
         }
@@ -294,7 +306,7 @@ public final class Main {
 
     /** Distinguishes a failed report write from a failed recording read: both are I/O. */
     private static final class HtmlWriteException extends RuntimeException {
-        @java.io.Serial
+        @Serial
         private static final long serialVersionUID = 1L;
         private final transient Path target;
 

@@ -1,9 +1,13 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.cli;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
@@ -353,7 +357,7 @@ final class Text {
         return String.format(Locale.ROOT, "%+.0f%%", r * 100);
     }
 
-    private static String names(java.util.Set<ThreadRef> threads) {
+    private static String names(Set<ThreadRef> threads) {
         List<String> names = new ArrayList<>();
         for (ThreadRef t : threads) {
             names.add(t.name());

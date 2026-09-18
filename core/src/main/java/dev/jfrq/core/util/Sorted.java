@@ -1,7 +1,12 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.util;
 
 import java.util.List;
 import java.util.function.ToLongFunction;
+
+import dev.jfrq.core.coll.ObjList;
 
 /**
  * Window lookups over lists sorted by a start key. Interval lists in this library are
@@ -29,11 +34,35 @@ public final class Sorted {
         return lo;
     }
 
+    /** {@link #lowerBound(List, ToLongFunction, long)} over an {@link ObjList}. */
+    public static <T> int lowerBound(ObjList<T> list, ToLongFunction<T> key, long value) {
+        int lo = 0;
+        int hi = list.size();
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (key.applyAsLong(list.getQuick(mid)) < value) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        return lo;
+    }
+
     /** The longest {@code length} over the list, or 0 when empty. */
     public static <T> long maxLength(List<T> list, ToLongFunction<T> length) {
         long max = 0;
-        for (T t : list) {
-            max = Math.max(max, length.applyAsLong(t));
+        for (int i = 0, n = list.size(); i < n; i++) {
+            max = Math.max(max, length.applyAsLong(list.get(i)));
+        }
+        return max;
+    }
+
+    /** {@link #maxLength(List, ToLongFunction)} over an {@link ObjList}. */
+    public static <T> long maxLength(ObjList<T> list, ToLongFunction<T> length) {
+        long max = 0;
+        for (int i = 0, n = list.size(); i < n; i++) {
+            max = Math.max(max, length.applyAsLong(list.getQuick(i)));
         }
         return max;
     }

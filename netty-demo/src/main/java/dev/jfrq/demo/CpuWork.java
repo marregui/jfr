@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.demo;
 
 /** A CPU-bound computation with a wall-clock budget, so its cost is predictable. */

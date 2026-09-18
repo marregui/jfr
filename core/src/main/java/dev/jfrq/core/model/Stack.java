@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.model;
 
 import java.util.Arrays;
@@ -11,7 +14,11 @@ import jdk.jfr.consumer.RecordedStackTrace;
  * A stack trace with the innermost frame first. Value semantics, so stacks can key maps
  * (allocation sites, busy-run histograms); the hash is computed once, because a stack is
  * looked up far more often than it is created and the same stack recurs thousands of
- * times in a recording. {@link Interner} makes recurring stacks share one instance.
+ * times in a recording. {@link Interner} makes recurring stacks share one instance, so
+ * {@link #equals} is an identity check first.
+ *
+ * <p>Per-event code walks the frames with {@link #depth()} and {@link #frameQuick(int)};
+ * {@link #frames()}, {@link #top()} and {@link #culprit()} allocate and are for reports.
  */
 public final class Stack {
 
@@ -24,7 +31,7 @@ public final class Stack {
     Stack(Frame[] frames, boolean truncated) {
         this.frames = frames;
         this.truncated = truncated;
-        this.hash = 31 * Arrays.hashCode(frames) + (truncated ? 1 : 0);
+        this.hash = hashOf(frames, frames.length, truncated);
     }
 
     /**
@@ -48,9 +55,32 @@ public final class Stack {
         return new Stack(frames, trace.isTruncated());
     }
 
+    /**
+     * The hash a stack over the first {@code n} frames of {@code frames} would have,
+     * which is what {@link #hashCode()} caches.
+     */
+    static int hashOf(Frame[] frames, int n, boolean truncated) {
+        int h = 1;
+        for (int i = 0; i < n; i++) {
+            h = 31 * h + frames[i].hashCode();
+        }
+        return 31 * h + (truncated ? 1 : 0);
+    }
+
     /** Innermost first. */
     public List<Frame> frames() {
         return List.of(frames);
+    }
+
+    /** Number of frames. */
+    public int depth() {
+        return frames.length;
+    }
+
+    /** The frame at {@code index}, innermost first; unchecked (G-1.6). */
+    public Frame frameQuick(int index) {
+        assert index >= 0 && index < frames.length;
+        return frames[index];
     }
 
     public boolean truncated() {
@@ -62,7 +92,12 @@ public final class Stack {
     }
 
     public Optional<Frame> top() {
-        return frames.length == 0 ? Optional.empty() : Optional.of(frames[0]);
+        return Optional.ofNullable(topOrNull());
+    }
+
+    /** {@link #top()} without the wrapper: {@code null} for an empty stack. */
+    public Frame topOrNull() {
+        return frames.length == 0 ? null : frames[0];
     }
 
     /**
@@ -70,12 +105,23 @@ public final class Stack {
      * application was doing". Falls back to the top frame when the whole stack is JDK code.
      */
     public Optional<Frame> culprit() {
-        for (Frame f : frames) {
-            if (!f.isJdk()) {
-                return Optional.of(f);
+        return Optional.ofNullable(culpritOrNull());
+    }
+
+    /** {@link #culprit()} without the wrapper: {@code null} for an empty stack. */
+    public Frame culpritOrNull() {
+        int index = culpritIndex();
+        return index < 0 ? topOrNull() : frames[index];
+    }
+
+    /** Index of the innermost non-JDK frame, or -1. */
+    private int culpritIndex() {
+        for (int i = 0; i < frames.length; i++) {
+            if (!frames[i].isJdk()) {
+                return i;
             }
         }
-        return top();
+        return -1;
     }
 
     /** The first {@code n} frames, innermost first, as a new stack. */
@@ -97,13 +143,7 @@ public final class Stack {
         for (int i = 0; i < shown; i++) {
             sb.append(indent).append("at ").append(frames[i].pretty()).append('\n');
         }
-        int culpritIndex = -1;
-        for (int i = 0; i < frames.length; i++) {
-            if (!frames[i].isJdk()) {
-                culpritIndex = i;
-                break;
-            }
-        }
+        int culpritIndex = culpritIndex();
         if (culpritIndex >= shown) {
             if (culpritIndex > shown) {
                 sb.append(indent).append("... ").append(culpritIndex - shown).append(" more").append('\n');
@@ -117,8 +157,26 @@ public final class Stack {
         return sb.toString();
     }
 
+    /** Whether this stack is exactly the first {@code n} frames of {@code candidate} with the same truncation. */
+    boolean sameAs(Frame[] candidate, int n, boolean candidateTruncated) {
+        if (truncated != candidateTruncated || frames.length != n) {
+            return false;
+        }
+        for (int i = 0; i < n; i++) {
+            Frame a = frames[i];
+            Frame b = candidate[i];
+            if (a != b && !a.equals(b)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     @Override
     public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
         return o instanceof Stack s && hash == s.hash && truncated == s.truncated && Arrays.equals(frames, s.frames);
     }
 

@@ -1,14 +1,18 @@
+// Copyright (C) 2026 Miguel Arregui
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dev.jfrq.core.model;
 
-import java.util.HashMap;
-import java.util.IdentityHashMap;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 
+import dev.jfrq.core.coll.IdentityObjObjHashMap;
+import dev.jfrq.core.coll.ObjObjHashMap;
 import jdk.jfr.EventType;
 import jdk.jfr.consumer.RecordedClass;
 import jdk.jfr.consumer.RecordedEvent;
 import jdk.jfr.consumer.RecordedFrame;
+import jdk.jfr.consumer.RecordedMethod;
 import jdk.jfr.consumer.RecordedStackTrace;
 import jdk.jfr.consumer.RecordedThread;
 
@@ -19,13 +23,15 @@ import jdk.jfr.consumer.RecordedThread;
  * {@code RecordedObject} is a by-name linear scan of its descriptors, and class names
  * are re-derived on each call; a stack of twenty frames costs a hundred such lookups.
  * And the objects a chunk's constant pools resolve to ({@link RecordedStackTrace},
- * {@link RecordedThread}, {@link RecordedClass}) are shared instances: every event that
- * refers to the same stack refers to the same object. So the first sight of a pool
- * object pays the lookups once and is remembered by identity; the value-keyed maps
- * behind it then make equal stacks from different chunks share one instance too.
+ * {@link RecordedThread}, {@link RecordedClass}, {@link RecordedMethod}) are shared
+ * instances: every event that refers to the same stack refers to the same object. So the
+ * first sight of a pool object pays the lookups once and is remembered by identity; the
+ * value-keyed tables behind it then make equal stacks from different chunks share one
+ * instance too. Those tables are probed with the raw components (a frame's type, method,
+ * line and kind; a stack's frame buffer), so a lookup that hits allocates nothing (G-3.4).
  *
  * <p>Identity caches are bounded so that a many-chunk recording cannot pin every
- * chunk's pool objects; when full they are dropped and rebuilt, which costs at most one
+ * chunk's pool objects; when full they are cleared and refilled, which costs at most one
  * slow resolution per object per refill.
  *
  * <p>Not thread-safe by design: one instance per reading thread.
@@ -33,43 +39,57 @@ import jdk.jfr.consumer.RecordedThread;
 public final class Interner {
 
     /** Identity caches are cleared past this size; pools of a single chunk are far smaller. */
-    static final int IDENTITY_LIMIT = 200_000;
+    public static final int IDENTITY_LIMIT = 200_000;
 
-    private final Map<Frame, Frame> frames = new HashMap<>(4096);
-    private final Map<Stack, Stack> stacks = new HashMap<>(4096);
-    private final Map<ThreadRef, ThreadRef> threadRefs = new HashMap<>(256);
-    private Map<RecordedStackTrace, Stack> stacksByIdentity = new IdentityHashMap<>(4096);
-    private Map<RecordedThread, ThreadRef> threadsByIdentity = new IdentityHashMap<>(256);
-    private Map<RecordedClass, String> classNamesByIdentity = new IdentityHashMap<>(1024);
+    private static final String UNKNOWN = "?";
+    private static final String NO_THREAD_FIELD = "";
+    private static final Method NO_METHOD = new Method(UNKNOWN, UNKNOWN);
+
+    private final FrameTable frames = new FrameTable(4096);
+    private final StackTable stacks = new StackTable(4096);
+    private final ObjObjHashMap<ThreadRef, ThreadRef> threadRefs = new ObjObjHashMap<>(256);
+    private final IdentityObjObjHashMap<RecordedStackTrace, Stack> stacksByIdentity = new IdentityObjObjHashMap<>(4096);
+    private final IdentityObjObjHashMap<RecordedMethod, Method> methodsByIdentity = new IdentityObjObjHashMap<>(4096);
+    private final IdentityObjObjHashMap<RecordedThread, ThreadRef> threadsByIdentity = new IdentityObjObjHashMap<>(256);
+    private final IdentityObjObjHashMap<RecordedClass, String> classNamesByIdentity = new IdentityObjObjHashMap<>(1024);
     /** Event types are per chunk; a long recording would otherwise grow this without bound. */
-    private Map<EventType, String> threadFieldByType = new IdentityHashMap<>(64);
+    private final IdentityObjObjHashMap<EventType, String> threadFieldByType = new IdentityObjObjHashMap<>(64);
+    /** Frames of the stack being resolved; grown to the deepest stack seen, reused for life (G-3.3). */
+    private Frame[] scratch = new Frame[64];
+
+    /** A method's declaring type and name, resolved once per pool object. */
+    private record Method(String type, String name) {
+    }
 
     public Stack stack(RecordedStackTrace trace) {
         if (trace == null) {
             return Stack.EMPTY;
         }
-        Stack cached = stacksByIdentity.get(trace);
-        if (cached != null) {
-            return cached;
+        int index = stacksByIdentity.keyIndex(trace);
+        if (index < 0) {
+            return stacksByIdentity.valueAtQuick(index);
         }
         List<RecordedFrame> recorded = trace.getFrames();
-        Frame[] fs = new Frame[recorded.size()];
-        for (int i = 0; i < fs.length; i++) {
-            fs[i] = frame(Frame.of(recorded.get(i)));
+        int depth = recorded.size();
+        if (scratch.length < depth) {
+            scratch = new Frame[Math.max(depth, scratch.length << 1)];
         }
-        Stack candidate = new Stack(fs, trace.isTruncated());
-        Stack canonical = stacks.putIfAbsent(candidate, candidate);
-        Stack result = canonical == null ? candidate : canonical;
+        Frame[] buffer = scratch;
+        for (int i = 0; i < depth; i++) {
+            buffer[i] = frame(recorded.get(i));
+        }
+        Stack result = stacks.intern(buffer, depth, trace.isTruncated());
         if (stacksByIdentity.size() >= IDENTITY_LIMIT) {
-            stacksByIdentity = new IdentityHashMap<>(4096);
+            stacksByIdentity.clear();
+            index = stacksByIdentity.keyIndex(trace);
         }
-        stacksByIdentity.put(trace, result);
+        stacksByIdentity.putAt(index, trace, result);
         return result;
     }
 
+    /** The canonical instance equal to {@code f}. */
     public Frame frame(Frame f) {
-        Frame canonical = frames.putIfAbsent(f, f);
-        return canonical == null ? f : canonical;
+        return frames.intern(f.type(), f.method(), f.line(), f.kind());
     }
 
     /** The thread a {@link RecordedThread} denotes, or {@code null}. */
@@ -77,17 +97,18 @@ public final class Interner {
         if (t == null) {
             return null;
         }
-        ThreadRef cached = threadsByIdentity.get(t);
-        if (cached != null) {
-            return cached;
+        int index = threadsByIdentity.keyIndex(t);
+        if (index < 0) {
+            return threadsByIdentity.valueAtQuick(index);
         }
         ThreadRef ref = ThreadRef.of(t);
-        ThreadRef canonical = threadRefs.putIfAbsent(ref, ref);
-        ThreadRef result = canonical == null ? ref : canonical;
+        int canonical = threadRefs.keyIndex(ref);
+        ThreadRef result = canonical < 0 ? threadRefs.valueAtQuick(canonical) : threadRefs.putAt(canonical, ref, ref);
         if (threadsByIdentity.size() >= IDENTITY_LIMIT) {
-            threadsByIdentity = new IdentityHashMap<>(256);
+            threadsByIdentity.clear();
+            index = threadsByIdentity.keyIndex(t);
         }
-        threadsByIdentity.put(t, result);
+        threadsByIdentity.putAt(index, t, result);
         return result;
     }
 
@@ -97,13 +118,18 @@ public final class Interner {
      */
     public ThreadRef thread(RecordedEvent e) {
         EventType type = e.getEventType();
-        String field = threadFieldByType.get(type);
-        if (field == null) {
-            field = e.hasField("sampledThread") ? "sampledThread" : e.hasField("eventThread") ? "eventThread" : "";
+        int index = threadFieldByType.keyIndex(type);
+        String field;
+        if (index < 0) {
+            field = threadFieldByType.valueAtQuick(index);
+        } else {
+            field = e.hasField("sampledThread") ? "sampledThread"
+                    : e.hasField("eventThread") ? "eventThread" : NO_THREAD_FIELD;
             if (threadFieldByType.size() >= IDENTITY_LIMIT) {
-                threadFieldByType = new IdentityHashMap<>(64);
+                threadFieldByType.clear();
+                index = threadFieldByType.keyIndex(type);
             }
-            threadFieldByType.put(type, field);
+            threadFieldByType.putAt(index, type, field);
         }
         return field.isEmpty() ? null : thread(e.getThread(field));
     }
@@ -113,15 +139,16 @@ public final class Interner {
         if (c == null) {
             return null;
         }
-        String cached = classNamesByIdentity.get(c);
-        if (cached != null) {
-            return cached;
+        int index = classNamesByIdentity.keyIndex(c);
+        if (index < 0) {
+            return classNamesByIdentity.valueAtQuick(index);
         }
         String name = c.getName();
         if (classNamesByIdentity.size() >= IDENTITY_LIMIT) {
-            classNamesByIdentity = new IdentityHashMap<>(1024);
+            classNamesByIdentity.clear();
+            index = classNamesByIdentity.keyIndex(c);
         }
-        classNamesByIdentity.put(c, name);
+        classNamesByIdentity.putAt(index, c, name);
         return name;
     }
 
@@ -131,5 +158,156 @@ public final class Interner {
 
     public int distinctFrames() {
         return frames.size();
+    }
+
+    private Frame frame(RecordedFrame f) {
+        Method m = method(f.getMethod());
+        return frames.intern(m.type(), m.name(), f.getLineNumber(), f.getType());
+    }
+
+    private Method method(RecordedMethod m) {
+        if (m == null) {
+            return NO_METHOD;
+        }
+        int index = methodsByIdentity.keyIndex(m);
+        if (index < 0) {
+            return methodsByIdentity.valueAtQuick(index);
+        }
+        String type = className(m.getType());
+        Method method = new Method(type == null ? UNKNOWN : type, m.getName());
+        if (methodsByIdentity.size() >= IDENTITY_LIMIT) {
+            methodsByIdentity.clear();
+            index = methodsByIdentity.keyIndex(m);
+        }
+        methodsByIdentity.putAt(index, m, method);
+        return method;
+    }
+
+    /**
+     * Open-addressing table of canonical frames, probed with a frame's components so a
+     * hit allocates nothing. Grows by doubling at half load.
+     */
+    private static final class FrameTable {
+        private Frame[] entries;
+        private int mask;
+        private int free;
+        private int size;
+
+        FrameTable(int capacity) {
+            int n = Integer.highestOneBit(Math.max(16, capacity * 2) - 1) << 1;
+            entries = new Frame[n];
+            mask = n - 1;
+            free = n >>> 1;
+        }
+
+        private static int hash(String type, String method, int line, String kind) {
+            int h = type.hashCode();
+            h = 31 * h + method.hashCode();
+            h = 31 * h + line;
+            h = 31 * h + kind.hashCode();
+            return h ^ (h >>> 16);
+        }
+
+        Frame intern(String type, String method, int line, String kind) {
+            int index = hash(type, method, line, kind) & mask;
+            while (true) {
+                Frame f = entries[index];
+                if (f == null) {
+                    Frame created = new Frame(type, method, line, kind);
+                    entries[index] = created;
+                    size++;
+                    if (--free == 0) {
+                        rehash();
+                    }
+                    return created;
+                }
+                if (f.line() == line && f.type().equals(type) && f.method().equals(method) && f.kind().equals(kind)) {
+                    return f;
+                }
+                index = (index + 1) & mask;
+            }
+        }
+
+        int size() {
+            return size;
+        }
+
+        private void rehash() {
+            Frame[] old = entries;
+            int n = old.length << 1;
+            entries = new Frame[n];
+            mask = n - 1;
+            free = (n >>> 1) - size;
+            for (Frame f : old) {
+                if (f != null) {
+                    int index = hash(f.type(), f.method(), f.line(), f.kind()) & mask;
+                    while (entries[index] != null) {
+                        index = (index + 1) & mask;
+                    }
+                    entries[index] = f;
+                }
+            }
+        }
+    }
+
+    /**
+     * Open-addressing table of canonical stacks, probed with a frame buffer so a hit
+     * allocates nothing; the buffer is copied only when a new stack is created.
+     */
+    private static final class StackTable {
+        private Stack[] entries;
+        private int mask;
+        private int free;
+        private int size;
+
+        StackTable(int capacity) {
+            int n = Integer.highestOneBit(Math.max(16, capacity * 2) - 1) << 1;
+            entries = new Stack[n];
+            mask = n - 1;
+            free = n >>> 1;
+        }
+
+        Stack intern(Frame[] frames, int depth, boolean truncated) {
+            int hash = Stack.hashOf(frames, depth, truncated);
+            int index = (hash ^ (hash >>> 16)) & mask;
+            while (true) {
+                Stack s = entries[index];
+                if (s == null) {
+                    Stack created = new Stack(Arrays.copyOf(frames, depth), truncated);
+                    entries[index] = created;
+                    size++;
+                    if (--free == 0) {
+                        rehash();
+                    }
+                    return created;
+                }
+                if (s.hashCode() == hash && s.sameAs(frames, depth, truncated)) {
+                    return s;
+                }
+                index = (index + 1) & mask;
+            }
+        }
+
+        int size() {
+            return size;
+        }
+
+        private void rehash() {
+            Stack[] old = entries;
+            int n = old.length << 1;
+            entries = new Stack[n];
+            mask = n - 1;
+            free = (n >>> 1) - size;
+            for (Stack s : old) {
+                if (s != null) {
+                    int h = s.hashCode();
+                    int index = (h ^ (h >>> 16)) & mask;
+                    while (entries[index] != null) {
+                        index = (index + 1) & mask;
+                    }
+                    entries[index] = s;
+                }
+            }
+        }
     }
 }
