@@ -29,8 +29,8 @@ class MainTest {
 
     /** A loop idle in a Java method so the sampler sees its idle point. */
     static final class Loop {
-        static void idle(long millis) {
-            long deadline = System.nanoTime() + millis * 1_000_000L;
+        static void idle() {
+            long deadline = System.nanoTime() + 300 * 1_000_000L;
             while (System.nanoTime() < deadline) {
                 Thread.onSpinWait();
             }
@@ -57,30 +57,33 @@ class MainTest {
                 for (int i = 0; i < 3_000; i++) {
                     keep[i % keep.length] = new byte[32 * 1024];
                 }
+                if (keep[0].length == 0) {
+                    throw new IllegalStateException();
+                }
             }, "alloc-cli");
             allocator.start();
 
             Thread loop = new Thread(() -> {
                 try {
-                    Loop.idle(300);
+                    Loop.idle();
                     Thread.sleep(150);
-                    Loop.idle(300);
+                    Loop.idle();
                     CountDownLatch held = new CountDownLatch(1);
                     Thread holder = new Thread(() -> {
                         synchronized (lock) {
                             held.countDown();
-                            sleep(150);
+                            sleep();
                         }
-                        sleep(150);
+                        sleep();
                     }, "holder-cli");
                     holder.start();
                     held.await();
                     Thread.sleep(20);
                     synchronized (lock) {
-                        lock.hashCode();
+                        lock.notifyAll();
                     }
                     holder.join();
-                    Loop.idle(300);
+                    Loop.idle();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
@@ -92,9 +95,9 @@ class MainTest {
         }
     }
 
-    static void sleep(long millis) {
+    static void sleep() {
         try {
-            Thread.sleep(millis);
+            Thread.sleep(150);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -120,6 +123,7 @@ class MainTest {
         assertTrue(run("help").out().contains("alloc"));
         assertTrue(run("info", "--help").out().contains("usage: jfrq"));
         assertEquals("jfrq " + Main.VERSION + "\n", run("--version").out());
+        assertEquals("jfrq " + Main.VERSION + "\n", run("info", recording.toString(), "--version").out());
     }
 
     @Test
@@ -135,6 +139,54 @@ class MainTest {
         assertEquals(2, run("stalls", recording.toString(), "--thread", "x", "--idle", "(").status());
         assertEquals(2, run("alloc", recording.toString(), "--top", "-1").status());
         assertEquals(2, run("locks", recording.toString(), "--min", "abc").status());
+        assertEquals(2, run("locks", recording.toString(), "--thread", "").status());
+        // Options belong to their command, and durations need a unit.
+        Run misplaced = run("locks", recording.toString(), "--gap", "1s");
+        assertEquals(2, misplaced.status());
+        assertTrue(misplaced.err().contains("unknown option --gap"), misplaced.err());
+        assertEquals(2, run("info", recording.toString(), "--top", "3").status());
+        assertEquals(2, run("stalls", recording.toString(), "--thread", "x", "--baseline", "y").status());
+        Run bare = run("stalls", recording.toString(), "--thread", "x", "--gap", "50");
+        assertEquals(2, bare.status());
+        assertTrue(bare.err().contains("needs a unit"), bare.err());
+        assertEquals(2, run("info", recording.toString(), "extra.jfr").status());
+        Run directory = run("info", dir.toString());
+        assertEquals(2, directory.status());
+        assertTrue(directory.err().contains("is a directory"), directory.err());
+    }
+
+    @Test
+    void damagedRecordingsExitWithOneAndSayWhy() throws Exception {
+        byte[] bytes = Files.readAllBytes(recording);
+        Path cut = dir.resolve("cut.jfr");
+        Files.write(cut, java.util.Arrays.copyOf(bytes, bytes.length / 2));
+        Run r = run("stalls", cut.toString(), "--thread", "loop-*");
+        assertEquals(1, r.status(), r.out());
+        assertTrue(r.err().contains("truncated"), r.err());
+        assertFalse(r.out().contains("No thread matched"), r.out());
+
+        Path junk = dir.resolve("junk.jfr");
+        Files.writeString(junk, "definitely not a recording, but long enough to have a header");
+        Run j = run("info", junk.toString());
+        assertEquals(1, j.status());
+        assertTrue(j.err().contains("not a Flight Recorder file"), j.err());
+
+        java.nio.ByteBuffer.wrap(bytes).putLong(8, 0);
+        Path live = dir.resolve("live.jfr");
+        Files.write(live, bytes);
+        Run l = run("alloc", live.toString());
+        assertEquals(1, l.status());
+        assertTrue(l.err().contains("still being written"), l.err());
+    }
+
+    @Test
+    void unwritableHtmlTargetIsReportedAsSuch() {
+        Run r = run("info", recording.toString());
+        assertEquals(0, r.status());
+        Run bad = run("locks", recording.toString(), "--html", dir.resolve("no-such-dir").resolve("x.html").toString());
+        assertEquals(1, bad.status());
+        assertTrue(bad.err().contains("cannot write HTML report"), bad.err());
+        assertFalse(bad.err().contains("cannot read recording"), bad.err());
     }
 
     @Test
@@ -155,10 +207,16 @@ class MainTest {
     }
 
     @Test
-    void info() {
+    void info() throws Exception {
+        Path html = dir.resolve("info.html");
+        Run withHtml = run("info", recording.toString(), "--html", html.toString());
+        assertEquals(0, withHtml.status(), withHtml.err());
+        assertTrue(Files.readString(html).contains("<title>jfrq info"));
+        assertTrue(Files.readString(html).contains("jdk.ThreadSleep"));
         Run r = run("info", recording.toString());
         assertEquals(0, r.status(), r.err());
         assertTrue(r.out().startsWith("Recording  cli.jfr"));
+        assertTrue(r.out().contains("Chunks     1"), r.out());
         assertTrue(r.out().contains("Sampling   ExecutionSample 10.0 ms"));
         assertTrue(r.out().contains("jdk.ThreadSleep"));
         assertTrue(r.out().contains("Event type"));
@@ -188,6 +246,17 @@ class MainTest {
                 html.toString());
         assertEquals(0, r.status(), r.err());
         assertTrue(r.out().contains("Baseline   cli.jfr"));
+        assertFalse(r.out().contains("WARNING"), r.out());
+
+        // A damaged baseline is said so on the diff, text and HTML.
+        byte[] bytes = Files.readAllBytes(recording);
+        Path cut = dir.resolve("cut-baseline.jfr");
+        Files.write(cut, java.util.Arrays.copyOf(bytes, bytes.length + 20));
+        Path cutHtml = dir.resolve("cut-diff.html");
+        Run damaged = run("alloc", recording.toString(), "--baseline", cut.toString(), "--html", cutHtml.toString());
+        assertEquals(0, damaged.status(), damaged.err());
+        assertTrue(damaged.out().contains("WARNING    baseline: the file is truncated"), damaged.out());
+        assertTrue(Files.readString(cutHtml).contains("baseline: the file is truncated"));
         assertTrue(r.out().contains("Change     0 B/s (+0%)"), r.out());
         assertTrue(r.out().contains("BY SITE"));
         assertTrue(Files.readString(html).contains("<title>jfrq alloc diff"));
@@ -208,6 +277,10 @@ class MainTest {
         Run filtered = run("locks", recording.toString(), "--thread", "nobody-*", "--min", "1ms");
         assertEquals(0, filtered.status());
         assertTrue(filtered.out().contains("No contended monitor enters or parks"));
+        // The documented default is accepted explicitly.
+        Run zero = run("locks", recording.toString(), "--min", "0");
+        assertEquals(0, zero.status(), zero.err());
+        assertTrue(zero.out().contains("held by holder-cli"), zero.out());
     }
 
     @Test
@@ -219,6 +292,17 @@ class MainTest {
         assertTrue(r.out().contains("Threads    1 matched: loop-cli"), r.out());
         assertTrue(r.out().contains("SLEEP"), r.out());
         assertTrue(r.out().contains("BLOCKED_MONITOR"), r.out());
+        // Event-based stalls carry no evidence tag; the less exact kinds do.
+        assertFalse(r.out().contains("Thread.sleep ["), r.out());
+        dev.jfrq.core.model.ThreadRef t = new dev.jfrq.core.model.ThreadRef(1, "t");
+        dev.jfrq.core.model.Interval i = new dev.jfrq.core.model.Interval(0, 1);
+        assertEquals("", Text.evidence(new dev.jfrq.core.stalls.Stall(t, i, dev.jfrq.core.stalls.Stall.Verdict.SLEEP, "",
+                dev.jfrq.core.model.Stack.EMPTY, dev.jfrq.core.stalls.Stall.Evidence.EVENT, 0)));
+        assertEquals(" [samples]", Text.evidence(new dev.jfrq.core.stalls.Stall(t, i, dev.jfrq.core.stalls.Stall.Verdict.BUSY,
+                "", dev.jfrq.core.model.Stack.EMPTY, dev.jfrq.core.stalls.Stall.Evidence.SAMPLES, 3)));
+        assertEquals(" [silence]", Text.evidence(new dev.jfrq.core.stalls.Stall(t, i,
+                dev.jfrq.core.stalls.Stall.Verdict.UNEXPLAINED, "", dev.jfrq.core.model.Stack.EMPTY,
+                dev.jfrq.core.stalls.Stall.Evidence.SILENCE, 0)));
         assertTrue(r.out().contains("held by holder-cli"), r.out());
         assertTrue(r.out().contains("BY VERDICT"));
         assertTrue(r.out().contains("PER THREAD"));

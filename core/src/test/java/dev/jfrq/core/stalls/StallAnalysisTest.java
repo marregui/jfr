@@ -54,7 +54,7 @@ class StallAnalysisTest {
         for (String t : presentTypes) {
             counts.put(t, 1L);
         }
-        return new RecordingInfo(Path.of("test.jfr"), new Interval(0, spanMillis * MS), counts, settings, Set.of());
+        return new RecordingInfo(Path.of("test.jfr"), new Interval(0, spanMillis * MS), 1, counts, settings, Set.of(), List.of());
     }
 
     static RecordingInfo sampledInfo() {
@@ -327,14 +327,14 @@ class StallAnalysisTest {
         Block sleep = block(500, 900, BlockKind.SLEEP, "", null);
         StallReport r = analyse(samples, List.of(sleep), List.of());
         assertEquals(2, r.stalls().size());
-        assertEquals(Verdict.SLEEP, r.stalls().get(0).verdict());
+        assertEquals(Verdict.SLEEP, r.stalls().getFirst().verdict());
         assertEquals(Verdict.BUSY, r.stalls().get(1).verdict());
         assertEquals(1, r.top(1).size());
         assertEquals(2, r.stallsOf(LOOP).size());
-        assertEquals(Verdict.BUSY, r.stallsOf(LOOP).get(0).verdict()); // time order
+        assertEquals(Verdict.BUSY, r.stallsOf(LOOP).getFirst().verdict()); // time order
         List<StallReport.VerdictSummary> byVerdict = r.byVerdict();
-        assertEquals(Verdict.SLEEP, byVerdict.get(0).verdict());
-        assertEquals(400 * MS, byVerdict.get(0).totalNanos());
+        assertEquals(Verdict.SLEEP, byVerdict.getFirst().verdict());
+        assertEquals(400 * MS, byVerdict.getFirst().totalNanos());
         assertEquals(1, byVerdict.get(1).count());
         assertEquals(50 * MS, r.gapNanos());
     }
@@ -342,7 +342,7 @@ class StallAnalysisTest {
     @Test
     void describeIncludesTheHandOverChain() {
         Block b = new Block(new Interval(0, MS), BlockKind.MONITOR, "Registry@1", Stack.EMPTY, HOLDER,
-                List.of(OTHER, LOOP));
+                List.of(OTHER, LOOP), 0);
         assertEquals("blocked on monitor Registry@1 held by housekeeper (handed on through event-loop-2, event-loop-1)",
                 StallAnalysis.describe(b));
         assertEquals("blocked on monitor X held by unknown",
@@ -375,5 +375,79 @@ class StallAnalysisTest {
         assertEquals(10 * MS, mixed.java());
         assertEquals(100 * MS, mixed.inNative());
         assertEquals(10 * MS, mixed.period());
+    }
+
+    /**
+     * The cadence threshold decides whether an unexplained silence is evidence; a silence a
+     * pause or a group of blocks explains is reported whatever the cadence, as the warning
+     * text promises ("only ones a blocking event or a JVM pause explains").
+     */
+    @Test
+    void anExplainedSilenceIsReportedBelowTheCadenceThreshold() {
+        // Samples every 100 ms: routine absence 100 ms, so an unexplained silence needs 300 ms.
+        List<Sample> samples = new ArrayList<>(idle(0, 1000, 100));
+        samples.addAll(idle(1150, 2000, 100));
+        Pause gc = new Pause(new Interval(1000 * MS, 1140 * MS), PauseKind.GC, "G1 Young (gcId 7)");
+        StallReport r = analyse(samples, List.of(), List.of(gc));
+
+        assertEquals(1, r.stalls().size(), r.stalls().toString());
+        Stall s = r.stalls().getFirst();
+        assertEquals(Verdict.GC_PAUSE, s.verdict());
+        assertEquals(Evidence.SILENCE, s.evidence());
+        assertEquals(new Interval(900 * MS, 1150 * MS), s.interval());
+        // The same silence with nothing to explain it is below the threshold: not reported.
+        assertTrue(analyse(samples, List.of(), List.of()).stalls().isEmpty());
+        // Below the threshold the explanation must cover a whole gap by itself: a 40 ms pause
+        // is half of an 80 ms silence but not a stall on its own.
+        List<Sample> shortGap = new ArrayList<>(idle(0, 1000, 100));
+        shortGap.addAll(idle(1080, 2000, 100));
+        Pause brief = new Pause(new Interval(1000 * MS, 1040 * MS), PauseKind.GC, "G1 Young (gcId 8)");
+        assertTrue(analyse(shortGap, List.of(), List.of(brief)).stalls().isEmpty());
+        // And a 400 ms unexplained silence is.
+        List<Sample> longer = new ArrayList<>(idle(0, 1000, 100));
+        longer.addAll(idle(1400, 2000, 100));
+        StallReport u = analyse(longer, List.of(), List.of());
+        assertEquals(1, u.stalls().size());
+        assertEquals(Verdict.UNEXPLAINED, u.stalls().getFirst().verdict());
+    }
+
+    @Test
+    void manyShortReadsFromOnePeerExplainASilenceTogether() {
+        // The loop vanishes for 300 ms; the file holds twelve 20 ms socket reads from one
+        // backend, each with a different byte count. They must add up to one answer.
+        List<Sample> samples = new ArrayList<>(idle(0, 200, 10));
+        samples.addAll(idle(500, 700, 10));
+        List<Block> blocks = new ArrayList<>();
+        for (int i = 0; i < 12; i++) {
+            long from = 200 + i * 25L;
+            blocks.add(new Block(new Interval(from * MS, (from + 20) * MS), BlockKind.SOCKET_READ,
+                    "from backend:9000", READ0, 100L + i));
+        }
+        StallReport r = analyse(samples, blocks, List.of());
+
+        assertEquals(1, r.stalls().size());
+        Stall s = r.stalls().getFirst();
+        assertEquals(Verdict.BLOCKING_IO, s.verdict());
+        assertEquals(Evidence.SILENCE, s.evidence());
+        assertEquals("12 × blocking socket read from backend:9000 (1.27 KB)", s.detail());
+        assertEquals(READ0, s.stack());
+        // One read alone keeps its own byte count.
+        assertEquals("blocking socket read from backend:9000 (100 B)", StallAnalysis.describe(blocks.getFirst()));
+    }
+
+    @Test
+    void throttledBlockingEventsAreAWarning() {
+        RecordingInfo info = info(10_000, Map.of(
+                "jdk.ExecutionSample", Map.of("enabled", "true", "period", "10 ms"),
+                "jdk.SocketRead", Map.of("enabled", "true", "threshold", "1 ms", "throttle", "300/s"),
+                "jdk.FileRead", Map.of("enabled", "true", "threshold", "1 ms", "throttle", "off"),
+                "jdk.SocketWrite", Map.of("enabled", "false", "threshold", "1 ms", "throttle", "300/s")),
+                "jdk.ExecutionSample");
+        StallReport r = new StallAnalysis(50 * MS).analyse(info, List.of(new ThreadTimeline(LOOP, idle(0, 100, 10),
+                List.of())), List.of());
+        assertEquals(1, r.warnings().size(), r.warnings().toString());
+        String w = r.warnings().getFirst();
+        assertTrue(w.startsWith("throttled events (jdk.SocketRead 300/s)"), w);
+        assertFalse(w.contains("FileRead") || w.contains("SocketWrite"), w);
     }
 }

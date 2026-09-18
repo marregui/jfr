@@ -73,11 +73,11 @@ public final class TextTable {
             String cell = row[i];
             int pad = width[i] - cell.length();
             if (numeric[i]) {
-                sb.append(" ".repeat(pad)).append(cell);
+                sb.repeat(' ', pad).append(cell);
             } else {
                 sb.append(cell);
                 if (!last) {
-                    sb.append(" ".repeat(pad));
+                    sb.repeat(' ', pad);
                 }
             }
             if (!last) {

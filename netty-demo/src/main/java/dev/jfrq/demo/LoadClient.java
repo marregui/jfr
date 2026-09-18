@@ -57,6 +57,10 @@ final class LoadClient {
                     long wait = next - System.nanoTime();
                     if (wait > 0) {
                         java.util.concurrent.locks.LockSupport.parkNanos(wait);
+                    } else if (wait < -intervalNanos) {
+                        // Behind by more than one interval (a stall, or this process was starved):
+                        // drop the backlog rather than burst it, so the offered rate stays the rate.
+                        next = System.nanoTime();
                     }
                     next += intervalNanos;
                 }

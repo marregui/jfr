@@ -57,10 +57,6 @@ public final class Stack {
         return truncated;
     }
 
-    public int depth() {
-        return frames.length;
-    }
-
     public boolean isEmpty() {
         return frames.length == 0;
     }

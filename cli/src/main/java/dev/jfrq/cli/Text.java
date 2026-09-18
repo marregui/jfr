@@ -29,8 +29,12 @@ final class Text {
     }
 
     static String header(RecordingInfo info) {
-        return String.format(Locale.ROOT, "Recording  %s  %s  starting %s%n",
-                info.file().getFileName(), Durations.format(info.duration()), info.start());
+        StringBuilder sb = new StringBuilder(String.format(Locale.ROOT, "Recording  %s  %s  starting %s%n",
+                info.file().getFileName(), Durations.format(info.duration()), info.start()));
+        for (String w : info.warnings()) {
+            sb.append("WARNING    ").append(w).append('\n');
+        }
+        return sb.toString();
     }
 
     static String settingsLine(RecordingInfo info, String label, String... types) {
@@ -46,17 +50,18 @@ final class Text {
             if (value == null) {
                 continue;
             }
-            if (sb.length() > 0) {
+            if (!sb.isEmpty()) {
                 sb.append(", ");
             }
             sb.append(t.substring("jdk.".length())).append(' ').append(value);
         }
-        return sb.length() == 0 ? "" : String.format(Locale.ROOT, "%-10s %s%n", label, sb);
+        return sb.isEmpty() ? "" : String.format(Locale.ROOT, "%-10s %s%n", label, sb);
     }
 
     static String info(RecordingInfo info) {
         StringBuilder sb = new StringBuilder(header(info));
         sb.append(String.format(Locale.ROOT, "%-10s %d%n", "Threads", info.threads().size()));
+        sb.append(String.format(Locale.ROOT, "%-10s %d%n", "Chunks", info.chunks()));
         sb.append(settingsLine(info, "Sampling", "jdk.ExecutionSample", "jdk.NativeMethodSample"));
         sb.append(settingsLine(info, "Thresholds", "jdk.JavaMonitorEnter", "jdk.ThreadPark", "jdk.ThreadSleep",
                 "jdk.SocketRead", "jdk.FileRead"));
@@ -80,24 +85,48 @@ final class Text {
         sb.append(String.format(Locale.ROOT, "%-10s %s (%d samples)%n", "Source", r.source(), r.samples()));
         sb.append(String.format(Locale.ROOT, "%-10s %s over %s = %s%n", "Estimate", Bytes.format(r.totalBytes()),
                 Durations.format(r.info().duration()), Bytes.rate(r.rate())));
+        if (r.hasCounters()) {
+            sb.append(String.format(Locale.ROOT, "%-10s %s by the JVM's own counters on the %d threads seen at both ends "
+                    + "of the file; the estimate for those is %s%s%n", "Counted", Bytes.format(r.countedBytes()),
+                    r.countedByThread().size(), Bytes.format(r.estimatedOnCountedThreads()), errorNote(r)));
+        }
         if (r.samples() == 0) {
-            sb.append("\nNo allocation events. Record with the 'profile' settings, or enable "
-                    + "jdk.ObjectAllocationSample.\n");
+            if (r.events() == 0) {
+                sb.append("\nNo allocation events. Record with the 'profile' settings, or enable jdk.ObjectAllocationSample.\n");
+            } else {
+                sb.append("""
+
+                        Every thread was sampled once, and a thread's first sample carries its history from before \
+                        the recording, so none is in the estimate (docs/DESIGN.md, section 2). Record for longer, \
+                        or read the JVM's counters below.
+                        """);
+            }
+            if (r.hasCounters()) {
+                sb.append("\nBY THREAD (JVM counters)\n");
+                TextTable counted = new TextTable("Thread", "Counted").numeric(1);
+                List<Map.Entry<String, Long>> rows = new ArrayList<>(r.countedByThread().entrySet());
+                rows.sort(Map.Entry.<String, Long>comparingByValue().reversed());
+                for (Map.Entry<String, Long> e : rows.subList(0, Math.min(top, rows.size()))) {
+                    counted.row(e.getKey(), Bytes.format(e.getValue()));
+                }
+                sb.append(counted.render("  "));
+            }
             return sb.toString();
         }
 
         sb.append("\nBY THREAD\n");
-        TextTable threads = new TextTable("Thread", "Bytes", "Rate", "Share", "Top classes").numeric(1, 2, 3);
+        TextTable threads = new TextTable("Thread", "Bytes", "Counted", "Rate", "Share", "Top classes").numeric(1, 2, 3, 4);
         for (AllocationReport.Row<String> row : r.threads(top)) {
             StringBuilder classes = new StringBuilder();
             for (AllocationReport.Row<String> c : r.classesOf(row.key(), 3)) {
-                if (classes.length() > 0) {
+                if (!classes.isEmpty()) {
                     classes.append(", ");
                 }
                 classes.append(ClassNames.simple(c.key())).append(' ')
                         .append(String.format(Locale.ROOT, "%.0f%%", 100.0 * c.bytes() / Math.max(1, row.bytes())));
             }
-            threads.row(row.key(), Bytes.format(row.bytes()), Bytes.rate(r.rate(row.bytes())), pct(row.share()), classes);
+            threads.row(row.key(), Bytes.format(row.bytes()), r.counted(row.key()).map(Bytes::format).orElse(""),
+                    Bytes.rate(r.rate(row.bytes())), pct(row.share()), classes);
         }
         sb.append(threads.render("  "));
 
@@ -125,8 +154,14 @@ final class Text {
         StringBuilder sb = new StringBuilder();
         sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s%n", "Baseline", d.baseline().info().file().getFileName(),
                 Durations.format(d.baseline().info().duration()), Bytes.rate(d.baseline().rate())));
+        for (String w : d.baseline().info().warnings()) {
+            sb.append("WARNING    baseline: ").append(w).append('\n');
+        }
         sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s%n", "Current", d.current().info().file().getFileName(),
                 Durations.format(d.current().info().duration()), Bytes.rate(d.current().rate())));
+        for (String w : d.current().info().warnings()) {
+            sb.append("WARNING    current: ").append(w).append('\n');
+        }
         sb.append(String.format(Locale.ROOT, "%-10s %s (%s)%n", "Change", Bytes.signedRate(d.total().delta()),
                 ratio(d.total().ratio())));
         sb.append("Rates are bytes/second so recordings of different length compare.\n");
@@ -163,7 +198,10 @@ final class Text {
         StringBuilder sb = new StringBuilder(header(r.info()));
         sb.append(settingsLine(r.info(), "Thresholds", "jdk.JavaMonitorEnter", "jdk.ThreadPark"));
         if (r.isEmpty()) {
-            sb.append("\nNo contended monitor enters or parks in the recording (at or above the thresholds above).\n");
+            sb.append(r.filtered()
+                    ? "\nNo contended monitor enters or parks match the filters (--thread, --min); "
+                            + r.unfilteredCount() + " in the recording.\n"
+                    : "\nNo contended monitor enters or parks in the recording (at or above the thresholds above).\n");
             return sb.toString();
         }
         sb.append(String.format(Locale.ROOT, "%-10s %s across %d waits%n", "Blocked", Durations.format(r.totalNanos()),
@@ -230,7 +268,7 @@ final class Text {
         }
         StringBuilder threads = new StringBuilder();
         for (StallReport.ThreadSummary t : r.threads()) {
-            if (threads.length() > 0) {
+            if (!threads.isEmpty()) {
                 threads.append(", ");
             }
             threads.append(t.thread().name()).append(" (").append(t.samples()).append(" samples, cadence ")
@@ -251,9 +289,9 @@ final class Text {
         }
         int n = 1;
         for (Stall s : shown) {
-            sb.append(String.format(Locale.ROOT, "  %2d  %-22s %s  %8s  %-15s %s%n", n++, s.thread().name(),
+            sb.append(String.format(Locale.ROOT, "  %2d  %-22s %s  %8s  %-15s %s%s%n", n++, s.thread().name(),
                     Durations.offset(s.start() - r.info().startNanos()), Durations.format(s.duration()),
-                    s.verdict(), s.detail()));
+                    s.verdict(), s.detail(), evidence(s)));
             sb.append(s.stack().pretty("        ", STACK_FRAMES));
         }
 
@@ -288,6 +326,16 @@ final class Text {
             }
         }
         return sb.toString();
+    }
+
+    /** {@code " (+7%)"} when the counted threads carry enough of the estimate for the comparison to mean something. */
+    static String errorNote(AllocationReport r) {
+        return r.estimateErrorMaterial() ? String.format(Locale.ROOT, " (%+.0f%%)", r.estimateError() * 100) : "";
+    }
+
+    /** How a stall was found, for anything less exact than an event: {@code  [samples]}, {@code  [silence]}. */
+    static String evidence(Stall s) {
+        return s.evidence() == Stall.Evidence.EVENT ? "" : " [" + s.evidence().name().toLowerCase(Locale.ROOT) + "]";
     }
 
     static String pct(double share) {

@@ -11,6 +11,9 @@ public final class Bytes {
     }
 
     public static String format(long bytes) {
+        if (bytes == Long.MIN_VALUE) {
+            return "-" + format(Long.MAX_VALUE);
+        }
         if (bytes < 0) {
             return "-" + format(-bytes);
         }

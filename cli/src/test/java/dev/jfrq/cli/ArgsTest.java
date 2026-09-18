@@ -23,21 +23,20 @@ class ArgsTest {
     void positionalsOptionsAndFlags() {
         Args a = parse("rec.jfr", "--top", "5", "--gap=20ms", "--sites", "second");
         assertEquals(List.of("rec.jfr", "second"), a.positional());
-        assertEquals("rec.jfr", a.positional(0, "file"));
-        assertEquals(5, a.intOption("top", 15));
-        assertEquals(20_000_000L, a.durationOption("gap", "50ms"));
+        assertEquals("rec.jfr", a.first("file"));
+        assertEquals(5, a.top());
+        assertEquals(20_000_000L, a.durationOption("gap", "50ms", false));
         assertTrue(a.flag("sites"));
         assertFalse(a.flag("nope"));
-        assertEquals("x", a.option("thread", "x"));
         assertTrue(a.option("thread").isEmpty());
     }
 
     @Test
     void defaultsApplyWhenAbsent() {
         Args a = parse();
-        assertEquals(15, a.intOption("top", 15));
-        assertEquals(50_000_000L, a.durationOption("gap", "50ms"));
-        assertThrows(Args.UsageException.class, () -> a.positional(0, "recording file"));
+        assertEquals(15, a.top());
+        assertEquals(50_000_000L, a.durationOption("gap", "50ms", false));
+        assertThrows(Args.UsageException.class, () -> a.first("recording file"));
     }
 
     @Test
@@ -45,10 +44,14 @@ class ArgsTest {
         assertThrows(Args.UsageException.class, () -> parse("--bogus"));
         assertThrows(Args.UsageException.class, () -> parse("--top"));
         assertThrows(Args.UsageException.class, () -> parse("--sites=yes"));
-        assertThrows(Args.UsageException.class, () -> parse("--top", "abc").intOption("top", 1));
-        assertThrows(Args.UsageException.class, () -> parse("--top", "0").intOption("top", 1));
-        assertThrows(Args.UsageException.class, () -> parse("--gap", "soon").durationOption("gap", "1s"));
-        assertThrows(Args.UsageException.class, () -> parse("--gap", "0ms").durationOption("gap", "1s"));
+        assertThrows(Args.UsageException.class, () -> parse("--top", "abc").top());
+        assertThrows(Args.UsageException.class, () -> parse("--top", "0").top());
+        assertThrows(Args.UsageException.class, () -> parse("--gap", "soon").durationOption("gap", "1s", false));
+        assertThrows(Args.UsageException.class, () -> parse("--gap", "0ms").durationOption("gap", "1s", false));
+        assertEquals(0, parse("--gap", "0ms").durationOption("gap", "1s", true));
+        assertEquals(0, parse("--gap", "0").durationOption("gap", "1s", true));
+        assertThrows(Args.UsageException.class, () -> parse("--gap", "50").durationOption("gap", "1s", false));
+        assertThrows(Args.UsageException.class, () -> parse("--gap", "-1ms").durationOption("gap", "1s", true));
         String message = assertThrows(Args.UsageException.class, () -> parse("--bogus")).getMessage();
         assertEquals("unknown option --bogus", message);
     }

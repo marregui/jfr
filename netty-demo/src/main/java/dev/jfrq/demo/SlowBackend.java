@@ -18,7 +18,6 @@ import java.util.concurrent.ThreadLocalRandom;
 final class SlowBackend implements AutoCloseable {
 
     private final ServerSocket server;
-    private final Thread acceptor;
     private final long minDelayMillis;
     private final long maxDelayMillis;
     private volatile boolean running = true;
@@ -27,9 +26,9 @@ final class SlowBackend implements AutoCloseable {
         this.minDelayMillis = minDelayMillis;
         this.maxDelayMillis = maxDelayMillis;
         this.server = new ServerSocket(0, 64, InetAddress.getLoopbackAddress());
-        this.acceptor = new Thread(this::acceptLoop, "slow-backend-acceptor");
-        this.acceptor.setDaemon(true);
-        this.acceptor.start();
+        Thread acceptor = new Thread(this::acceptLoop, "slow-backend-acceptor");
+        acceptor.setDaemon(true);
+        acceptor.start();
     }
 
     int port() {
@@ -58,6 +57,8 @@ final class SlowBackend implements AutoCloseable {
             String line;
             while ((line = in.readLine()) != null) {
                 long delay = ThreadLocalRandom.current().nextLong(minDelayMillis, maxDelayMillis + 1);
+                // The delay is the service; this is a slow backend, not a busy-wait.
+                //noinspection BusyWait
                 Thread.sleep(delay);
                 out.write(("LOOKUP " + line + " after " + delay + "ms\n").getBytes(StandardCharsets.UTF_8));
                 out.flush();

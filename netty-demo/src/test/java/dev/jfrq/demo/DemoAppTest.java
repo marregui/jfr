@@ -1,6 +1,7 @@
 package dev.jfrq.demo;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -21,7 +22,7 @@ class DemoAppTest {
         DemoApp.Result r = DemoApp.run(Scenario.CLEAN, Duration.ofMillis(1500), null, 4, 100, 1);
         assertTrue(r.requests() > 50, r.latency());
         assertTrue(r.latency().contains("p99"));
-        assertEquals(null, r.recording());
+        assertNull(r.recording());
         assertTrue(r.describe().startsWith("scenario clean:"));
     }
 

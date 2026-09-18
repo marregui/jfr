@@ -58,7 +58,7 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
     public List<VerdictSummary> byVerdict() {
         java.util.EnumMap<Stall.Verdict, long[]> totals = new java.util.EnumMap<>(Stall.Verdict.class);
         for (Stall s : stalls) {
-            long[] t = totals.computeIfAbsent(s.verdict(), k -> new long[3]);
+            long[] t = totals.computeIfAbsent(s.verdict(), _ -> new long[3]);
             t[0]++;
             t[1] += s.duration();
             t[2] = Math.max(t[2], s.duration());

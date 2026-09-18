@@ -16,22 +16,31 @@ import jdk.jfr.Recording;
  * <pre>
  * -XX:StartFlightRecording=filename=app.jfr,settings=profile,\
  *   jdk.JavaMonitorEnter#threshold=1ms,jdk.ThreadPark#threshold=1ms,jdk.ThreadSleep#threshold=1ms,\
- *   jdk.SocketRead#threshold=1ms,jdk.SocketWrite#threshold=1ms,jdk.FileRead#threshold=1ms,\
+ *   jdk.SocketRead#threshold=1ms,jdk.SocketWrite#threshold=1ms,jdk.FileRead#threshold=1ms,jdk.FileWrite#threshold=1ms,\
+ *   jdk.SocketRead#throttle=off,jdk.SocketWrite#throttle=off,jdk.FileRead#throttle=off,jdk.FileWrite#throttle=off,\
  *   jdk.ExecutionSample#period=10ms,jdk.NativeMethodSample#period=10ms,\
  *   jdk.ObjectAllocationSample#throttle=1000/s
  * </pre>
+ *
+ * <p>The {@code profile} settings throttle socket and file events to 300 per second across
+ * the JVM; a service doing thousands of short reads a second would then have a fair chance
+ * of losing the one long read that mattered. The throttle is switched off here.
  */
 final class Recorder implements AutoCloseable {
 
     private final Recording recording;
+    private boolean closed;
 
     Recorder(Path destination) throws IOException, ParseException {
         recording = new Recording(Configuration.getConfiguration("profile"));
         recording.setName("jfrq-demo");
         Duration oneMs = Duration.ofMillis(1);
         for (String blocking : new String[] {"jdk.JavaMonitorEnter", "jdk.ThreadPark", "jdk.ThreadSleep",
-                "jdk.JavaMonitorWait", "jdk.SocketRead", "jdk.SocketWrite", "jdk.FileRead", "jdk.FileWrite"}) {
+                "jdk.JavaMonitorWait"}) {
             recording.enable(blocking).withThreshold(oneMs).withStackTrace();
+        }
+        for (String io : new String[] {"jdk.SocketRead", "jdk.SocketWrite", "jdk.FileRead", "jdk.FileWrite"}) {
+            recording.enable(io).withThreshold(oneMs).withStackTrace().with("throttle", "off");
         }
         recording.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(10));
         recording.enable("jdk.NativeMethodSample").withPeriod(Duration.ofMillis(10));
@@ -47,9 +56,17 @@ final class Recorder implements AutoCloseable {
         recording.start();
     }
 
+    /** Stops the recording and writes the file; the demo calls it before reading the result. */
+    void stop() {
+        if (!closed) {
+            closed = true;
+            recording.stop();
+        }
+    }
+
     @Override
     public void close() {
-        recording.stop();
+        stop();
         recording.close();
     }
 }

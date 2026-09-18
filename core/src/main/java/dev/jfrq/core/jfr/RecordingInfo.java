@@ -3,6 +3,7 @@ package dev.jfrq.core.jfr;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -20,17 +21,22 @@ import dev.jfrq.core.util.Durations;
  * shorter than 20 ms exists in the file.
  *
  * @param file        the recording that was read
- * @param span        first event start to last event end
+ * @param span        the data span: first chunk start to last chunk end (see {@link Chunks})
+ * @param chunks      how many chunks the file holds
  * @param eventCounts events per type name, only for types present
  * @param settings    per event type, setting name to value as JFR recorded it ({@code "10 ms"})
  * @param threads     every thread that appeared as an event thread
+ * @param warnings    structural problems with the file that limit every answer: truncation,
+ *                    a chunk still being written
  */
 public record RecordingInfo(
         Path file,
         Interval span,
+        int chunks,
         Map<String, Long> eventCounts,
         Map<String, Map<String, String>> settings,
-        Set<ThreadRef> threads) {
+        Set<ThreadRef> threads,
+        List<String> warnings) {
 
     public RecordingInfo {
         eventCounts = Map.copyOf(new TreeMap<>(eventCounts));
@@ -38,6 +44,7 @@ public record RecordingInfo(
         settings.forEach((k, v) -> copy.put(k, Map.copyOf(v)));
         settings = Map.copyOf(copy);
         threads = Set.copyOf(threads);
+        warnings = List.copyOf(warnings);
     }
 
     public long startNanos() {
@@ -90,6 +97,14 @@ public record RecordingInfo(
 
     public Optional<Duration> period(String eventType) {
         return durationSetting(eventType, "period");
+    }
+
+    /**
+     * The event's throttle ({@code "300/s"}) when one is set and is not "off": a throttled
+     * event type is sampled, so not every occurrence is in the file.
+     */
+    public Optional<String> throttle(String eventType) {
+        return setting(eventType, "throttle").filter(v -> !v.isBlank() && !"off".equalsIgnoreCase(v.trim()));
     }
 
     private Optional<Duration> durationSetting(String eventType, String name) {

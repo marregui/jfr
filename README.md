@@ -5,8 +5,8 @@ Ask a JFR recording one question and get the answer.
 ```
 $ jfrq stalls app.jfr --thread 'event-loop-*' --gap 50ms
 
-STALLS >= 50.0 ms: 47 found, showing 3, longest first
-   1  event-loop-3-2   +0.497s   184 ms  BLOCKED_MONITOR  blocked on monitor dev.jfrq.demo.SessionRegistry@a4a4adf80 held by housekeeper (handed on through event-loop-3-1)
+STALLS >= 50.0 ms: 46 found, showing 3, longest first
+   1  event-loop-3-2         +0.492s    173 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@82c34db20 held by housekeeper (handed on through event-loop-3-1)
         at dev.jfrq.demo.SessionRegistry.touch(SessionRegistry.java:26)
         at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:51)
         ...
@@ -29,6 +29,12 @@ Common options: `--top N`, `--html FILE`, `--timing`.
 Every command prints plain text for a terminal or a ticket, and writes a self-contained
 HTML report with `--html`. A 40 MB recording is answered in about a quarter of a second;
 `--timing` shows where the time went ([docs/DESIGN.md](docs/DESIGN.md), section 8).
+
+What it will not do is guess. Every number that rests on sampling says so and says how
+far the sampling can be trusted; the allocation estimate is printed next to the JVM's own
+counters; a truncated file is read as far as it goes and every report says where it
+stops; a file still being written is refused with the command that produces a readable
+one, instead of the parser hanging on it.
 
 ## Requirements
 
@@ -59,9 +65,17 @@ jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N
 ```
 
 `GLOB` is a comma-separated list of shell globs on thread names: `'event-loop-*'`,
-`'nioEventLoopGroup-*,worker-?'`. `jfrq info` lists the names in a file.
+`'nioEventLoopGroup-*,worker-?'`. `jfrq info` lists the names in a file. Durations take
+a unit (`50ms`, `1.5s`, `2m`); options belong to their command, so a `stalls` option on
+`locks` is an error rather than silently ignored.
 
-Exit status is 0 on success, 1 when the recording cannot be read, 2 on a usage error.
+Every stall says how it was found: nothing after the detail means a blocking event,
+exact to its timestamps; `[samples]` means a run of sampler observations; `[silence]`
+means an absence of samples explained by what covered it.
+
+Exit status is 0 on success, 1 when the recording cannot be read (missing, not a
+recording, truncated inside its first chunk, still being written, or the HTML report
+cannot be written), 2 on a usage error.
 
 ## Recording for jfrq
 
@@ -71,7 +85,8 @@ waits are in the file, and raise the allocation sample rate:
 ```
 java -XX:StartFlightRecording=filename=app.jfr,settings=profile,\
 jdk.JavaMonitorEnter#threshold=1ms,jdk.ThreadPark#threshold=1ms,jdk.ThreadSleep#threshold=1ms,\
-jdk.SocketRead#threshold=1ms,jdk.SocketWrite#threshold=1ms,jdk.FileRead#threshold=1ms,\
+jdk.SocketRead#threshold=1ms,jdk.SocketWrite#threshold=1ms,jdk.FileRead#threshold=1ms,jdk.FileWrite#threshold=1ms,\
+jdk.SocketRead#throttle=off,jdk.SocketWrite#throttle=off,jdk.FileRead#throttle=off,jdk.FileWrite#throttle=off,\
 jdk.ExecutionSample#period=10ms,jdk.NativeMethodSample#period=10ms,\
 jdk.ObjectAllocationSample#throttle=1000/s \
 -jar app.jar
@@ -79,7 +94,9 @@ jdk.ObjectAllocationSample#throttle=1000/s \
 
 `jfrq stalls` and `jfrq locks` print the thresholds that were active, because a 20 ms
 monitor threshold means no wait shorter than 20 ms exists in the file, whatever the
-application did.
+application did. The `profile` settings also throttle socket and file events to 300 per
+second across the JVM (JDK 25); `jfrq stalls` warns when a throttle is in force, and the
+line above switches it off so no blocking call goes unrecorded.
 
 ## Try it on the demo
 
@@ -115,3 +132,8 @@ docs/         TUTORIAL.md, DESIGN.md
 0.1.0. The command-line interface and the report layouts may change. The verdicts and
 the numbers behind them are tested against synthetic timelines and against real
 recordings made in the test suite.
+
+## License
+
+GNU Affero General Public License v3.0 ([LICENSE](LICENSE)). Copyright remains with the
+author, who can offer other terms for commercial use; ask.

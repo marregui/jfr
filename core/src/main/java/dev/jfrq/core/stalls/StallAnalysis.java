@@ -10,6 +10,7 @@ import java.util.Locale;
 import java.util.Map;
 
 import dev.jfrq.core.jfr.RecordingInfo;
+import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.stalls.Stall.Evidence;
@@ -21,6 +22,7 @@ import dev.jfrq.core.stalls.Timeline.Pause;
 import dev.jfrq.core.stalls.Timeline.PauseKind;
 import dev.jfrq.core.stalls.Timeline.Sample;
 import dev.jfrq.core.stalls.Timeline.ThreadTimeline;
+import dev.jfrq.core.util.Bytes;
 import dev.jfrq.core.util.Durations;
 import dev.jfrq.core.util.Sorted;
 
@@ -201,6 +203,7 @@ public final class StallAnalysis {
         if (!info.has("jdk.ExecutionSample") && !info.has("jdk.NativeMethodSample")) {
             warnings.add("no sampler events in the recording: only event-based stalls can be found");
         }
+        StringBuilder throttled = new StringBuilder();
         for (String type : THRESHOLDED_BLOCK_EVENTS) {
             if (!info.enabled(type)) {
                 continue;
@@ -211,6 +214,12 @@ public final class StallAnalysis {
                             + Durations.format(gap) + ": shorter blocks of this kind are not in the file");
                 }
             });
+            info.throttle(type).ifPresent(t -> throttled.append(throttled.isEmpty() ? "" : ", ").append(type)
+                    .append(' ').append(t));
+        }
+        if (!throttled.isEmpty()) {
+            warnings.add("throttled events (" + throttled + "): not every blocking call is in the file, "
+                    + "so a silence made of many short ones may stay unexplained");
         }
     }
 
@@ -273,8 +282,6 @@ public final class StallAnalysis {
     }
 
     private List<Stall> analyseThread(ThreadTimeline tl, Cadence cadence, List<Pause> pauses) {
-        List<Stall> stalls = new ArrayList<>();
-
         // 1. Event-based stalls: precise, independent of sampling.
         List<Stall> eventStalls = new ArrayList<>();
         for (Block b : tl.blocks()) {
@@ -283,7 +290,7 @@ public final class StallAnalysis {
                         Evidence.EVENT, 0));
             }
         }
-        stalls.addAll(eventStalls);
+        List<Stall> stalls = new ArrayList<>(eventStalls);
         Windows windows = new Windows(tl.blocks(), pauses, eventStalls);
 
         // 2. Sample-based candidates.
@@ -298,9 +305,11 @@ public final class StallAnalysis {
         while (i < samples.size()) {
             Sample first = samples.get(i);
             if (i > 0) {
+                // Every gap of at least the stall length is a candidate; whether an unexplained
+                // one is evidence of anything is decided against the cadence below.
                 Sample prev = samples.get(i - 1);
                 long d = first.time() - prev.time();
-                if (d >= silentThreshold(cadence)) {
+                if (d >= gap) {
                     silences.add(new Candidate(new Interval(prev.time(), first.time()), List.of()));
                 }
             }
@@ -331,15 +340,21 @@ public final class StallAnalysis {
             i = j + 1;
         }
 
+        long unexplainedThreshold = silentThreshold(cadence);
         for (Candidate silence : silences) {
             if (windows.coveredByEvent(silence.interval)) {
                 continue;
             }
-            Explanation ex = windows.explain(silence.interval, true);
+            // A silence shorter than the routine absence is not evidence by itself, so what
+            // explains it must cover a whole gap on its own; a longer one is, and half is enough.
+            long minCover = silence.interval.length() < unexplainedThreshold ? Math.max(gap, cover(silence.interval))
+                    : cover(silence.interval);
+            Explanation ex = windows.explain(silence.interval, true, minCover);
             if (ex != null) {
                 stalls.add(new Stall(tl.thread(), silence.interval, ex.verdict, ex.detail, ex.stack,
                         Evidence.SILENCE, 0));
-            } else {
+            } else if (silence.interval.length() >= unexplainedThreshold) {
+                // Longer than the thread's routine absence: the sampler would have seen it otherwise.
                 stalls.add(new Stall(tl.thread(), silence.interval, Verdict.UNEXPLAINED,
                         "no samples and no blocking event: blocked below the recording's thresholds, "
                                 + "or sampled too sparsely", Stack.EMPTY, Evidence.SILENCE, 0));
@@ -350,7 +365,7 @@ public final class StallAnalysis {
             if (windows.coveredByEvent(run.interval)) {
                 continue;
             }
-            Explanation ex = windows.explain(run.interval, false);
+            Explanation ex = windows.explain(run.interval, false, cover(run.interval));
             if (ex != null) {
                 stalls.add(new Stall(tl.thread(), run.interval, ex.verdict, ex.detail, ex.stack,
                         Evidence.SAMPLES, run.samples.size()));
@@ -367,6 +382,12 @@ public final class StallAnalysis {
     private record Candidate(Interval interval, List<Sample> samples) {
     }
 
+    /** The coverage an explanation needs for an interval that is evidence in its own right. */
+    private static long cover(Interval interval) {
+        return (long) Math.ceil(COVER * interval.length());
+    }
+
+    /** The shortest silence that means anything on its own: above the gap and above the routine absence. */
     private long silentThreshold(Cadence cadence) {
         return Math.max(gap, CADENCE_FACTOR * cadence.routineAbsence());
     }
@@ -411,18 +432,22 @@ public final class StallAnalysis {
 
         /**
          * Groups blocking events overlapping the interval by kind and detail; the group with
-         * the most coverage wins if it covers at least {@link #COVER}. Failing that, and only
-         * when {@code tryPauses}, JVM pauses are tried the same way.
+         * the most coverage wins if it covers at least {@code minCover} nanoseconds. Failing
+         * that, and only when {@code tryPauses}, JVM pauses are tried the same way.
          */
-        Explanation explain(Interval interval, boolean tryPauses) {
-            Explanation byBlock = explainByBlocks(interval);
+        Explanation explain(Interval interval, boolean tryPauses, long minCover) {
+            Explanation byBlock = explainByBlocks(interval, minCover);
             if (byBlock != null || !tryPauses) {
                 return byBlock;
             }
-            return explainByPauses(interval);
+            return explainByPauses(interval, minCover);
         }
 
-        private Explanation explainByBlocks(Interval interval) {
+        /**
+         * Blocks are grouped by kind and detail, which for I/O is the peer or the path and
+         * not the byte count, so that many short reads from one peer add up to one answer.
+         */
+        private Explanation explainByBlocks(Interval interval, long minCover) {
             Map<String, long[]> coverage = new LinkedHashMap<>();
             Map<String, Block> representative = new HashMap<>();
             int from = Sorted.lowerBound(blocks, b -> b.interval().start(), interval.start() - longestBlock);
@@ -436,9 +461,10 @@ public final class StallAnalysis {
                     continue;
                 }
                 String key = b.kind() + "|" + b.detail();
-                long[] c = coverage.computeIfAbsent(key, k -> new long[2]);
+                long[] c = coverage.computeIfAbsent(key, _ -> new long[3]);
                 c[0] += overlap;
                 c[1]++;
+                c[2] += b.bytes();
                 Block rep = representative.get(key);
                 if (rep == null || b.length() > rep.length()) {
                     representative.put(key, b);
@@ -452,16 +478,16 @@ public final class StallAnalysis {
                     bestKey = e.getKey();
                 }
             }
-            if (bestKey != null && best >= COVER * interval.length()) {
+            if (bestKey != null && best >= minCover) {
                 Block rep = representative.get(bestKey);
-                long count = coverage.get(bestKey)[1];
-                String detail = count > 1 ? count + " × " + describe(rep) : describe(rep);
+                long[] c = coverage.get(bestKey);
+                String detail = c[1] > 1 ? c[1] + " × " + describe(rep, c[2]) : describe(rep);
                 return new Explanation(verdictOf(rep.kind()), detail, rep.stack());
             }
             return null;
         }
 
-        private Explanation explainByPauses(Interval interval) {
+        private Explanation explainByPauses(Interval interval, long minCover) {
             long gc = 0;
             long safepoint = 0;
             Pause gcRep = null;
@@ -488,10 +514,10 @@ public final class StallAnalysis {
                     }
                 }
             }
-            if (gcRep != null && gc >= COVER * interval.length()) {
+            if (gcRep != null && gc >= minCover) {
                 return new Explanation(Verdict.GC_PAUSE, gcRep.kind().label() + ": " + gcRep.detail(), Stack.EMPTY);
             }
-            if (spRep != null && safepoint >= COVER * interval.length()) {
+            if (spRep != null && safepoint >= minCover) {
                 return new Explanation(Verdict.SAFEPOINT, spRep.kind().label() + ": " + spRep.detail(), Stack.EMPTY);
             }
             return null;
@@ -503,7 +529,7 @@ public final class StallAnalysis {
         Map<String, Stack> stacks = new HashMap<>();
         int nativeTop = 0;
         for (Sample s : run.samples) {
-            String name = s.stack().culprit().map(f -> f.qualifiedName()).orElse("<no stack>");
+            String name = s.stack().culprit().map(Frame::qualifiedName).orElse("<no stack>");
             culprits.merge(name, 1, Integer::sum);
             stacks.putIfAbsent(name, s.stack());
             if (s.inNative()) {
@@ -548,9 +574,17 @@ public final class StallAnalysis {
     }
 
     static String describe(Block b) {
+        return describe(b, b.bytes());
+    }
+
+    /** {@link #describe(Block)} with the byte count of a whole group of I/O blocks. */
+    static String describe(Block b, long bytes) {
         StringBuilder sb = new StringBuilder(b.kind().label());
         if (b.detail() != null && !b.detail().isEmpty()) {
             sb.append(' ').append(b.detail());
+        }
+        if (b.kind().isIo() && bytes > 0) {
+            sb.append(" (").append(Bytes.format(bytes)).append(')');
         }
         if (b.kind() == BlockKind.MONITOR) {
             sb.append(" held by ").append(b.owner() == null ? "unknown" : b.owner().name());

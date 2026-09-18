@@ -5,7 +5,7 @@ import java.util.Map;
 
 /**
  * A registry of client sessions guarded by one {@code synchronized} lock. The event loops
- * touch it on every request; the {@link Housekeeper} compacts it periodically and holds
+ * touch it on every request; the housekeeper in {@link Background} compacts it periodically and holds
  * the lock for the whole compaction, which is the bug: a long critical section on a lock
  * the hot path needs.
  *
@@ -26,14 +26,13 @@ final class SessionRegistry {
         lastSeen.put(session, System.nanoTime());
     }
 
-    synchronized int size() {
-        return lastSeen.size();
-    }
+    /** How long a compaction holds the lock. */
+    static final long COMPACT_HOLD_MILLIS = 150;
 
     /** Holds the registry lock while "compacting" and while flushing to persistence. */
-    synchronized void compact(long holdMillis) throws InterruptedException {
+    synchronized void compact() throws InterruptedException {
         lastSeen.entrySet().removeIf(e -> e.getValue() < System.nanoTime() - 60_000_000_000L);
         persistence.flush(lastSeen.size());
-        Thread.sleep(holdMillis);
+        Thread.sleep(COMPACT_HOLD_MILLIS);
     }
 }

@@ -7,3 +7,8 @@ build/
 *.iml
 out/
 .DS_Store
+# Eclipse JDT (created by IDE language servers, not by the build)
+.project
+.classpath
+.settings/
+bin/

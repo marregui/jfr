@@ -45,9 +45,10 @@ public final class Main {
               stalls  when a thread did not return to its idle point, and why
 
             common options:
-              --top N        rows per table (default 15)
+              --top N        rows per table (default 15; not for info)
               --html FILE    also write a self-contained HTML report
               --timing       print how long reading and analysing took, to stderr
+              --version, --help
 
             alloc:
               --baseline F   compare against recording F (rates, so lengths may differ)
@@ -60,14 +61,34 @@ public final class Main {
             stalls:
               --thread GLOB  threads to watch (required; e.g. 'event-loop-*')
               --gap D        a stall is at least D without returning to idle (default 50ms)
-              --idle REGEX   comma-separated regexes on 'pkg.Class.method' that mean "idle";
-                             replaces the defaults (JDK selectors, Netty transports, park, Object.wait)
+              --idle REGEX   comma-separated regexes that mean "idle", each matching a whole
+                             'pkg.Class.method' (so no commas inside one); replaces the defaults
+                             (JDK selectors, Netty transports, park, Object.wait)
 
+            durations take a unit: 50ms, 1.5s, 2m. Options belong to their command; a stalls
+            option on locks is an error, so a typo never passes silently.
             exit status: 0 ok, 1 could not read the recording, 2 usage error
             """.formatted(VERSION);
 
-    private static final Set<String> VALUED = Set.of("top", "html", "baseline", "min", "thread", "gap", "idle");
-    private static final Set<String> FLAGS = Set.of("sites", "help", "version", "timing");
+    private static final Set<String> COMMON_VALUED = Set.of("top", "html");
+    private static final Set<String> COMMON_FLAGS = Set.of("help", "version", "timing");
+
+    /** The options each command accepts, so an option in the wrong place is a usage error. */
+    private static Args parse(String command, String[] rest) {
+        Set<String> valued = new java.util.HashSet<>(COMMON_VALUED);
+        Set<String> flags = new java.util.HashSet<>(COMMON_FLAGS);
+        switch (command) {
+            case "info" -> valued.remove("top");
+            case "alloc" -> {
+                valued.add("baseline");
+                flags.add("sites");
+            }
+            case "locks" -> valued.addAll(Set.of("min", "thread"));
+            case "stalls" -> valued.addAll(Set.of("thread", "gap", "idle"));
+            default -> throw new Args.UsageException("unknown command '" + command + "'");
+        }
+        return Args.parse(rest, valued, flags);
+    }
 
     private final PrintStream out;
     private final PrintStream err;
@@ -87,7 +108,7 @@ public final class Main {
         phaseStart = now;
     }
 
-    public static void main(String[] argv) {
+    static void main(String[] argv) {
         System.exit(new Main(System.out, System.err).run(argv));
     }
 
@@ -104,9 +125,13 @@ public final class Main {
             }
             String command = argv[0];
             String[] rest = java.util.Arrays.copyOfRange(argv, 1, argv.length);
-            Args args = Args.parse(rest, VALUED, FLAGS);
+            Args args = parse(command, rest);
             if (args.flag("help")) {
                 out.print(USAGE);
+                return 0;
+            }
+            if (args.flag("version")) {
+                out.println("jfrq " + VERSION);
                 return 0;
             }
             timing = args.flag("timing");
@@ -116,7 +141,7 @@ public final class Main {
                 case "alloc" -> alloc(args);
                 case "locks" -> locks(args);
                 case "stalls" -> stalls(args);
-                default -> throw new Args.UsageException("unknown command '" + command + "'");
+                default -> throw new IllegalStateException(command);
             };
         } catch (Args.UsageException e) {
             err.println("jfrq: " + e.getMessage());
@@ -125,24 +150,33 @@ public final class Main {
         } catch (NoSuchFileException e) {
             err.println("jfrq: no such file: " + e.getFile());
             return 1;
+        } catch (HtmlWriteException e) {
+            err.println("jfrq: cannot write HTML report " + e.target + ": " + e.getCause().getMessage());
+            return 1;
         } catch (IOException e) {
             err.println("jfrq: cannot read recording: " + e.getMessage());
+            return 1;
+        } catch (RuntimeException e) {
+            // The JDK parser signals a damaged file with unchecked exceptions; say so instead of a bare trace.
+            err.println("jfrq: failed while reading the recording (damaged file?): " + e);
+            e.printStackTrace(err);
             return 1;
         }
     }
 
     private int info(Args args) throws IOException {
-        Path file = recording(args, 0);
+        Path file = recording(args);
         RecordingInfo info = JfrReader.read(file);
         phase("read");
         out.print(Text.info(info));
+        html(args, () -> Html.info(info));
         phase("render");
         return 0;
     }
 
     private int alloc(Args args) throws IOException {
-        Path file = recording(args, 0);
-        int top = args.intOption("top", 15);
+        Path file = recording(args);
+        int top = args.top();
         boolean sites = args.flag("sites");
         AllocationCollector current = new AllocationCollector();
 
@@ -154,23 +188,25 @@ public final class Main {
             AllocationDiff diff = new AllocationDiff(baseline.report(), current.report());
             out.print(Text.allocDiff(diff, top, sites));
             html(args, () -> Html.allocDiff(diff, top));
-            phase("render");
-            return 0;
+        } else {
+            JfrReader.read(file, current);
+            phase("read");
+            AllocationReport report = current.report();
+            out.print(Text.alloc(report, top, sites));
+            html(args, () -> Html.alloc(report, top));
         }
-        JfrReader.read(file, current);
-        phase("read");
-        AllocationReport report = current.report();
-        out.print(Text.alloc(report, top, sites));
-        html(args, () -> Html.alloc(report, top));
         phase("render");
         return 0;
     }
 
     private int locks(Args args) throws IOException {
-        Path file = recording(args, 0);
-        int top = args.intOption("top", 15);
-        long min = args.option("min").isPresent() ? args.durationOption("min", "0") : 0;
+        Path file = recording(args);
+        int top = args.top();
+        long min = args.durationOption("min", "0", true);
         Glob threads = args.option("thread").map(Glob::of).orElse(Glob.any());
+        if (threads.isEmpty()) {
+            throw new Args.UsageException("--thread must name at least one pattern");
+        }
         ContentionCollector collector = new ContentionCollector(min, threads);
         JfrReader.read(file, collector);
         phase("read");
@@ -181,14 +217,14 @@ public final class Main {
     }
 
     private int stalls(Args args) throws IOException {
-        Path file = recording(args, 0);
-        int top = args.intOption("top", 15);
+        Path file = recording(args);
+        int top = args.top();
         Glob threads = Glob.of(args.option("thread")
                 .orElseThrow(() -> new Args.UsageException("stalls needs --thread GLOB (see 'jfrq info' for names)")));
         if (threads.isEmpty()) {
             throw new Args.UsageException("--thread must name at least one pattern");
         }
-        long gap = args.durationOption("gap", "50ms");
+        long gap = args.durationOption("gap", "50ms", false);
         IdleMatcher idle;
         try {
             idle = args.option("idle").map(IdleMatcher::of).orElse(IdleMatcher.defaults());
@@ -225,11 +261,17 @@ public final class Main {
         }
     }
 
-    private static Path recording(Args args, int index) throws IOException {
-        return existing(Path.of(args.positional(index, "recording file")));
+    private static Path recording(Args args) throws IOException {
+        if (args.positional().size() > 1) {
+            throw new Args.UsageException("unexpected argument '" + args.positional().get(1) + "'");
+        }
+        return existing(Path.of(args.first("recording file")));
     }
 
     private static Path existing(Path p) throws IOException {
+        if (Files.isDirectory(p)) {
+            throw new Args.UsageException(p + " is a directory, not a recording");
+        }
         if (!Files.isRegularFile(p)) {
             throw new NoSuchFileException(p.toString());
         }
@@ -237,12 +279,28 @@ public final class Main {
     }
 
     /** Writes the HTML report if {@code --html} was given; the page is only built then. */
-    private void html(Args args, java.util.function.Supplier<String> html) throws IOException {
+    private void html(Args args, java.util.function.Supplier<String> html) throws HtmlWriteException {
         if (args.option("html").isEmpty()) {
             return;
         }
         Path target = Path.of(args.option("html").orElseThrow());
-        Files.writeString(target, html.get(), StandardCharsets.UTF_8);
+        try {
+            Files.writeString(target, html.get(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new HtmlWriteException(target, e);
+        }
         err.println("HTML report written to " + target);
+    }
+
+    /** Distinguishes a failed report write from a failed recording read: both are I/O. */
+    private static final class HtmlWriteException extends RuntimeException {
+        @java.io.Serial
+        private static final long serialVersionUID = 1L;
+        private final transient Path target;
+
+        HtmlWriteException(Path target, IOException cause) {
+            super(cause);
+            this.target = target;
+        }
     }
 }

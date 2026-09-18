@@ -27,6 +27,7 @@ public record ThreadRef(long id, String name) {
     }
 
     @Override
+    @SuppressWarnings("NullableProblems") // Record.toString() carries an external @NotNull; this never returns null
     public String toString() {
         return name;
     }

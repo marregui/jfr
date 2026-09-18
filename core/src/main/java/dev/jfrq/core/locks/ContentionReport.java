@@ -8,6 +8,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Interval;
@@ -45,30 +46,55 @@ public final class ContentionReport {
     }
 
     private final RecordingInfo info;
+    /** The reported waits, after the filters, in start order. */
     private final List<Wait> waits;
+    /** How many waits the recording holds before the filters. */
+    private final int unfilteredCount;
+    /** Every thread's waits, filters or not, so that a convoy can be followed into any thread. */
     private final Map<ThreadRef, List<Wait>> byWaiter = new HashMap<>();
     /** Per waiter, the longest wait: bounds the window a lookup by start has to scan. */
     private final Map<ThreadRef, Long> longestByWaiter = new HashMap<>();
 
     public ContentionReport(RecordingInfo info, List<Wait> waits) {
+        this(info, waits, 0, _ -> true);
+    }
+
+    /**
+     * @param waits        every wait in the recording; holders are resolved across all of them
+     * @param minNanos     waits shorter than this are left out of the report
+     * @param waiterFilter only waits by threads whose name passes are reported
+     */
+    public ContentionReport(RecordingInfo info, List<Wait> waits, long minNanos, Predicate<String> waiterFilter) {
         this.info = info;
         List<Wait> sorted = new ArrayList<>(waits);
         sorted.sort(Comparator.comparing(Wait::interval));
         Map<ThreadRef, List<Wait>> raw = new HashMap<>();
         Map<ThreadRef, Long> rawLongest = new HashMap<>();
         for (Wait w : sorted) {
-            raw.computeIfAbsent(w.waiter(), k -> new ArrayList<>()).add(w);
+            raw.computeIfAbsent(w.waiter(), _ -> new ArrayList<>()).add(w);
             rawLongest.merge(w.waiter(), w.duration(), Math::max);
         }
-        List<Wait> resolved = new ArrayList<>(sorted.size());
+        List<Wait> reported = new ArrayList<>(sorted.size());
         for (Wait w : sorted) {
-            resolved.add(resolveHolder(w, raw, rawLongest));
-        }
-        this.waits = List.copyOf(resolved);
-        for (Wait w : this.waits) {
-            byWaiter.computeIfAbsent(w.waiter(), k -> new ArrayList<>()).add(w);
+            Wait resolved = resolveHolder(w, raw, rawLongest);
+            // Every thread's waits stay reachable for convoy following; the report lists the filtered ones.
+            byWaiter.computeIfAbsent(w.waiter(), _ -> new ArrayList<>()).add(resolved);
             longestByWaiter.merge(w.waiter(), w.duration(), Math::max);
+            if (w.duration() >= minNanos && waiterFilter.test(w.waiter().name())) {
+                reported.add(resolved);
+            }
         }
+        this.waits = List.copyOf(reported);
+        this.unfilteredCount = sorted.size();
+    }
+
+    /** Whether the filters left anything out. */
+    public boolean filtered() {
+        return unfilteredCount != waits.size();
+    }
+
+    public int unfilteredCount() {
+        return unfilteredCount;
     }
 
     /**
@@ -117,7 +143,7 @@ public final class ContentionReport {
         return info;
     }
 
-    /** All waits, in start order. */
+    /** The reported waits (those passing the filters), in start order. */
     public List<Wait> waits() {
         return waits;
     }
@@ -140,13 +166,13 @@ public final class ContentionReport {
         Map<Wait.LockKey, Set<ThreadRef>> waiters = new HashMap<>();
         Map<Wait.LockKey, Set<ThreadRef>> owners = new HashMap<>();
         for (Wait w : waits) {
-            long[] t = totals.computeIfAbsent(w.lock(), k -> new long[3]);
+            long[] t = totals.computeIfAbsent(w.lock(), _ -> new long[3]);
             t[0] += w.duration();
             t[1]++;
             t[2] = Math.max(t[2], w.duration());
-            waiters.computeIfAbsent(w.lock(), k -> new LinkedHashSet<>()).add(w.waiter());
+            waiters.computeIfAbsent(w.lock(), _ -> new LinkedHashSet<>()).add(w.waiter());
             if (w.owner() != null) {
-                owners.computeIfAbsent(w.lock(), k -> new LinkedHashSet<>()).add(w.owner());
+                owners.computeIfAbsent(w.lock(), _ -> new LinkedHashSet<>()).add(w.owner());
             }
         }
         List<LockStats> stats = new ArrayList<>();
@@ -158,16 +184,15 @@ public final class ContentionReport {
 
     /** Threads ranked by total time blocked. */
     public List<ThreadStats> waiters(int top) {
+        Map<ThreadRef, long[]> totals = new LinkedHashMap<>();
+        for (Wait w : waits) {
+            long[] t = totals.computeIfAbsent(w.waiter(), _ -> new long[3]);
+            t[0] += w.duration();
+            t[1]++;
+            t[2] = Math.max(t[2], w.duration());
+        }
         List<ThreadStats> stats = new ArrayList<>();
-        byWaiter.forEach((thread, ws) -> {
-            long total = 0;
-            long max = 0;
-            for (Wait w : ws) {
-                total += w.duration();
-                max = Math.max(max, w.duration());
-            }
-            stats.add(new ThreadStats(thread, total, ws.size(), max));
-        });
+        totals.forEach((thread, t) -> stats.add(new ThreadStats(thread, t[0], (int) t[1], t[2])));
         stats.sort(Comparator.comparingLong(ThreadStats::totalNanos).reversed());
         return limit(stats, top);
     }

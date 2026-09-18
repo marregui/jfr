@@ -34,7 +34,7 @@ class ContentionReportTest {
     }
 
     static RecordingInfo info() {
-        return new RecordingInfo(Path.of("t.jfr"), new Interval(0, 10_000 * MS), Map.of(), Map.of(), Set.of());
+        return new RecordingInfo(Path.of("t.jfr"), new Interval(0, 10_000 * MS), 1, Map.of(), Map.of(), Set.of(), List.of());
     }
 
     @Test
@@ -60,21 +60,21 @@ class ContentionReportTest {
         assertEquals(275 * MS, r.totalNanos());
         List<ContentionReport.LockStats> locks = r.locks(10);
         assertEquals(3, locks.size());
-        assertEquals(REGISTRY, locks.get(0).lock());
-        assertEquals(250 * MS, locks.get(0).totalNanos());
-        assertEquals(2, locks.get(0).count());
-        assertEquals(200 * MS, locks.get(0).maxNanos());
-        assertEquals(Set.of(LOOP1, LOOP2), locks.get(0).waiters());
-        assertEquals(Set.of(HOUSEKEEPER), locks.get(0).owners());
+        assertEquals(REGISTRY, locks.getFirst().lock());
+        assertEquals(250 * MS, locks.getFirst().totalNanos());
+        assertEquals(2, locks.getFirst().count());
+        assertEquals(200 * MS, locks.getFirst().maxNanos());
+        assertEquals(Set.of(LOOP1, LOOP2), locks.getFirst().waiters());
+        assertEquals(Set.of(HOUSEKEEPER), locks.getFirst().owners());
         assertEquals(QUEUE, locks.get(2).lock());
         assertTrue(locks.get(2).owners().isEmpty());
         assertEquals(1, r.locks(1).size());
 
         List<ContentionReport.ThreadStats> waiters = r.waiters(10);
-        assertEquals(LOOP1, waiters.get(0).thread());
-        assertEquals(205 * MS, waiters.get(0).totalNanos());
-        assertEquals(2, waiters.get(0).count());
-        assertEquals(200 * MS, waiters.get(0).maxNanos());
+        assertEquals(LOOP1, waiters.getFirst().thread());
+        assertEquals(205 * MS, waiters.getFirst().totalNanos());
+        assertEquals(2, waiters.getFirst().count());
+        assertEquals(200 * MS, waiters.getFirst().maxNanos());
 
         assertEquals(200 * MS, r.longest(1).getFirst().duration());
         assertEquals(List.of(100 * MS, 600 * MS, 700 * MS, 800 * MS),
@@ -144,5 +144,33 @@ class ContentionReportTest {
         assertEquals(Kind.PARK, w.kind());
         assertEquals(MS, w.start());
         assertEquals(2 * MS, w.end());
+    }
+
+    @Test
+    void filtersApplyAfterHolderResolutionSoNarrowingTheQuestionKeepsTheAnswer() {
+        List<Wait> all = List.of(
+                wait(100, 300, LOOP1, REGISTRY, LOOP2),
+                wait(100, 299, LOOP2, REGISTRY, HOUSEKEEPER),
+                wait(150, 200, HOUSEKEEPER, STORE, FLUSHER),
+                wait(400, 405, LOOP1, QUEUE, null));
+        // Only event-loop-1 asked about, only waits of 10 ms and more.
+        ContentionReport r = new ContentionReport(info(), all, 10 * MS, name -> name.equals("event-loop-1"));
+
+        assertEquals(1, r.waits().size());
+        Wait w = r.waits().getFirst();
+        assertEquals(LOOP1, w.waiter());
+        // The walk-back went through event-loop-2's wait, which the filter does not report.
+        assertEquals(HOUSEKEEPER, w.owner());
+        assertEquals(List.of(LOOP2), w.via());
+        assertEquals(1, r.waiters(10).size());
+        assertEquals(LOOP1, r.waiters(10).getFirst().thread());
+        assertEquals(200 * MS, r.totalNanos());
+        // The convoy still follows the housekeeper into the store lock it was itself waiting for.
+        List<ContentionReport.Convoy> convoys = r.convoys(5, 10);
+        assertEquals(1, convoys.size());
+        assertEquals(2, convoys.getFirst().depth());
+        assertEquals(STORE, convoys.getFirst().links().get(1).lock());
+        // The same waits with no filter report everything.
+        assertEquals(4, new ContentionReport(info(), all).waits().size());
     }
 }

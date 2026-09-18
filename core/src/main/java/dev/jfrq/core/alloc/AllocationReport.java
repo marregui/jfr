@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Stack;
@@ -18,7 +19,11 @@ import dev.jfrq.core.model.Stack;
  * @param info       the recording the report was built from
  * @param source     the event type the estimate is based on, e.g. {@code jdk.ObjectAllocationSample}
  * @param totalBytes estimated bytes allocated over the recording
- * @param samples    number of allocation events consumed
+ * @param samples    number of allocation events in the estimate
+ * @param events     number of allocation events seen, including each thread's discarded first sample
+ * @param countedByThread per thread name, what the JVM's own counter ({@code jdk.ThreadAllocationStatistics})
+ *                   grew by between the first and last time the thread was seen; only threads
+ *                   seen at least twice, so a thread that lived between two counter events is absent
  * @param byThread   estimated bytes per thread name
  * @param byClass    estimated bytes per allocated class (JVM name)
  * @param bySite     estimated bytes per allocation stack
@@ -30,6 +35,8 @@ public record AllocationReport(
         String source,
         long totalBytes,
         long samples,
+        long events,
+        Map<String, Long> countedByThread,
         Map<String, Long> byThread,
         Map<String, Long> byClass,
         Map<Stack, Long> bySite,
@@ -47,6 +54,55 @@ public record AllocationReport(
     /** Estimated bytes per second over the whole recording. */
     public double rate() {
         return totalBytes / seconds();
+    }
+
+    /** Whether the recording carries the JVM's own allocation counters for at least one thread. */
+    public boolean hasCounters() {
+        return !countedByThread.isEmpty();
+    }
+
+    /** The JVM's counters summed over the threads that have one. */
+    public long countedBytes() {
+        long total = 0;
+        for (long b : countedByThread.values()) {
+            total += b;
+        }
+        return total;
+    }
+
+    /** The estimate restricted to the threads that have a counter, so the two compare like for like. */
+    public long estimatedOnCountedThreads() {
+        long total = 0;
+        for (String thread : countedByThread.keySet()) {
+            total += byThread.getOrDefault(thread, 0L);
+        }
+        return total;
+    }
+
+    /**
+     * How far the estimate is from the JVM's counters on the threads that have one, as a
+     * signed fraction of the counters ({@code 0.07} means the estimate is 7 % high); 0 when
+     * nothing was counted.
+     */
+    public double estimateError() {
+        long counted = countedBytes();
+        return counted > 0 ? (double) (estimatedOnCountedThreads() - counted) / counted : 0;
+    }
+
+    /**
+     * Whether {@link #estimateError()} says anything: the counted threads must carry at
+     * least 1 % of the estimate. Below that the two numbers differ by start-up noise (the
+     * counters are read a few milliseconds after sampling begins) and a percentage would
+     * only alarm.
+     */
+    public boolean estimateErrorMaterial() {
+        long counted = countedBytes();
+        return counted > 0 && counted >= totalBytes / 100;
+    }
+
+    /** The JVM's counter for a thread, when it was seen at least twice. */
+    public Optional<Long> counted(String thread) {
+        return Optional.ofNullable(countedByThread.get(thread));
     }
 
     public double rate(long bytes) {

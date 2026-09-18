@@ -57,6 +57,7 @@ public record Frame(String type, String method, int line, String kind) {
     }
 
     @Override
+    @SuppressWarnings("NullableProblems") // Record.toString() carries an external @NotNull; this never returns null
     public String toString() {
         return pretty();
     }

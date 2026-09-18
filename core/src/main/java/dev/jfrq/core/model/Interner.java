@@ -41,7 +41,8 @@ public final class Interner {
     private Map<RecordedStackTrace, Stack> stacksByIdentity = new IdentityHashMap<>(4096);
     private Map<RecordedThread, ThreadRef> threadsByIdentity = new IdentityHashMap<>(256);
     private Map<RecordedClass, String> classNamesByIdentity = new IdentityHashMap<>(1024);
-    private final Map<EventType, String> threadFieldByType = new IdentityHashMap<>(64);
+    /** Event types are per chunk; a long recording would otherwise grow this without bound. */
+    private Map<EventType, String> threadFieldByType = new IdentityHashMap<>(64);
 
     public Stack stack(RecordedStackTrace trace) {
         if (trace == null) {
@@ -99,6 +100,9 @@ public final class Interner {
         String field = threadFieldByType.get(type);
         if (field == null) {
             field = e.hasField("sampledThread") ? "sampledThread" : e.hasField("eventThread") ? "eventThread" : "";
+            if (threadFieldByType.size() >= IDENTITY_LIMIT) {
+                threadFieldByType = new IdentityHashMap<>(64);
+            }
             threadFieldByType.put(type, field);
         }
         return field.isEmpty() ? null : thread(e.getThread(field));

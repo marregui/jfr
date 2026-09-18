@@ -27,7 +27,8 @@ Both launchers need a JDK 25 `java`. If yours is not on the `PATH`, set `JAVA_HO
 - depending on the scenario, a slow backend, a housekeeping thread, a persistence flusher,
   or two bulk allocators;
 - an in-process JFR recording with the thresholds `jfrq` likes (1 ms for blocking events,
-  10 ms sampling, 1000 allocation samples per second).
+  no throttling of socket and file events, 10 ms sampling, 1000 allocation samples per
+  second).
 
 ```
 netty-demo --scenario lock --duration 15s --out demo-lock.jfr
@@ -48,11 +49,11 @@ The scenarios:
 
 ```
 $ netty-demo --scenario lock --duration 15s --out demo-lock.jfr
-scenario lock: 24016 requests; latency p50 0.2 ms  p90 0.5 ms  p99 2.5 ms  max 185.5 ms
+scenario lock: 23976 requests; latency p50 0.2 ms  p90 0.5 ms  p99 6.0 ms  max 174.0 ms
 ```
 
 Note what the percentiles hide. The loops were blocked for a quarter of the recording,
-yet p99 is 2.5 ms: in a closed loop only the eight requests in flight during a stall pay
+yet p99 is 6 ms: in a closed loop only the eight requests in flight during a stall pay
 for it, and eight requests in 24,000 is 0.03 %. The `max` is the only number that says
 something is wrong, and it does not say what. That is the gap this tool fills.
 
@@ -60,37 +61,47 @@ something is wrong, and it does not say what. That is the gap this tool fills.
 
 ```
 $ jfrq info demo-lock.jfr
-Recording  demo-lock.jfr  15.1 s  starting 2026-09-15T21:46:22.168Z
-Threads    30
+Recording  demo-lock.jfr  15.2 s  starting 2026-09-18T11:02:11.875063Z
+Threads    31
+Chunks     1
 Sampling   ExecutionSample 10.0 ms, NativeMethodSample 10.0 ms
 Thresholds JavaMonitorEnter 1.00 ms, ThreadPark 1.00 ms, ThreadSleep 1.00 ms, SocketRead 1.00 ms, FileRead 1.00 ms
 Allocation ObjectAllocationSample 1000/s
 
 Event type                         Count  Enabled  Threshold  Period
-jdk.ThreadPark                     18013  yes      1.00 ms
-jdk.NativeMethodSample              1144  yes                 10.0 ms
+jdk.ThreadPark                     17966  yes      1.00 ms
+jdk.NativeMethodSample              1265  yes                 10.0 ms
 ...
 ```
 
 Read the `Thresholds` line before anything else. It comes from the `jdk.ActiveSetting`
 events in the file and bounds what any analysis can find: with a 20 ms monitor threshold,
 a 15 ms wait never existed as far as the file is concerned. `jfrq` prints these
-thresholds on every report and warns when one is coarser than the stall gap.
+thresholds on every `stalls` and `locks` report and warns when one is coarser than the
+stall gap, and warns
+too when the JDK's default *throttle* on socket and file events is in force (the
+`profile` settings keep at most 300 of them per second, so a busy service can lose the
+one long read that mattered; the demo switches it off).
+
+`Chunks` is the file's structure. A recording is a sequence of self-contained chunks;
+`jfrq` reads their headers before anything else, takes the recording's span from them,
+and says so on every report if the file is cut short or was copied while still being
+written.
 
 ## 4. Scenario `lock`: who held it?
 
 ```
 $ jfrq stalls demo-lock.jfr --thread 'event-loop-*' --gap 50ms
-Recording  demo-lock.jfr  15.1 s  starting 2026-09-15T21:46:22.168Z
+Recording  demo-lock.jfr  15.2 s  starting 2026-09-18T11:02:11.875063Z
 Sampling   ExecutionSample 10.0 ms, NativeMethodSample 10.0 ms
 Thresholds JavaMonitorEnter 1.00 ms, ThreadPark 1.00 ms, ThreadSleep 1.00 ms, SocketRead 1.00 ms, FileRead 1.00 ms
 Gap        50.0 ms
-Threads    2 matched: event-loop-3-1 (233 samples, cadence 15.2 ms java / 52.2 ms native), event-loop-3-2 (217 samples, ...)
-WARNING    event-loop-3-1: samples routinely up to 176 ms apart; unexplained silences shorter than ~528 ms cannot be seen, only ones a blocking event or a JVM pause explains
-WARNING    event-loop-3-2: samples routinely up to 177 ms apart; unexplained silences shorter than ~532 ms cannot be seen, only ones a blocking event or a JVM pause explains
+Threads    2 matched: event-loop-3-1 (302 samples, cadence 10.4 ms java / 36.8 ms native), event-loop-3-2 (280 samples, ...)
+WARNING    event-loop-3-1: samples routinely up to 50.1 ms apart; unexplained silences shorter than ~150 ms cannot be seen, only ones a blocking event or a JVM pause explains
+WARNING    event-loop-3-2: samples routinely up to 65.2 ms apart; unexplained silences shorter than ~196 ms cannot be seen, only ones a blocking event or a JVM pause explains
 
-STALLS >= 50.0 ms: 47 found, showing 2, longest first
-   1  event-loop-3-2         +0.497s    184 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@a4a4adf80 held by housekeeper (handed on through event-loop-3-1)
+STALLS >= 50.0 ms: 46 found, showing 2, longest first
+   1  event-loop-3-2         +0.492s    173 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@82c34db20 held by housekeeper (handed on through event-loop-3-1)
         at dev.jfrq.demo.SessionRegistry.touch(SessionRegistry.java:26)
         at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:51)
         at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:22)
@@ -98,19 +109,18 @@ STALLS >= 50.0 ms: 47 found, showing 2, longest first
         at io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
         at io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:107)
         ... 20 more
-   2  event-loop-3-1         +0.497s    184 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@a4a4adf80 held by housekeeper
+   2  event-loop-3-1         +0.492s    173 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@82c34db20 held by housekeeper
         at dev.jfrq.demo.SessionRegistry.touch(SessionRegistry.java:26)
         ...
 
 BY VERDICT
-  Verdict          Stalls  Stalled    Worst
-  BLOCKED_MONITOR      44   6.98 s   184 ms
-  BUSY                  2   106 ms  55.0 ms
+  Verdict          Stalls  Stalled   Worst
+  BLOCKED_MONITOR      46   7.09 s  173 ms
 
 PER THREAD
   Thread          Stalls  Stalled  Share   Worst
-  event-loop-3-1      23   3.54 s  23.5%  184 ms
-  event-loop-3-2      24   3.64 s  24.2%  184 ms
+  event-loop-3-1      23   3.54 s  23.3%  173 ms
+  event-loop-3-2      23   3.55 s  23.4%  173 ms
 ```
 
 Three things to read off this:
@@ -125,34 +135,34 @@ Three things to read off this:
    thread that actually held the lock for the duration.
 3. **The warnings.** The idle event loop sits in `kqueue`/`epoll`, which is native code,
    and the JFR sampler visits only one native thread per period, round-robin. With eight
-   client threads also in native socket reads, an idle loop is seen every 170 ms or so.
-   So a silence shorter than about half a second is not evidence of anything by itself.
-   That does not weaken this result: every `BLOCKED_MONITOR` above comes from a
-   `jdk.JavaMonitorEnter` event, which is exact.
+   client threads also in native socket reads, an idle loop is routinely unseen for
+   50–65 ms, and on a busier machine for far longer. So a silence shorter than about
+   150–200 ms is not evidence of anything by itself. That does not weaken this result:
+   every `BLOCKED_MONITOR` above comes from a `jdk.JavaMonitorEnter` event, which is
+   exact.
 
 Now the other side of the same story:
 
 ```
 $ jfrq locks demo-lock.jfr --top 3
-Recording  demo-lock.jfr  15.1 s  starting 2026-09-15T21:46:22.168Z
+Recording  demo-lock.jfr  15.2 s  starting 2026-09-18T11:02:11.875063Z
 Thresholds JavaMonitorEnter 1.00 ms, ThreadPark 1.00 ms
-Blocked    7.06 s across 51 waits
+Blocked    7.14 s across 52 waits
 
 LOCKS BY TOTAL WAIT
   Lock                                     Kind       Total  Waits      Max  Waiters                         Held by
-  dev.jfrq.demo.SessionRegistry@a4a4adf80  monitor   6.98 s     44   184 ms  event-loop-3-1, event-loop-3-2  housekeeper
-  dev.jfrq.demo.Persistence@a4a804000      monitor  81.9 ms      6  26.5 ms  housekeeper                     persistence-flusher
-  java.lang.Object@a4a449260               monitor  1.05 ms      1  1.05 ms  event-loop-3-2                  event-loop-3-1
+  dev.jfrq.demo.SessionRegistry@82c34db20  monitor   7.09 s     46   173 ms  event-loop-3-1, event-loop-3-2  housekeeper
+  dev.jfrq.demo.Persistence@82c86fb80      monitor  54.2 ms      6  19.8 ms  housekeeper                     persistence-flusher
 
 THREADS BY TIME BLOCKED
   Thread            Total  Waits      Max  Share
-  event-loop-3-1   3.49 s     22   184 ms  23.2%
-  event-loop-3-2   3.49 s     23   184 ms  23.2%
-  housekeeper     81.9 ms      6  26.5 ms   0.5%
+  event-loop-3-2   3.55 s     23   173 ms  23.4%
+  event-loop-3-1   3.54 s     23   173 ms  23.3%
+  housekeeper     54.2 ms      6  19.8 ms   0.4%
 
 CONVOYS (the holder was itself blocked)
-  +0.497s  event-loop-3-2 waited 184 ms for dev.jfrq.demo.SessionRegistry@a4a4adf80 held by housekeeper (handed on through event-loop-3-1)
-              -> housekeeper waited 26.5 ms for dev.jfrq.demo.Persistence@a4a804000 held by persistence-flusher
+  +0.492s  event-loop-3-2 waited 173 ms for dev.jfrq.demo.SessionRegistry@82c34db20 held by housekeeper (handed on through event-loop-3-1)
+              -> housekeeper waited 19.8 ms for dev.jfrq.demo.Persistence@82c86fb80 held by persistence-flusher
   ...
 ```
 
@@ -161,20 +171,26 @@ registry, the housekeeper holding the registry was itself waiting for the persis
 lock, held by the flusher. The fix is not "make the housekeeper faster"; it is "do not
 flush while holding the registry", and the report says so.
 
-Note what is *not* in this report: 18,013 `jdk.ThreadPark` events from the client
+Note what is *not* in this report: 17,966 `jdk.ThreadPark` events from the client
 threads' pacing sleeps. A park with no blocker object is a sleep, not a lock, and
 `jfrq locks` drops them so contention is not buried under timers.
+
+`--thread` and `--min` narrow what is listed, not what is known: the holder walk and the
+convoy following still go through every thread's waits, so asking only about
+`event-loop-*` names the same holders as asking about everything, and a convoy headed
+by a loop's wait is still followed into the housekeeper and the flusher. Only waits
+that pass the filters are listed and head convoys.
 
 ## 5. Scenario `blocking-io`: the call that should have been async
 
 ```
 $ netty-demo --scenario blocking-io --duration 15s --out demo-blocking-io.jfr
-scenario blocking-io: 24009 requests; latency p50 0.2 ms  p90 0.4 ms  p99 19.3 ms  max 231.2 ms
+scenario blocking-io: 24014 requests; latency p50 0.1 ms  p90 0.3 ms  p99 33.7 ms  max 223.9 ms; 60 synchronous backend lookups on the event loops
 
 $ jfrq stalls demo-blocking-io.jfr --thread 'event-loop-*'
 ...
 STALLS >= 50.0 ms: 60 found, showing 1, longest first
-   1  event-loop-3-1         +1.279s    229 ms  BLOCKING_IO     blocking socket read from localhost:56512 (27 bytes)
+   1  event-loop-3-2         +15.088s    224 ms  BLOCKING_IO     blocking socket read from localhost:55657 (28 B)
         at sun.nio.cs.StreamDecoder.readBytes(StreamDecoder.java:279)
         at sun.nio.cs.StreamDecoder.implRead(StreamDecoder.java:322)
         at sun.nio.cs.StreamDecoder.read(StreamDecoder.java:186)
@@ -182,44 +198,51 @@ STALLS >= 50.0 ms: 60 found, showing 1, longest first
         at java.io.BufferedReader.fill(BufferedReader.java:166)
         at java.io.BufferedReader.readLine(BufferedReader.java:333)
         ... 1 more
-        at dev.jfrq.demo.RequestHandler.lookup(RequestHandler.java:80)
+        at dev.jfrq.demo.RequestHandler.lookup(RequestHandler.java:84)
         ... 25 more
 
 BY VERDICT
   Verdict      Stalls  Stalled   Worst
-  BLOCKING_IO      60   10.5 s  229 ms
+  BLOCKING_IO      60   10.3 s  224 ms
 ```
 
-The `jdk.SocketRead` event carries the peer and the byte count, so the verdict names the
-backend by port. The stack printer always shows the first application frame even when it
-lies below the cut, which is why `RequestHandler.lookup` appears after the elision: that
-is the line to change.
+Sixty lookups, sixty stalls: nothing missed, nothing invented. The `jdk.SocketRead`
+event carries the peer and the byte count, so the verdict names the backend by port. The
+stack printer always shows the first application frame even when it lies below the cut,
+which is why `RequestHandler.lookup` appears after the elision: that is the line to
+change.
+
+Had the reads been short and many instead of long and few, they would still be found:
+a silence in the samples is explained by every read from the same peer that falls
+inside it, whatever their byte counts, as `12 × blocking socket read from backend:9000
+(1.27 KB)`.
 
 ## 6. Scenario `cpu`: nothing blocked, the loop just did not come back
 
 ```
 $ netty-demo --scenario cpu --duration 15s --out demo-cpu.jfr
-scenario cpu: 24011 requests; latency p50 0.2 ms  p90 0.3 ms  p99 1.0 ms  max 121.2 ms
+scenario cpu: 24011 requests; latency p50 0.2 ms  p90 0.4 ms  p99 1.6 ms  max 121.4 ms
 
 $ jfrq stalls demo-cpu.jfr --thread 'event-loop-*'
 ...
 STALLS >= 50.0 ms: 24 found, showing 1, longest first
-   1  event-loop-3-1         +1.281s    152 ms  BUSY            busy in dev.jfrq.demo.CpuWork.burn (90% of 10 samples)
-        at dev.jfrq.demo.CpuWork.burn(CpuWork.java:14)
-        at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:59)
+   1  event-loop-3-2         +8.785s    145 ms  BUSY            busy in dev.jfrq.demo.CpuWork.burn (91% of 11 samples) [samples]
+        at dev.jfrq.demo.CpuWork.burn(CpuWork.java:17)
+        at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:63)
         ...
 
 BY VERDICT
   Verdict  Stalls  Stalled   Worst
-  BUSY         24   2.88 s  152 ms
+  BUSY         24   2.86 s  145 ms
 ```
 
-There is no event for "ran too long", so this verdict comes from the sampler: ten
-consecutive samples, each within a few periods of the last, none at the idle point, nine
-of them in `CpuWork.burn`. A thread executing Java is sampled at close to the configured
-period (about 15 ms here), so this evidence is solid. Had the samples been spread out,
-`jfrq` would not have chained them into a run at all: sparse samples prove nothing about
-the time between them.
+One request in a thousand, 24,011 requests, 24 stalls. There is no event for "ran too
+long", so this verdict comes from the sampler: eleven consecutive samples, each within
+a few periods of the last, none at the idle point, ten of them in `CpuWork.burn`. A
+thread executing Java is sampled at close to the configured period (about 10 ms here),
+so this evidence is solid. Had the samples been spread out, `jfrq` would not have
+chained them into a run at all: sparse samples prove nothing about the time between
+them.
 
 Two further verdicts belong to this family. `SATURATED` means the loop never returned
 to idle but no single frame dominates, which is a loop that has too much work rather
@@ -234,49 +257,59 @@ $ netty-demo --scenario alloc --duration 15s --out demo-alloc.jfr
 $ netty-demo --scenario clean --duration 15s --out demo-clean.jfr
 
 $ jfrq alloc demo-alloc.jfr --top 4
-Recording  demo-alloc.jfr  15.1 s  starting 2026-09-15T21:47:11.533Z
-Source     jdk.ObjectAllocationSample (14484 samples)
-Estimate   400 GB over 15.1 s = 26.5 GB/s
+Recording  demo-alloc.jfr  15.1 s  starting 2026-09-18T11:03:01.616720Z
+Source     jdk.ObjectAllocationSample (14662 samples)
+Estimate   492 GB over 15.1 s = 32.6 GB/s
+Counted    492 GB by the JVM's own counters on the 7 threads seen at both ends of the file; the estimate for those is 492 GB (+0%)
 
 BY THREAD
-  Thread              Bytes       Rate  Share  Top classes
-  bulk-allocator-1   200 GB  13.3 GB/s  50.0%  byte[] 99%, Long 1%, Object[] 0%
-  bulk-allocator-2   200 GB  13.3 GB/s  50.0%  byte[] 100%, Long 0%, Object[] 0%
-  main               150 MB  9.94 MB/s   0.0%  MemberName 100%, MethodTypeDescImpl 0%, ...
-  event-loop-3-1    10.3 MB   682 KB/s   0.0%  byte[] 29%, HashMap$Node 27%, DirectByteBuffer 12%
+  Thread              Bytes  Counted       Rate  Share  Top classes
+  bulk-allocator-1   246 GB   246 GB  16.3 GB/s  50.0%  byte[] 100%, Long 0%, Object[] 0%
+  bulk-allocator-2   246 GB   246 GB  16.3 GB/s  50.0%  byte[] 100%, Long 0%
+  event-loop-3-1    8.48 MB            562 KB/s   0.0%  byte[] 37%, DirectByteBuffer 16%, String 14%
+  event-loop-3-2    8.41 MB            558 KB/s   0.0%  byte[] 25%, DirectByteBuffer 25%, String 13%
 
 BY CLASS
-  Class                          Bytes       Rate  Share
-  byte[]                        398 GB  26.4 GB/s  99.4%
-  java.lang.Long               2.09 GB   138 MB/s   0.5%
+  Class                        Bytes       Rate  Share
+  byte[]                      492 GB  32.6 GB/s  99.9%
+  java.lang.Long              295 MB  19.5 MB/s   0.1%
   ...
 ```
 
 The estimate sums the `weight` of each `jdk.ObjectAllocationSample`, never the sample
 count; each sample stands for the bytes allocated since the previous one on that thread,
-so the totals are statistically sound even at 1000 samples per second. Add `--sites` for
-the allocating stacks.
+so the totals are statistically sound even at 1000 samples per second. The `Counted`
+line and column are the JVM's own per-thread allocation counters, which JFR writes at
+every chunk boundary: exact for every thread alive at both ends of the file, and the
+number to trust when the two disagree. Here they agree to the percent. Add `--sites`
+for the allocating stacks.
+
+One sample per thread is not in the estimate: the first. Its weight is the bytes
+allocated since the thread was *last* sampled, and for a thread that was never sampled
+before that is its lifetime. An earlier version of this tutorial showed `main` at
+150 MB and 9.94 MB/s, all `MemberName`: start-up work from before the recording began,
+reported as if it had happened during it. The counters would have said 67 KB.
 
 The comparison is the feature you actually use when tuning:
 
 ```
 $ jfrq alloc demo-alloc.jfr --baseline demo-clean.jfr --top 4
-Baseline   demo-clean.jfr  15.1 s  11.3 MB/s
-Current    demo-alloc.jfr  15.1 s  26.5 GB/s
-Change     +26.5 GB/s (×2349)
+Baseline   demo-clean.jfr  15.0 s  802 KB/s
+Current    demo-alloc.jfr  15.1 s  32.6 GB/s
+Change     +32.6 GB/s (×40692)
 Rates are bytes/second so recordings of different length compare.
 
 BY THREAD
-  Thread                Before      After      Change
-  bulk-allocator-1       0 B/s  13.3 GB/s  +13.3 GB/s  new
-  bulk-allocator-2       0 B/s  13.3 GB/s  +13.3 GB/s  new
-  event-loop-3-1      342 KB/s   682 KB/s   +340 KB/s  +99%
-  JFR Periodic Tasks  166 KB/s  6.43 KB/s   -159 KB/s  -96%
+  Thread              Before      After      Change
+  bulk-allocator-1     0 B/s  16.3 GB/s  +16.3 GB/s  new
+  bulk-allocator-2     0 B/s  16.3 GB/s  +16.3 GB/s  new
+  event-loop-3-1    262 KB/s   562 KB/s   +300 KB/s  +115%
+  event-loop-3-2    268 KB/s   558 KB/s   +290 KB/s  +108%
 
 BY CLASS
-  Class                           Before      After      Change
-  byte[]                       10.3 MB/s  26.4 GB/s  +26.4 GB/s  ×2551
-  java.lang.Long                   0 B/s   138 MB/s   +138 MB/s  new
+  Class                      Before      After      Change
+  byte[]                  66.8 KB/s  32.6 GB/s  +32.6 GB/s  ×487994
+  java.lang.Long              0 B/s  19.5 MB/s  +19.5 MB/s  new
   ...
 ```
 
@@ -289,15 +322,17 @@ Where does allocation show up on the loop? As GC pauses, which stop every thread
 $ jfrq stalls demo-alloc.jfr --thread 'event-loop-*' --gap 10ms
 ...
 JVM-WIDE PAUSES >= gap (stop every thread)
-  +0.003s   13.6 ms  GC pause: GC Pause (gcId 1)
-  +0.021s   10.9 ms  GC pause: GC Pause (gcId 2)
-  ... 2 more
+  +0.582s   24.5 ms  GC pause: GC Pause (gcId 10)
+  +0.813s   47.3 ms  GC pause: GC Pause (gcId 11)
 ```
 
-On this machine G1 keeps young pauses under 15 ms, so at the default 50 ms gap there is
-nothing to report; in the `all` scenario, where the loops are also blocked, pauses of
-60 ms appear as `GC_PAUSE` stalls on each loop. A stall is attributed to a pause when
-the pause covers at least half of a silence in that thread's samples.
+On this machine G1 keeps young pauses under 50 ms, so at the default gap there is
+nothing to report; when a pause is longer than the gap it is listed here and, if it
+covers at least half of a silence in a loop's samples, attributed to that loop as a
+`GC_PAUSE` stall. Safepoints that are not collections are treated the same way and
+named after the VM operation that ran inside them (`VM operation ThreadDump`), because
+the JDK's own settings disable the event that would otherwise say when a safepoint
+ended.
 
 ## 8. Scenario `all`: sorting it out
 
@@ -306,15 +341,18 @@ $ netty-demo --scenario all --duration 15s --out demo-all.jfr
 $ jfrq stalls demo-all.jfr --thread 'event-loop-*' --html demo-all.html
 ...
 BY VERDICT
-  Verdict          Stalls  Stalled    Worst
-  BLOCKING_IO          59   10.1 s   224 ms
-  BLOCKED_MONITOR      38   5.40 s   272 ms
-  BUSY                 23   2.64 s   138 ms
-  GC_PAUSE              2   119 ms  65.0 ms
+  Verdict          Stalls  Stalled   Worst
+  BLOCKING_IO          64   11.2 s  334 ms
+  BLOCKED_MONITOR      33   4.92 s  274 ms
+  BUSY                 24   2.99 s  150 ms
 ```
 
 `BY VERDICT` is the triage table: fix the blocking reads first, then the lock, and the
-CPU work is third. The HTML report has the same tables plus a timeline per thread with
+CPU work is third. Sixty of the reads are the events themselves; the other four are
+silences in which two reads followed each other with no return to the selector in
+between, reported as `2 × blocking socket read … [silence]` on top of the two event
+stalls they contain, which is why stalls can nest and per-thread totals can exceed wall
+time. The HTML report has the same tables plus a timeline per thread with
 one coloured box per stall, so a burst of stalls at a particular moment is visible at a
 glance. Open `demo-all.html` in a browser; it is one file with no external resources,
 safe to attach to a ticket.
@@ -331,23 +369,32 @@ safe to attach to a ticket.
 4. If your loop idles somewhere other than a JDK selector, a Netty native transport, a
    park or `Object.wait`, tell `jfrq` what idle looks like:
    `--idle 'com\.acme\.Loop\.poll,com\.acme\.Queue\.take'`. The patterns are regular
-   expressions on `package.Class.method`, matched against the innermost three frames,
-   and they replace the defaults.
+   expressions that must match a whole `package.Class.method` (so `poll` alone matches
+   nothing; `.*\.poll` does), tried against the innermost three frames; the list is
+   comma-separated, so a pattern cannot contain a comma; and they replace the defaults.
 5. For locks and allocation the thread filter is optional; both commands look at the
    whole recording by default.
+6. If a report opens with a `WARNING` about the file itself, read it first: a truncated
+   recording is answered as far as it goes, and a file copied while the JVM was still
+   writing it is refused with the command that produces a readable one.
 
 ## 10. Reading the warnings honestly
 
 `jfrq` separates what it knows from what it infers:
 
 - A stall with evidence `event` (monitor, park, sleep, socket, file) is exact to the
-  event's timestamps.
-- A stall with evidence `samples` (`BUSY`, `SATURATED`) is as good as the sampling
-  density inside it, which is printed: "90% of 10 samples".
-- A stall with evidence `silence` is an absence of samples explained by whatever covered
-  it. When nothing covers it the verdict is `UNEXPLAINED`, and if several watched threads
+  event's timestamps. These carry no tag in the text output.
+- A stall tagged `[samples]` (`BUSY`, `SATURATED`) is as good as the sampling density
+  inside it, which is printed: "91% of 11 samples".
+- A stall tagged `[silence]` is an absence of samples explained by whatever covered it.
+  When nothing covers it the verdict is `UNEXPLAINED`, and if several watched threads
   were silent at the same moment the detail says so, because that is usually the sampler
   rather than the threads.
+
+A `throttled events` warning means the recording's settings capped socket or file
+events at so many per second across the JVM (the JDK's `profile` settings do, at 300);
+a long read that lost the draw is not in the file, and the silence it caused stays
+unexplained. Record with `throttle=off` on those events, as the README's line does.
 
 The per-thread warning tells you the shortest unexplained silence the recording can
 support. If it is longer than the stalls you are hunting, lower the blocking thresholds

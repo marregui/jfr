@@ -22,6 +22,7 @@ import io.netty.channel.SimpleChannelInboundHandler;
 final class RequestHandler extends SimpleChannelInboundHandler<String> {
 
     private static final AtomicLong REQUESTS = new AtomicLong();
+    private static final AtomicLong LOOKUPS = new AtomicLong();
 
     private final Scenario scenario;
     private final SessionRegistry registry;
@@ -37,8 +38,9 @@ final class RequestHandler extends SimpleChannelInboundHandler<String> {
         this.backendPort = backendPort;
     }
 
-    static long requests() {
-        return REQUESTS.get();
+    /** Synchronous backend lookups made on event loop threads. */
+    static long lookups() {
+        return LOOKUPS.get();
     }
 
     @Override
@@ -52,7 +54,9 @@ final class RequestHandler extends SimpleChannelInboundHandler<String> {
         }
         if (scenario.blockingIo() && n % 400 == 0) {
             // Bug: a synchronous round-trip on the event loop thread.
-            lookup(line);
+            if (lookup(line) != null) {
+                LOOKUPS.incrementAndGet();
+            }
         }
         if (scenario.cpu() && n % 1000 == 0) {
             // Bug: a long computation on the event loop thread.

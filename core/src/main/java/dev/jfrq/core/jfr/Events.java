@@ -6,7 +6,6 @@ import dev.jfrq.core.model.Interner;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
-import jdk.jfr.consumer.RecordedClass;
 import jdk.jfr.consumer.RecordedEvent;
 import jdk.jfr.consumer.RecordedThread;
 
@@ -71,16 +70,10 @@ public final class Events {
         return interner.stack(e.getStackTrace());
     }
 
-    /** The JVM name of a class-valued field ({@code [B}, {@code java.lang.Object}), or {@code null}. */
-    public static String className(RecordedEvent e, String field) {
-        if (!e.hasField(field)) {
-            return null;
-        }
-        RecordedClass c = e.getClass(field);
-        return c == null ? null : c.getName();
-    }
-
-    /** {@link #className(RecordedEvent, String)} resolved through the interner's identity cache. */
+    /**
+     * The JVM name of a class-valued field ({@code [B}, {@code java.lang.Object}) resolved
+     * through the interner's identity cache, or {@code null}.
+     */
     public static String className(RecordedEvent e, String field, Interner interner) {
         if (!e.hasField(field)) {
             return null;

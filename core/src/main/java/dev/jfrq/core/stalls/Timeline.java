@@ -68,15 +68,21 @@ public final class Timeline {
      * @param via      for monitors, threads that held the lock briefly between {@code owner}
      *                 and this thread (JFR records only the last holder; the collector walks
      *                 back through their own waits to find who really held it)
+     * @param bytes    for socket and file operations, the bytes moved; kept apart from
+     *                 {@code detail} so that repeated reads from one peer group together
      */
     public record Block(Interval interval, BlockKind kind, String detail, Stack stack, ThreadRef owner,
-                        List<ThreadRef> via) {
+                        List<ThreadRef> via, long bytes) {
         public Block {
             via = List.copyOf(via);
         }
 
         public Block(Interval interval, BlockKind kind, String detail, Stack stack, ThreadRef owner) {
-            this(interval, kind, detail, stack, owner, List.of());
+            this(interval, kind, detail, stack, owner, List.of(), 0);
+        }
+
+        public Block(Interval interval, BlockKind kind, String detail, Stack stack, long bytes) {
+            this(interval, kind, detail, stack, null, List.of(), bytes);
         }
 
         public long length() {

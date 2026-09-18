@@ -41,8 +41,8 @@ public final class ContentionCollector implements JfrReader.Sink {
     }
 
     /**
-     * @param minNanos     waits shorter than this are dropped
-     * @param waiterFilter only waits by threads whose name passes are kept
+     * @param minNanos     waits shorter than this are left out of the report
+     * @param waiterFilter only waits by threads whose name passes are reported
      */
     public ContentionCollector(long minNanos, Predicate<String> waiterFilter) {
         this.minNanos = minNanos;
@@ -50,7 +50,7 @@ public final class ContentionCollector implements JfrReader.Sink {
     }
 
     public ContentionCollector() {
-        this(0, name -> true);
+        this(0, _ -> true);
     }
 
     @Override
@@ -58,14 +58,16 @@ public final class ContentionCollector implements JfrReader.Sink {
         return Set.of(MONITOR_ENTER, THREAD_PARK);
     }
 
+    /**
+     * Every wait is kept, filtered or not: the holder of a lock is found by walking through
+     * the waits of <em>other</em> threads, and a short wait by the intermediary is exactly
+     * the one that says who really held it. The filters apply in the report.
+     */
     @Override
     public void accept(RecordedEvent e) {
         Interval interval = Events.interval(e);
-        if (interval.length() < minNanos) {
-            return;
-        }
         ThreadRef waiter = interner.thread(e);
-        if (waiter == null || !waiterFilter.test(waiter.name())) {
+        if (waiter == null) {
             return;
         }
         boolean monitor = MONITOR_ENTER.equals(e.getEventType().getName());
@@ -81,7 +83,7 @@ public final class ContentionCollector implements JfrReader.Sink {
 
     @Override
     public void finish(RecordingInfo info) {
-        report = new ContentionReport(info, waits);
+        report = new ContentionReport(info, waits, minNanos, waiterFilter);
     }
 
     public ContentionReport report() {

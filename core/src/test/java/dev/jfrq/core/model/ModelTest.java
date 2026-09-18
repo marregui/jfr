@@ -1,6 +1,7 @@
 package dev.jfrq.core.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -144,7 +145,7 @@ class ModelTest {
     void threadRefUsesNameForDisplay() {
         ThreadRef t = new ThreadRef(7, "event-loop-1");
         assertEquals("event-loop-1", t.toString());
-        assertEquals(t, new ThreadRef(7, "event-loop-1"));
-        assertEquals(null, ThreadRef.of(null));
+        assertEquals(new ThreadRef(7, "event-loop-1"), t);
+        assertNull(ThreadRef.of(null));
     }
 }

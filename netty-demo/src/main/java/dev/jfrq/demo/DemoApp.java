@@ -66,9 +66,10 @@ public final class DemoApp {
     }
 
     /** What a run produced; used by the tests and printed by {@link #main}. */
-    public record Result(Scenario scenario, int requests, String latency, Path recording) {
+    public record Result(Scenario scenario, int requests, String latency, Path recording, long lookups) {
         String describe() {
-            return String.format(Locale.ROOT, "scenario %s: %s", scenario.flag(), latency);
+            String s = String.format(Locale.ROOT, "scenario %s: %s", scenario.flag(), latency);
+            return lookups == 0 ? s : s + "; " + lookups + " synchronous backend lookups on the event loops";
         }
     }
 
@@ -87,16 +88,16 @@ public final class DemoApp {
         Persistence persistence = new Persistence();
         SessionRegistry registry = new SessionRegistry(persistence);
         Background background = new Background();
-        SlowBackend backend = scenario.blockingIo() ? new SlowBackend(120, 220) : null;
-        Recorder recorder = recording == null ? null : new Recorder(recording);
-        try (Server server = new Server(scenario, registry, backend == null ? -1 : backend.port(), loops)) {
+        try (SlowBackend backend = scenario.blockingIo() ? new SlowBackend(120, 220) : null;
+             Recorder recorder = recording == null ? null : new Recorder(recording);
+             Server server = new Server(scenario, registry, backend == null ? -1 : backend.port(), loops)) {
             LoadClient load = new LoadClient(server.port(), connections, rate, 2_000_000);
             if (scenario.lock()) {
-                background.flusher(persistence, 400, 120);
-                background.housekeeper(registry, 500, 150);
+                background.flusher(persistence);
+                background.housekeeper(registry);
             }
             if (scenario.alloc()) {
-                background.allocators(2, 48L * 1024 * 1024);
+                background.allocators();
             }
             if (recorder != null) {
                 recorder.start();
@@ -105,14 +106,11 @@ public final class DemoApp {
             Thread.sleep(duration.toMillis());
             load.stop();
             if (recorder != null) {
-                recorder.close();
+                recorder.stop();
             }
-            return new Result(scenario, load.completed(), load.summary(), recording);
+            return new Result(scenario, load.completed(), load.summary(), recording, RequestHandler.lookups());
         } finally {
             background.stop();
-            if (backend != null) {
-                backend.close();
-            }
         }
     }
 
@@ -126,15 +124,19 @@ public final class DemoApp {
     private static Duration parseDuration(String text) {
         String t = text.trim().toLowerCase(Locale.ROOT);
         if (t.endsWith("ms")) {
-            return Duration.ofMillis(Long.parseLong(t.substring(0, t.length() - 2).trim()));
+            return Duration.ofMillis(number(t, 2));
         }
         if (t.endsWith("s")) {
-            return Duration.ofSeconds(Long.parseLong(t.substring(0, t.length() - 1).trim()));
+            return Duration.ofSeconds(number(t, 1));
         }
         if (t.endsWith("m")) {
-            return Duration.ofMinutes(Long.parseLong(t.substring(0, t.length() - 1).trim()));
+            return Duration.ofMinutes(number(t, 1));
         }
-        return Duration.ofSeconds(Long.parseLong(t));
+        return Duration.ofSeconds(number(t, 0));
+    }
+
+    private static long number(String text, int unitLength) {
+        return Long.parseLong(text.substring(0, text.length() - unitLength).trim());
     }
 
     static String usage() {

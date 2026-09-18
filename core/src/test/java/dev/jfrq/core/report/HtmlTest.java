@@ -32,8 +32,8 @@ class HtmlTest {
     static final Stack STACK = new Stack(List.of(new Frame("dev.app.A", "b", 1, "JIT compiled")), false);
 
     static RecordingInfo info() {
-        return new RecordingInfo(Path.of("dir", "rec.jfr"), new Interval(0, 2_000 * MS), Map.of(),
-                Map.of("jdk.JavaMonitorEnter", Map.of("threshold", "10 ms")), Set.of());
+        return new RecordingInfo(Path.of("dir", "rec.jfr"), new Interval(0, 2_000 * MS), 1, Map.of(),
+                Map.of("jdk.JavaMonitorEnter", Map.of("threshold", "10 ms")), Set.of(), List.of());
     }
 
     @Test
@@ -63,7 +63,7 @@ class HtmlTest {
     }
 
     @Test
-    void stallsTableIsCappedButTheTimelineIsNot() {
+    void stallsTableIsCappedAndTheTimelineKeepsTheLongestBoxes() {
         List<Stall> many = new java.util.ArrayList<>();
         for (int i = 0; i < Html.MIN_LISTED + 1; i++) {
             many.add(new Stall(LOOP, new Interval(i * 10 * MS, i * 10 * MS + 5 * MS), Stall.Verdict.SLEEP, "s" + i,
@@ -73,8 +73,49 @@ class HtmlTest {
                 List.of(new StallReport.ThreadSummary(LOOP, 0, 0, 0, many.size(), 0, 0)), many, List.of(), List.of());
         String html = Html.stalls(r, 1);
         assertTrue(html.contains("Stalls, longest first (" + Html.MIN_LISTED + " of " + (Html.MIN_LISTED + 1) + ")"));
-        // One box per stall in the SVG.
+        // One box per stall in the SVG while under the cap.
         assertEquals(Html.MIN_LISTED + 1, html.split("<title>SLEEP").length - 1);
+
+        // Past the cap, the longest boxes are drawn and the file stays bounded.
+        List<Stall> flood = new java.util.ArrayList<>();
+        for (int i = 0; i < Html.MAX_BOXES_PER_ROW + 500; i++) {
+            long length = i < 500 ? 9 * MS : MS;
+            flood.add(new Stall(LOOP, new Interval(i * 10 * MS, i * 10 * MS + length), Stall.Verdict.SLEEP, "f" + i,
+                    Stack.EMPTY, Stall.Evidence.EVENT, 0));
+        }
+        StallReport big = new StallReport(info(), MS,
+                List.of(new StallReport.ThreadSummary(LOOP, 0, 0, 0, flood.size(), 0, 0)), flood, List.of(), List.of());
+        String capped = Html.stalls(big, 1);
+        assertEquals(Html.MAX_BOXES_PER_ROW, capped.split("<title>SLEEP").length - 1);
+        for (int i = 0; i < 500; i++) {
+            assertTrue(capped.contains("<title>SLEEP 9.00 ms: f" + i + "</title>"), "long box " + i + " dropped");
+        }
+    }
+
+    @Test
+    void infoPageListsEveryEventType() {
+        RecordingInfo info = new RecordingInfo(Path.of("rec.jfr"), new Interval(0, MS), 2,
+                Map.of("jdk.ThreadSleep", 3L, "jdk.SocketRead", 7L),
+                Map.of("jdk.SocketRead", Map.of("enabled", "true", "threshold", "1 ms", "throttle", "300/s")),
+                Set.of(LOOP), List.of());
+        String html = Html.info(info);
+        assertTrue(html.contains("<title>jfrq info"));
+        assertTrue(html.contains("<dt>Chunks</dt><dd>2</dd>"));
+        assertTrue(html.contains("jdk.ThreadSleep"));
+        assertTrue(html.contains("300/s"), html);
+        assertTrue(html.indexOf("jdk.SocketRead") < html.indexOf("jdk.ThreadSleep"), "sorted by count");
+    }
+
+    @Test
+    void fileWarningsAppearOnEveryPage() {
+        RecordingInfo damaged = new RecordingInfo(Path.of("cut.jfr"), new Interval(0, MS), 1, Map.of(), Map.of(), Set.of(),
+                List.of("the file is truncated: <cut>"));
+        AllocationReport a = new AllocationReport(damaged, "jdk.ObjectAllocationSample", 0, 0, 0, Map.of(),
+                Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
+        assertTrue(Html.alloc(a, 5).contains("<li>the file is truncated: &lt;cut&gt;</li>"));
+        assertTrue(Html.locks(new ContentionReport(damaged, List.of()), 5).contains("class=\"warn\""));
+        StallReport r = new StallReport(damaged, MS, List.of(), List.of(), List.of(), List.of());
+        assertTrue(Html.stalls(r, 5).contains("the file is truncated"));
     }
 
     @Test
@@ -106,17 +147,19 @@ class HtmlTest {
 
     @Test
     void allocAndDiffPages() {
-        AllocationReport a = new AllocationReport(info(), "jdk.ObjectAllocationSample", 1000, 10,
+        AllocationReport a = new AllocationReport(info(), "jdk.ObjectAllocationSample", 1000, 10, 10, Map.of("worker", 950L),
                 Map.of("worker", 1000L), Map.of("[B", 1000L), Map.of(STACK, 1000L),
                 Map.of("worker", Map.of("[B", 1000L)), Map.of("worker", Map.of(STACK, 1000L)));
         String html = Html.alloc(a, 10);
         assertTrue(html.contains("By thread"));
+        assertTrue(html.contains("<dt>JVM counters</dt><dd>950 B on 1 threads seen at both ends of the file; the estimate for those is 1.00 KB (+5%)</dd>"), html);
+        assertTrue(html.contains("<td class=\"n\">950 B</td>"), html);
         assertTrue(html.contains("By class"));
         assertTrue(html.contains("By site"));
         assertTrue(html.contains("byte[]"));
         assertTrue(html.contains("worker"));
 
-        AllocationReport b = new AllocationReport(info(), "jdk.ObjectAllocationSample", 500, 5,
+        AllocationReport b = new AllocationReport(info(), "jdk.ObjectAllocationSample", 500, 5, 5, Map.of(),
                 Map.of("worker", 500L), Map.of("[B", 500L), Map.of(STACK, 500L),
                 Map.of(), Map.of());
         String diff = Html.allocDiff(new AllocationDiff(a, b), 10);

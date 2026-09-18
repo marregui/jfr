@@ -6,8 +6,11 @@ final class CpuWork {
     private CpuWork() {
     }
 
-    /** Burns roughly {@code millis} of CPU on the calling thread and returns a checksum. */
-    static long burn(long millis) {
+    /**
+     * Burns roughly {@code millis} of CPU on the calling thread. The checksum is folded into
+     * a volatile sink so the JIT cannot remove the work.
+     */
+    static void burn(long millis) {
         long deadline = System.nanoTime() + millis * 1_000_000L;
         long acc = 0x9E3779B97F4A7C15L;
         do {
@@ -15,8 +18,11 @@ final class CpuWork {
                 acc = mix(acc + i);
             }
         } while (System.nanoTime() < deadline);
-        return acc;
+        sink = acc;
     }
+
+    @SuppressWarnings("unused") // written so the loop above has an observable result
+    private static volatile long sink;
 
     private static long mix(long x) {
         x ^= x >>> 33;

@@ -12,11 +12,27 @@ type, the set of threads, and the active settings. The choice of `EventStream` o
 `RecordingFile` is a performance one, explained in section 8: the stream parser skips
 unsubscribed event types at the byte level instead of materialising them.
 
-The time span is anchored on two events read on every pass, so that a filtered read
-reports the same span and the same `+offsets` as a full one: `jdk.ActiveRecording`
-carries the recording's exact start, and `jdk.PhysicalMemory` is a single event at the
-beginning and end of every chunk, so its last one marks the end. A recording made with
-settings that lack them falls back to the first and last event read.
+Before the pass, the chunk headers are read directly from the file (`Chunks`). A
+recording is a sequence of chunks, each with a 68-byte header that carries the chunk's
+size and exact time span, so the headers give the recording's *data span* (first chunk
+start to last chunk end) without depending on which events were subscribed, on which
+settings were active, or on any other recording that happened to be running in the JVM.
+That last point matters: a JVM usually runs a continuous recording next to an on-demand
+one, and the on-demand file carries `jdk.ActiveRecording` events for both; anchoring the
+span on the earliest recording start, as an earlier version did, stretched a one-second
+dump to the age of the continuous recording and divided every rate by it.
+
+The headers also say whether the file is whole. A chunk whose declared size runs past
+the end of the file is a truncated recording; the JDK parser stops silently at it, which
+would turn "the disk filled up" into "no stalls found". `jfrq` reads the complete chunks
+and prints a warning on every report, or refuses the file when not even the first chunk
+is complete. A chunk whose file-state byte is not zero is one still being written: a copy
+of a live recording, or what a killed JVM left behind. The JVM rewrites the chunk's size
+and duration at every flush, so those say nothing on their own; the state byte is what
+it clears when it closes the chunk, and the JDK parser keys on the same byte. It does
+not fail on an open chunk; it polls the header until the byte clears, forever. `jfrq`
+refuses such a file before the parser sees it and says how to get a readable one
+(`jcmd <pid> JFR.dump`, or truncate to the complete chunks).
 
 The settings come from `jdk.ActiveSetting` events, which carry an event-type id, a
 setting name and a value (`"10 ms"`, `"300/s"`, `"true"`). Every JDK profile
@@ -27,7 +43,8 @@ printing thresholds it does not know.
 Memory is bounded by what the sinks keep, not by the file. The allocation sink keeps
 aggregates; the contention sink keeps one small record per wait; the stall sink keeps
 samples and blocking events only for the threads that match the filter, plus every
-thread's monitor waits (a few thousand records at most) to resolve lock holders. Stacks
+thread's monitor waits (one small record each, however many the file holds) to resolve
+lock holders. Stacks
 and frames are interned for the duration of a pass, so a million samples over a few
 thousand distinct stacks retain a few thousand stacks.
 
@@ -44,8 +61,30 @@ analysis falls back to `jdk.ObjectAllocationInNewTLAB` (weight: the TLAB size) a
 `jdk.ObjectAllocationOutsideTLAB` (weight: the allocation size), which is how JDK 11-15
 recordings and explicitly configured profiles report allocation.
 
+**The first sample of every thread is discarded.** A sample's weight is the bytes the
+thread allocated since it was *last sampled*, and for a thread that was never sampled,
+or not since a recording hours earlier, that is its lifetime allocation. Left in, a main
+thread that allocated 150 MB of `MemberName` at start-up and nothing since is reported as
+allocating 150 MB during the recording; the tutorial's first draft showed exactly that.
+Dropping the sample loses at most the bytes between the previous sample and this one,
+nothing for a thread sampled hundreds of times a second and unknowable for one sampled
+once. The TLAB events carry no such history and are used as they are.
+
+**Calibration.** `jdk.ThreadAllocationStatistics`, written at every chunk boundary by
+the JDK's own settings, is each thread's exact allocation counter. For a thread seen at
+least twice, the difference between its last and first counter is what it allocated in
+between, and the report prints it next to the estimate, overall and per thread, so the
+reader knows how far the sampling is from the truth for the threads that matter. A
+thread that started and ended between two counter events has no counter; the
+comparison is restricted to the threads that do, so the two numbers compare like for
+like, and the percentage is only printed when those threads carry at least 1 % of the
+estimate: below that the two differ by start-up noise (the counters are read a few
+milliseconds after sampling begins, and on the thread that starts the recording those
+milliseconds are JFR's own initialisation), and a percentage would only alarm.
+
 **Aggregation.** Bytes by thread name, by allocated class, and by full stack, plus the
-class and stack breakdown per thread. Rates divide by the recording span.
+class and stack breakdown per thread. Rates divide by the recording span. Byte units are
+decimal (`1 MB` is 1,000,000 bytes), as in `jfr view`; `jfr print` uses binary units.
 
 **Diff.** `--baseline` compares rates, not totals, so recordings of different length are
 comparable; threads match by name, classes by name, sites by full stack. A key missing
@@ -79,6 +118,12 @@ overlapping interval, take that wait's owner instead, and remember the intermedi
 as `via`. The walk stops at an unknown owner and at a cycle (a thread cannot hold what
 it is waiting for). The same walk runs in `StallCollector` for the stall verdicts.
 
+`--thread` and `--min` apply *after* resolution, to what is listed, never to what is
+walked: the wait that names the real holder is usually a short one by a thread the
+question was not about, and a convoy is followed into whichever thread holds the lock.
+Convoys are listed for the waits that pass the filters; their links may belong to any
+thread.
+
 **Convoys.** For each wait with a known owner, follow the owner into its own wait for a
 *different* lock that overlaps in time, up to a depth of five. A chain of two or more
 links is a convoy: the thing the loop waited for was held by a thread that was itself
@@ -99,8 +144,8 @@ defaults cover the JDK selectors on every platform (`KQueue.poll`, `EPoll.wait`,
 `WEPoll.wait`, `*SelectorImpl.doSelect`, `SelectorImpl.select`), Netty's native
 transports (`epoll.Native.epollWait*`, `kqueue.Native.keventWait`, `uring.Native.*`),
 `Unsafe.park` / `LockSupport.park*` and `Object.wait*`. `--idle` replaces them with a
-comma-separated list of regular expressions on `package.Class.method`; a hand-written
-poll loop or a queue `take` is one pattern away.
+comma-separated list of regular expressions, each of which must match a whole
+`package.Class.method`; a hand-written poll loop or a queue `take` is one pattern away.
 
 ### 4.2 Evidence
 
@@ -114,10 +159,14 @@ itself:
 | `jdk.JavaMonitorWait` | `OBJECT_WAIT` | monitor class |
 | `jdk.ThreadSleep` | `SLEEP` | |
 | `jdk.SocketRead` / `SocketWrite` | `BLOCKING_IO` | peer host and port, bytes |
-| `jdk.FileRead` / `FileWrite` / `FileForce` | `BLOCKING_IO` | path |
+| `jdk.FileRead` / `FileWrite` / `FileForce` | `BLOCKING_IO` | path, bytes |
 
 Each of these has a threshold in the recording settings; a block shorter than the
-threshold is not in the file. `jfrq` warns when a threshold exceeds the gap.
+threshold is not in the file. `jfrq` warns when a threshold exceeds the gap. The JDK's
+`default` and `profile` settings (JDK 25) also *throttle* the socket and file events to
+100 or 300 per second across the JVM; a service doing thousands of short reads a second
+can then lose the one long read that mattered. `jfrq` warns when a throttle is in
+force, and the README's recording line switches it off.
 
 **Sample runs** (as good as the sampling density). Consecutive non-idle samples chain
 into a run when each is within `3 × max(configured period, measured Java cadence)`
@@ -134,10 +183,13 @@ at least half the run (a synchronous read shows as native samples in `read0` *an
 **Silence** (weakest). Two consecutive samples further apart than the thread's routine
 absence indicate a state the sampler cannot observe: blocked, in the VM, at a
 safepoint. The silence is attributed to whichever group of blocking events, then GC
-pauses, then safepoints covers at least half of it; otherwise it is `UNEXPLAINED`. If
-several watched threads have an unexplained silence at the same moment, the detail says
-so: that is the sampler, or a pause the recording did not capture, far more often than
-independent bad luck.
+pauses, then safepoints covers at least half of it; otherwise it is `UNEXPLAINED`. A
+group is one kind of block on one lock, peer or path, whatever the byte counts: twelve
+20 ms reads from one backend explain a 300 ms silence together, as
+`12 × blocking socket read from backend:9000 (1.27 KB)`. If several watched threads
+have an unexplained silence at the same moment, the detail says so: that is the
+sampler, or a pause the recording did not capture, far more often than independent bad
+luck.
 
 ### 4.3 Sampling cadence is measured, not assumed
 
@@ -163,18 +215,29 @@ the configured period as long as fewer than five threads are in Java at once.
   chaining) and between consecutive native samples (the *native cadence*, printed);
 - the 90th percentile of each (the *routine absence*).
 
-A silence counts as evidence only when it exceeds `3 × max(Java p90, native p90)`,
-whatever the neighbouring samples showed, because between any two samples the thread
-may have passed through the other state unseen. The per-thread warning prints that
-threshold. Explained silences and event stalls do not depend on it.
+An *unexplained* silence counts as evidence only when it exceeds
+`3 × max(Java p90, native p90)`, whatever the neighbouring samples showed, because
+between any two samples the thread may have passed through the other state unseen. The
+per-thread warning prints that threshold (for up to three threads; the rest are
+counted). An explained silence does not depend on it, with one condition: below the
+threshold, what explains it must itself cover a whole gap, because the thread may have
+been idle for the rest; above it, half of the silence is enough, because the silence is
+evidence in its own right. Event stalls never depend on it.
 
 ### 4.4 Pauses
 
-`jdk.GCPhasePause` gives the stop-the-world interval of each collection.
-`jdk.SafepointBegin` / `jdk.SafepointEnd`, joined on `safepointId`, give the other
-safepoints; one that overlaps a GC pause is dropped as a duplicate. Pauses at least the
-gap long are listed once, globally, rather than once per watched thread; they explain
-silences per thread.
+`jdk.GCPhasePause` gives the stop-the-world interval of each collection. Every other
+safepoint is assembled from `jdk.SafepointBegin` (the time to bring the threads to a
+halt) and `jdk.ExecuteVMOperation` (the operation that ran while they were halted),
+joined on `safepointId`; the operation names the pause, `VM operation ThreadDump`,
+`VM operation Deoptimize`, which is the part a reader can act on. `jdk.SafepointEnd`
+is used when present, but the JDK's own `default` and `profile` settings disable it,
+which is why the operation event is the one that matters: with the end event alone a
+safepoint would be only its sync phase, and a 300 ms thread dump would explain nothing.
+An operation whose begin event fell under the recording's threshold stands alone. A
+safepoint that overlaps a GC pause is the GC's own and is dropped as a duplicate. Pauses
+at least the gap long are listed once, globally, rather than once per watched thread;
+they explain silences per thread.
 
 ### 4.5 Merging and reporting
 
@@ -186,12 +249,32 @@ and lists the JVM-wide pauses.
 
 ## 5. Output
 
-Text goes to standard output in fixed-width tables meant for tickets and chat. `--html`
+Text goes to standard output in fixed-width tables meant for tickets and chat; each
+stall line ends with `[samples]` or `[silence]` unless it came from an event. `--html`
 writes one self-contained file: no scripts, no external resources, inline SVG
-timelines with a box per stall (or per wait) and a tooltip with the detail. Both come
-from the same report objects, so they never disagree.
+timelines with a box per stall (or per wait) and a tooltip with the detail. A timeline
+row draws at most 2,000 boxes, the longest ones: a recording with a 1 ms threshold can
+hold hundreds of thousands of waits, and a file of hundreds of megabytes helps nobody.
+Both text and HTML come from the same report objects, so they never disagree.
 
-## 6. Testing
+## 6. Damaged and unusual files
+
+- **Not a recording, empty, or a future format version:** refused with a one-line
+  message and exit status 1. The chunk header's magic and major version are checked
+  before the JDK parser is involved.
+- **Truncated** (the disk filled up, a copy was cut short): the complete chunks are read
+  and every report carries a warning naming the point after which events are missing. A
+  file that ends inside its first chunk is refused.
+- **Still being written** (a live recording copied from under the JVM): refused, with
+  the size to truncate the file to. The JDK parser would otherwise spin forever waiting
+  for the chunk to finish; see section 1.
+- **Several recordings in one JVM:** the span is the file's own (section 1); the
+  settings reported are the last chunk's, since settings can change between chunks.
+- **A blocking call still in progress when the recording stopped** is not in the file at
+  all: JFR writes an event when it ends. The stall it caused ends with the recording as
+  far as any tool can tell.
+
+## 7. Testing
 
 - Pure logic (`StallAnalysis`, `ContentionReport`, `AllocationDiff`, the formatters,
   the matchers) is tested on hand-built timelines with exact expectations.
@@ -202,7 +285,12 @@ from the same report objects, so they never disagree.
   verdicts, holders and orders of magnitude, not on exact durations, so they hold on a
   loaded CI machine.
 - The CLI is tested end to end, command by command, on one such recording, including
-  usage errors and exit codes.
+  usage errors and exit codes, and on damaged copies of it: cut mid-chunk, cut after a
+  complete chunk, cut inside the next header, and junk. The live-file refusal is tested
+  on a copy of a real repository chunk taken while the JVM is writing it.
+- The two-recordings span and the safepoint-by-VM-operation cases are tested on
+  recordings made for them: an on-demand recording dumped while an older one runs, and
+  two hundred parked threads dumped with `SafepointEnd` disabled.
 - JaCoCo enforces line coverage of 85 % on `core` and 80 % on `cli` in `./gradlew check`.
   At the time of writing `core` is at 97 % and `cli` at 90 %.
 
@@ -272,7 +360,13 @@ in order of effect:
 - Unexplained silences below `3 × routine absence` are invisible; the warning prints the
   number. Reducing the count of threads in native code during the recording, or lowering
   the blocking thresholds so the explanation comes from events, are the two remedies.
-- `SATURATED` needs five samples and `BUSY` two; with the `default` profile's 20 ms
+- A throttled event type (`jdk.SocketRead` at 300/s in the JDK's `profile` settings) is
+  sampled, not recorded in full; the warning names it, and `throttle=off` in the
+  recording settings removes the limit.
+- The allocation estimate omits each thread's first sample (section 2); a thread that
+  was sampled once in the whole recording contributes nothing to the estimate, and its
+  JVM counter, when there is one, is the number to read.
+- `SATURATED` needs five samples and `BUSY` two; with the `default` settings' 20 ms
   period and a 50 ms gap that is most of the run, so short saturated bursts go
   unreported rather than misreported.
 - Lock addresses move with the objects; a lock that was compacted mid-recording appears

@@ -1,18 +1,22 @@
 package dev.jfrq.core.report;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
+import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
+import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.stalls.Stall;
 import dev.jfrq.core.stalls.StallReport;
 import dev.jfrq.core.stalls.Timeline.Pause;
@@ -29,6 +33,12 @@ public final class Html {
     private static final int TIMELINE_WIDTH = 1000;
     private static final int ROW_HEIGHT = 22;
     private static final int LABEL_WIDTH = 220;
+    /**
+     * Boxes drawn per timeline row. A recording with a 1 ms threshold can hold hundreds of
+     * thousands of waits; the longest ones are the ones a reader can see anyway, and the
+     * file stays a few hundred kilobytes instead of hundreds of megabytes.
+     */
+    static final int MAX_BOXES_PER_ROW = 2_000;
 
     private Html() {
     }
@@ -40,6 +50,8 @@ public final class Html {
         Page p = new Page("jfrq stalls", report.info());
         p.kv("Gap", Durations.format(report.gapNanos()));
         p.warnings(report.warnings());
+        p.kv("Evidence", "event: exact to the event's timestamps; samples: as good as the sampling density; "
+                + "silence: an absence of samples explained by what covered it");
 
         p.h2("Threads");
         p.tableStart("Thread", "Samples", "Java cadence", "Native cadence", "Stalls", "Stalled", "Worst");
@@ -98,7 +110,7 @@ public final class Html {
                 boxes.add(new Box(s.interval(), colour(s.verdict()),
                         s.verdict() + " " + Durations.format(s.duration()) + ": " + s.detail()));
             }
-            rows.add(boxes);
+            rows.add(longest(boxes));
         }
         if (!report.pauses().isEmpty()) {
             labels.add("JVM pauses");
@@ -107,7 +119,7 @@ public final class Html {
                 boxes.add(new Box(pause.interval(), "#9e9e9e",
                         pause.kind().label() + " " + Durations.format(pause.length()) + ": " + pause.detail()));
             }
-            rows.add(boxes);
+            rows.add(longest(boxes));
         }
         StringBuilder legend = new StringBuilder("<p class=\"legend\">");
         for (Stall.Verdict v : Stall.Verdict.values()) {
@@ -121,7 +133,7 @@ public final class Html {
         Page p = new Page("jfrq locks", report.info());
         p.kv("Total blocked time", Durations.format(report.totalNanos()) + " across " + report.waits().size()
                 + " waits");
-        thresholds(p, report.info(), "jdk.JavaMonitorEnter", "jdk.ThreadPark");
+        thresholds(p, report.info());
 
         p.h2("Locks by total wait");
         p.tableStart("Lock", "Kind", "Total", "Waits", "Max", "Waiters", "Held by");
@@ -148,7 +160,7 @@ public final class Html {
             for (ContentionReport.Convoy c : convoys) {
                 StringBuilder chain = new StringBuilder();
                 for (Wait w : c.links()) {
-                    if (chain.length() > 0) {
+                    if (!chain.isEmpty()) {
                         chain.append(" → ");
                     }
                     chain.append(w.waiter().name()).append(" waited ").append(Durations.format(w.duration()))
@@ -188,11 +200,11 @@ public final class Html {
                     continue;
                 }
                 String colour = threadColours.computeIfAbsent(w.waiter().name(),
-                        k -> PALETTE[threadColours.size() % PALETTE.length]);
+                        _ -> PALETTE[threadColours.size() % PALETTE.length]);
                 boxes.add(new Box(w.interval(), colour, w.waiter().name() + " waited "
                         + Durations.format(w.duration()) + (w.owner() == null ? "" : ", " + w.heldBy())));
             }
-            rows.add(boxes);
+            rows.add(longest(boxes));
         }
         StringBuilder legend = new StringBuilder("<p class=\"legend\">");
         threadColours.forEach((name, colour) -> legend.append("<span style=\"background:").append(colour)
@@ -207,18 +219,25 @@ public final class Html {
         p.kv("Estimated allocation", Bytes.format(report.totalBytes()) + " over "
                 + Durations.format(report.info().duration()) + " = " + Bytes.rate(report.rate())
                 + " from " + report.samples() + " samples");
+        if (report.hasCounters()) {
+            p.kv("JVM counters", Bytes.format(report.countedBytes()) + " on " + report.countedByThread().size()
+                    + " threads seen at both ends of the file; the estimate for those is "
+                    + Bytes.format(report.estimatedOnCountedThreads()) + (report.estimateErrorMaterial()
+                    ? String.format(Locale.ROOT, " (%+.0f%%)", report.estimateError() * 100) : ""));
+        }
 
         p.h2("By thread");
-        p.tableStart("Thread", "Bytes", "Rate", "Share", "Top classes");
+        p.tableStart("Thread", "Bytes", "Counted", "Rate", "Share", "Top classes");
         for (AllocationReport.Row<String> r : report.threads(top)) {
             StringBuilder classes = new StringBuilder();
             for (AllocationReport.Row<String> c : report.classesOf(r.key(), 3)) {
-                if (classes.length() > 0) {
+                if (!classes.isEmpty()) {
                     classes.append(", ");
                 }
                 classes.append(ClassNames.simple(c.key())).append(' ').append(pct(c.bytes(), r.bytes()));
             }
-            p.row(r.key(), Bytes.format(r.bytes()), Bytes.rate(report.rate(r.bytes())), pct(r.share()), classes);
+            p.row(r.key(), Bytes.format(r.bytes()), report.counted(r.key()).map(Bytes::format).orElse(""),
+                    Bytes.rate(report.rate(r.bytes())), pct(r.share()), classes);
         }
         p.tableEnd();
 
@@ -232,9 +251,31 @@ public final class Html {
         p.h2("By site");
         p.tableStart("Site", "Bytes", "Rate", "Share");
         for (AllocationReport.Row<Stack> r : report.sites(top)) {
-            p.row(r.key().top().map(f -> f.pretty()).orElse("<no stack>"), Bytes.format(r.bytes()),
+            p.row(r.key().top().map(Frame::pretty).orElse("<no stack>"), Bytes.format(r.bytes()),
                     Bytes.rate(report.rate(r.bytes())), pct(r.share()));
             p.stackRow(4, r.key());
+        }
+        p.tableEnd();
+        return p.finish();
+    }
+
+    public static String info(RecordingInfo info) {
+        Page p = new Page("jfrq info", info);
+        p.kv("Threads", Integer.toString(info.threads().size()));
+        p.kv("Chunks", Integer.toString(info.chunks()));
+        if (!info.hasSettings()) {
+            p.kv("Settings", "unknown: the recording has no jdk.ActiveSetting events");
+        }
+        p.h2("Event types");
+        p.tableStart("Event type", "Count", "Enabled", "Threshold", "Period", "Throttle");
+        List<Map.Entry<String, Long>> byCount = new ArrayList<>(info.eventCounts().entrySet());
+        byCount.sort(Map.Entry.<String, Long>comparingByValue().reversed().thenComparing(Map.Entry.comparingByKey()));
+        for (Map.Entry<String, Long> e : byCount) {
+            String type = e.getKey();
+            p.row(type, e.getValue(), info.settings().containsKey(type) ? (info.enabled(type) ? "yes" : "no") : "",
+                    info.threshold(type).map(Durations::format).orElse(""),
+                    info.period(type).map(Durations::format).or(() -> info.setting(type, "period")).orElse(""),
+                    info.throttle(type).orElse(""));
         }
         p.tableEnd();
         return p.finish();
@@ -243,6 +284,11 @@ public final class Html {
     public static String allocDiff(AllocationDiff diff, int top) {
         Page p = new Page("jfrq alloc diff", diff.current().info());
         p.kv("Baseline", diff.baseline().info().file().toString() + " (" + Bytes.rate(diff.baseline().rate()) + ")");
+        List<String> baselineWarnings = new ArrayList<>();
+        for (String w : diff.baseline().info().warnings()) {
+            baselineWarnings.add("baseline: " + w);
+        }
+        p.warnings(baselineWarnings);
         p.kv("Current", diff.current().info().file().toString() + " (" + Bytes.rate(diff.current().rate()) + ")");
         p.kv("Change", Bytes.signedRate(diff.total().delta()) + " (" + ratio(diff.total().ratio()) + ")");
 
@@ -253,7 +299,7 @@ public final class Html {
         p.h2("By site");
         p.tableStart("Site", "Before", "After", "Change");
         for (AllocationDiff.Delta<Stack> d : diff.sites(top)) {
-            p.row(d.key().top().map(f -> f.pretty()).orElse("<no stack>"), Bytes.rate(d.beforeRate()),
+            p.row(d.key().top().map(Frame::pretty).orElse("<no stack>"), Bytes.rate(d.beforeRate()),
                     Bytes.rate(d.afterRate()), Bytes.signedRate(d.delta()) + " (" + ratio(d.ratio()) + ")");
             p.stackRow(4, d.key());
         }
@@ -290,25 +336,37 @@ public final class Html {
         return whole == 0 ? "0%" : String.format(Locale.ROOT, "%.0f%%", 100.0 * part / whole);
     }
 
-    private static void thresholds(Page p, RecordingInfo info, String... types) {
+    private static void thresholds(Page p, RecordingInfo info) {
         StringBuilder sb = new StringBuilder();
-        for (String t : types) {
+        for (String t : List.of("jdk.JavaMonitorEnter", "jdk.ThreadPark")) {
             info.threshold(t).ifPresent(d -> sb.append(t).append(' ').append(Durations.format(d)).append("; "));
         }
-        if (sb.length() > 0) {
+        if (!sb.isEmpty()) {
             p.kv("Thresholds", sb.toString());
         }
     }
 
-    private static String names(java.util.Set<dev.jfrq.core.model.ThreadRef> threads) {
+    private static String names(Set<ThreadRef> threads) {
         StringBuilder sb = new StringBuilder();
         for (var t : threads) {
-            if (sb.length() > 0) {
+            if (!sb.isEmpty()) {
                 sb.append(", ");
             }
             sb.append(t.name());
         }
         return sb.toString();
+    }
+
+    /** The {@link #MAX_BOXES_PER_ROW} longest boxes of a row, back in time order. */
+    private static List<Box> longest(List<Box> boxes) {
+        if (boxes.size() <= MAX_BOXES_PER_ROW) {
+            return boxes;
+        }
+        List<Box> sorted = new ArrayList<>(boxes);
+        sorted.sort(Comparator.comparingLong((Box b) -> b.interval().length()).reversed());
+        List<Box> kept = new ArrayList<>(sorted.subList(0, MAX_BOXES_PER_ROW));
+        kept.sort(Comparator.comparing(Box::interval));
+        return kept;
     }
 
     private static final String[] PALETTE = {
@@ -404,6 +462,7 @@ public final class Html {
                     .append(CSS).append("</style></head><body>\n<h1>").append(escape(title)).append("</h1>\n<dl>");
             kv("Recording", info.file().toString());
             kv("Span", Durations.format(info.duration()) + " from " + info.start());
+            warnings(info.warnings());
         }
 
         void kv(String k, String v) {

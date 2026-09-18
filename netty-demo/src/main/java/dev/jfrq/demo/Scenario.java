@@ -42,7 +42,7 @@ public enum Scenario {
     public static String flags() {
         StringBuilder sb = new StringBuilder();
         for (Scenario s : values()) {
-            if (sb.length() > 0) {
+            if (!sb.isEmpty()) {
                 sb.append(", ");
             }
             sb.append(s.flag);

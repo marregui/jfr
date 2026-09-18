@@ -13,6 +13,7 @@ import java.util.function.Consumer;
 import dev.jfrq.core.model.Interner;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.ThreadRef;
+import dev.jfrq.core.util.Durations;
 import jdk.jfr.EventType;
 import jdk.jfr.consumer.EventStream;
 import jdk.jfr.consumer.RecordedEvent;
@@ -30,21 +31,16 @@ import jdk.jfr.consumer.RecordedEvent;
  * they keep, and delivery is in file order rather than time order
  * ({@code setOrdered(false)}); every sink sorts what it keeps at the end.
  *
- * <p>Consequences for {@link RecordingInfo}: event counts and threads cover the event
- * types that were read; the time span is the recording's own, anchored on events read
- * on every pass. A read with an "everything" sink (as {@code jfrq info} does) sees the
- * whole file.
+ * <p>Before the pass, the chunk headers are read directly ({@link Chunks}). They give the
+ * recording's data span independently of which events are subscribed, and they reveal a
+ * truncated or still-being-written file, which the JDK parser would otherwise turn into
+ * a silently empty answer. Consequences for {@link RecordingInfo}: event counts and
+ * threads cover the event types that were read; the span is the file's own. A read with
+ * an "everything" sink (as {@code jfrq info} does) sees the whole file.
  */
 public final class JfrReader {
 
     private static final String ACTIVE_SETTING = "jdk.ActiveSetting";
-    private static final String ACTIVE_RECORDING = "jdk.ActiveRecording";
-    /**
-     * Read on every pass so the span is the recording's, not the subscribed events'.
-     * {@code jdk.ActiveRecording} carries the exact start; {@code jdk.PhysicalMemory} is a
-     * single event at the beginning and end of every chunk, so its last one is the end.
-     */
-    private static final List<String> ANCHORS = List.of(ACTIVE_SETTING, ACTIVE_RECORDING, "jdk.PhysicalMemory");
 
     /** A consumer of events of the types it names. An empty set means every event. */
     public interface Sink {
@@ -64,7 +60,31 @@ public final class JfrReader {
     private JfrReader() {
     }
 
+    /**
+     * @throws IOException when the file is missing, is not a recording, holds no complete
+     *                     chunk, or ends in a chunk that is still being written. The last
+     *                     case is refused outright because the JDK parser does not fail on
+     *                     it: it waits for the chunk to finish, forever.
+     */
     public static RecordingInfo read(Path file, Sink... sinks) throws IOException {
+        Chunks chunks = Chunks.scan(file);
+        List<String> warnings = new ArrayList<>();
+        if (chunks.inProgress()) {
+            Chunks.Header last = chunks.headers().getLast();
+            throw new IOException("recording is still being written: its last chunk (at byte " + last.offset()
+                    + ") is not finished. Dump the recording from the JVM (jcmd <pid> JFR.dump) or, to read the "
+                    + chunks.complete() + " complete chunk(s), truncate the file to " + last.offset() + " bytes");
+        }
+        if (chunks.complete() == 0) {
+            throw new IOException("recording is truncated: the file ends inside its first chunk");
+        }
+        if (chunks.truncated()) {
+            warnings.add("the file is truncated: it ends inside a chunk that started at "
+                    + Durations.offset(chunks.endNanos() - chunks.startNanos())
+                    + "; events after that point are missing, and " + chunks.count()
+                    + " complete chunk(s) were read");
+        }
+
         Map<String, List<Sink>> byType = new HashMap<>();
         List<Sink> all = new ArrayList<>();
         for (Sink s : sinks) {
@@ -72,7 +92,7 @@ public final class JfrReader {
                 all.add(s);
             } else {
                 for (String t : s.eventTypes()) {
-                    byType.computeIfAbsent(t, k -> new ArrayList<>()).add(s);
+                    byType.computeIfAbsent(t, _ -> new ArrayList<>()).add(s);
                 }
             }
         }
@@ -86,33 +106,25 @@ public final class JfrReader {
         Map<String, long[]> counts = new HashMap<>();
         Map<String, Map<String, String>> settings = new HashMap<>();
         Set<ThreadRef> threads = new HashSet<>();
-        long[] span = {Long.MAX_VALUE, Long.MIN_VALUE};
+        long[] lastEnd = {Long.MIN_VALUE};
 
         Consumer<RecordedEvent> bookkeeping = e -> {
             String type = e.getEventType().getName();
-            counts.computeIfAbsent(type, k -> new long[1])[0]++;
-            long s = Events.startNanos(e);
-            long en = Math.max(s, Events.endNanos(e));
-            if (s < span[0]) {
-                span[0] = s;
-            }
-            if (en > span[1]) {
-                span[1] = en;
+            counts.computeIfAbsent(type, _ -> new long[1])[0]++;
+            long en = Events.endNanos(e);
+            if (en > lastEnd[0]) {
+                lastEnd[0] = en;
             }
             ThreadRef thread = interner.thread(e);
             if (thread != null) {
                 threads.add(thread);
             }
             if (ACTIVE_SETTING.equals(type)) {
+                // Settings can change between chunks; the last chunk's values are the ones reported.
                 String owner = typeNames.get(e.getLong("id"));
                 if (owner != null) {
-                    settings.computeIfAbsent(owner, k -> new HashMap<>())
+                    settings.computeIfAbsent(owner, _ -> new HashMap<>())
                             .put(e.getString("name"), e.getString("value"));
-                }
-            } else if (ACTIVE_RECORDING.equals(type) && e.hasField("recordingStart")) {
-                long recordingStart = Events.nanos(e.getInstant("recordingStart"));
-                if (recordingStart > 0 && recordingStart < span[0]) {
-                    span[0] = recordingStart;
                 }
             }
         };
@@ -140,9 +152,8 @@ public final class JfrReader {
                     }
                 });
             } else {
-                for (String anchor : ANCHORS) {
-                    byType.computeIfAbsent(anchor, k -> new ArrayList<>());
-                }
+                // Read on every pass so a filtered read still learns the thresholds and periods.
+                byType.computeIfAbsent(ACTIVE_SETTING, _ -> new ArrayList<>());
                 for (Map.Entry<String, List<Sink>> entry : byType.entrySet()) {
                     List<Sink> targets = entry.getValue();
                     stream.onEvent(entry.getKey(), e -> {
@@ -156,13 +167,14 @@ public final class JfrReader {
             stream.start();
         }
 
-        if (span[0] == Long.MAX_VALUE) {
-            span[0] = 0;
-            span[1] = 0;
-        }
+        // The chunk headers bound the span; the last event read is a safety net for a header
+        // whose duration undershoots (it never should, but the file is not ours).
+        long start = chunks.startNanos();
+        long end = Math.max(chunks.endNanos(), Math.max(start, lastEnd[0]));
         Map<String, Long> eventCounts = new HashMap<>(counts.size());
         counts.forEach((k, v) -> eventCounts.put(k, v[0]));
-        RecordingInfo info = new RecordingInfo(file, new Interval(span[0], span[1]), eventCounts, settings, threads);
+        RecordingInfo info = new RecordingInfo(file, new Interval(start, end), chunks.count(), eventCounts, settings,
+                threads, warnings);
         for (Sink s : sinks) {
             s.finish(info);
         }

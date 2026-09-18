@@ -115,6 +115,10 @@ class RecordingTest {
         Path file = JfrFixtures.record(dir, "locks", r -> {
             r.enable("jdk.JavaMonitorEnter").withThreshold(Duration.ZERO).withStackTrace();
             r.enable("jdk.ThreadPark").withThreshold(Duration.ZERO);
+            // The holder's sleep inside the lock is then an event of its own, which makes JFR write the
+            // holder into the file's thread pool before it exits; without one, previousOwner is
+            // occasionally left unresolved on a loaded machine.
+            r.enable("jdk.ThreadSleep").withThreshold(Duration.ZERO);
         }, () -> JfrFixtures.contend(lock, "holder-thread", "waiter-thread", 150));
 
         ContentionCollector collector = new ContentionCollector();
@@ -131,7 +135,7 @@ class RecordingTest {
         assertTrue(report.locks(5).getFirst().owners().contains(new ThreadRef(wait.owner().id(), "holder-thread")));
 
         // Filters: by minimum duration and by waiter name.
-        ContentionCollector filtered = new ContentionCollector(10_000_000_000L, name -> true);
+        ContentionCollector filtered = new ContentionCollector(10_000_000_000L, _ -> true);
         JfrReader.read(file, filtered);
         assertTrue(filtered.report().isEmpty());
         ContentionCollector other = new ContentionCollector(0, Glob.of("nobody-*"));
@@ -144,7 +148,9 @@ class RecordingTest {
     void allocationCollectorAttributesBytesToTheAllocatingThread() throws Exception {
         Path file = JfrFixtures.record(dir, "alloc", r -> {
             r.enable("jdk.ObjectAllocationSample").with("throttle", "5000/s").withStackTrace();
-        }, () -> JfrFixtures.onThread("alloc-thread", () -> {
+            r.enable("jdk.ThreadAllocationStatistics").with("period", "everyChunk");
+        }, () -> {
+            // The calling thread is alive at both chunk boundaries, so its counter is in the file twice.
             byte[][] keep = new byte[64][];
             for (int i = 0; i < 4_000; i++) {
                 keep[i % keep.length] = new byte[64 * 1024];
@@ -152,7 +158,12 @@ class RecordingTest {
             if (keep[0].length == 0) {
                 throw new IllegalStateException();
             }
-        }));
+            JfrFixtures.onThread("alloc-thread", () -> {
+                for (int i = 0; i < 4_000; i++) {
+                    keep[i % keep.length] = new byte[64 * 1024];
+                }
+            });
+        });
 
         AllocationCollector collector = new AllocationCollector();
         JfrReader.read(file, collector);
@@ -160,12 +171,22 @@ class RecordingTest {
 
         assertEquals(AllocationCollector.SAMPLE, report.source());
         assertTrue(report.samples() > 0);
-        AllocationReport.Row<String> top = report.threads(1).getFirst();
-        assertEquals("alloc-thread", top.key());
-        assertTrue(top.share() > 0.5, "share " + top.share());
+        String self = Thread.currentThread().getName();
+        List<AllocationReport.Row<String>> top = report.threads(2);
+        assertTrue(top.stream().anyMatch(r -> r.key().equals("alloc-thread")), top.toString());
+        assertTrue(top.stream().anyMatch(r -> r.key().equals(self)), top.toString());
         assertEquals("[B", report.classes(1).getFirst().key());
         assertFalse(report.sites(1).getFirst().key().isEmpty());
-        assertTrue(report.totalBytes() > 100L * 1024 * 1024, "estimated " + report.totalBytes());
+        assertTrue(report.totalBytes() > 200L * 1024 * 1024, "estimated " + report.totalBytes());
+        // The JVM's own counter for this thread, seen at both chunk boundaries, brackets the estimate:
+        // 4000 × 64 KiB were allocated on it. The short-lived alloc-thread was seen at most once.
+        assertTrue(report.hasCounters());
+        long mainCounted = report.counted(self).orElseThrow();
+        assertTrue(mainCounted >= 4_000L * 64 * 1024, "counted " + mainCounted);
+        assertTrue(report.counted("alloc-thread").isEmpty());
+        // Without the first sample per thread the estimate is close; with it, this thread's whole test-suite
+        // history (hundreds of MB) would land in the window.
+        assertTrue(Math.abs(report.estimateError()) < 0.25, "estimate off by " + report.estimateError());
         assertThrows(IllegalStateException.class, () -> new AllocationCollector().report());
     }
 
@@ -230,7 +251,7 @@ class RecordingTest {
             held.await();
             JfrFixtures.sleep(20);
             synchronized (lock) {
-                lock.hashCode();
+                lock.notifyAll();
             }
             holder.join();
             TestLoop.idle(300);
@@ -346,9 +367,9 @@ class RecordingTest {
 
     @Test
     void internerSharesStacksThreadsAndClassNamesAcrossEvents() throws Exception {
-        Path file = JfrFixtures.record(dir, "intern", r -> {
-            r.enable("jdk.ObjectAllocationSample").with("throttle", "5000/s").withStackTrace();
-        }, () -> JfrFixtures.onThread("intern-thread", () -> {
+        Path file = JfrFixtures.record(dir, "intern",
+                r -> r.enable("jdk.ObjectAllocationSample").with("throttle", "5000/s").withStackTrace(),
+                () -> JfrFixtures.onThread("intern-thread", () -> {
             byte[][] keep = new byte[16][];
             for (int i = 0; i < 3_000; i++) {
                 keep[i % keep.length] = new byte[32 * 1024];
@@ -405,5 +426,98 @@ class RecordingTest {
     private static Stall find(StallReport report, Verdict verdict) {
         return report.stalls().stream().filter(s -> s.verdict() == verdict).findFirst()
                 .orElseThrow(() -> new AssertionError("no " + verdict + " in " + report.stalls()));
+    }
+
+    /**
+     * A JVM commonly runs a continuous recording next to an on-demand one. The on-demand
+     * file carries {@code jdk.ActiveRecording} events for both, so anchoring the span on
+     * the earliest recording start would stretch a one-second dump to the continuous
+     * recording's age and divide every rate by it. The span must be the file's own.
+     */
+    @Test
+    void spanIsTheDumpedRecordingsOwnEvenWithAnOlderRecordingRunning() throws Exception {
+        Path file = dir.resolve("ondemand.jfr");
+        try (jdk.jfr.Recording continuous = new jdk.jfr.Recording()) {
+            continuous.enable("jdk.ActiveRecording");
+            continuous.enable("jdk.ActiveSetting");
+            continuous.start();
+            JfrFixtures.sleep(600);
+            try (jdk.jfr.Recording onDemand = new jdk.jfr.Recording()) {
+                onDemand.enable("jdk.ActiveRecording");
+                onDemand.enable("jdk.ActiveSetting");
+                onDemand.setDestination(file);
+                onDemand.start();
+                JfrFixtures.sleep(200);
+                onDemand.stop();
+            }
+            continuous.stop();
+        }
+        RecordingInfo info = JfrReader.read(file);
+        assertTrue(info.count("jdk.ActiveRecording") >= 2, "recordings seen: " + info.count("jdk.ActiveRecording"));
+        long millis = info.duration().toMillis();
+        assertTrue(millis >= 150 && millis < 500, "span " + millis + " ms should be the 200 ms dump, not the 800 ms JVM history");
+        // A filtered pass reports the same span as the full one.
+        RecordingInfo filtered = JfrReader.read(file, new ContentionCollector());
+        assertEquals(info.span(), filtered.span());
+    }
+
+    /**
+     * With the JDK's own profiles {@code jdk.SafepointEnd} is disabled, so a safepoint's
+     * length is only known through the VM operation that ran inside it.
+     */
+    @Test
+    void safepointsAreNamedAfterTheirVmOperationWhenTheEndEventIsDisabled() throws Exception {
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        List<Thread> parked = new ArrayList<>();
+        for (int i = 0; i < 200; i++) {
+            Thread t = new Thread(() -> {
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }, "parked-" + i);
+            t.setDaemon(true);
+            t.start();
+            parked.add(t);
+        }
+        Path file = JfrFixtures.record(dir, "safepoints", r -> {
+            r.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(10));
+            r.enable("jdk.SafepointBegin").withThreshold(Duration.ZERO);
+            r.disable("jdk.SafepointEnd");
+            r.enable("jdk.ExecuteVMOperation").withThreshold(Duration.ZERO);
+            r.enable("jdk.GCPhasePause").withThreshold(Duration.ZERO);
+        }, () -> {
+            for (int i = 0; i < 20; i++) {
+                // A thread dump is a safepoint VM operation, and with hundreds of threads it takes a while.
+                if (Thread.getAllStackTraces().isEmpty()) {
+                    throw new IllegalStateException();
+                }
+            }
+            JfrFixtures.sleep(50);
+        });
+        release.countDown();
+        for (Thread t : parked) {
+            t.join();
+        }
+
+        StallCollector collector = new StallCollector(Glob.of("main"), IdleMatcher.defaults(), 1_000L);
+        RecordingInfo info = JfrReader.read(file, collector);
+        assertEquals(0, info.count("jdk.SafepointEnd"));
+        assertTrue(info.count("jdk.ExecuteVMOperation") > 0);
+        List<dev.jfrq.core.stalls.Timeline.Pause> pauses = collector.report().pauses();
+        assertTrue(pauses.stream().anyMatch(p -> p.detail().startsWith("VM operation ThreadDump")),
+                "pauses: " + pauses);
+        // No pause is reported twice: a GC's own safepoint is folded into the GC pause.
+        for (dev.jfrq.core.stalls.Timeline.Pause p : pauses) {
+            if (p.kind() != dev.jfrq.core.stalls.Timeline.PauseKind.SAFEPOINT) {
+                continue;
+            }
+            for (dev.jfrq.core.stalls.Timeline.Pause gc : pauses) {
+                if (gc.kind() == dev.jfrq.core.stalls.Timeline.PauseKind.GC) {
+                    assertTrue(gc.interval().overlap(p.interval()) < 0.5 * p.length(), "reported twice: " + p + " and " + gc);
+                }
+            }
+        }
     }
 }

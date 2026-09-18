@@ -52,6 +52,9 @@ public final class Durations {
      * Negative values are formatted with a leading minus.
      */
     public static String format(long nanos) {
+        if (nanos == Long.MIN_VALUE) {
+            return "-" + format(Long.MAX_VALUE);
+        }
         if (nanos < 0) {
             return "-" + format(-nanos);
         }

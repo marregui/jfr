@@ -1,9 +1,7 @@
 package dev.jfrq.core.jfr;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.function.Consumer;
 
@@ -74,7 +72,7 @@ public final class JfrFixtures {
             await(held);
             sleep(20); // let the holder settle inside the critical section
             synchronized (lock) {
-                lock.hashCode();
+                lock.notifyAll();
             }
         }, waiter);
         h.start();
@@ -84,7 +82,7 @@ public final class JfrFixtures {
     }
 
     /** Burns CPU on the calling thread for about {@code millis}; sampled as Java execution. */
-    public static long burn(long millis) {
+    public static void burn(long millis) {
         long deadline = System.nanoTime() + millis * 1_000_000L;
         long acc = 1;
         do {
@@ -92,7 +90,9 @@ public final class JfrFixtures {
                 acc = acc * 6364136223846793005L + 1442695040888963407L + i;
             }
         } while (System.nanoTime() < deadline);
-        return acc;
+        if (acc == 42) {
+            throw new IllegalStateException("unlikely, but the loop must not be optimised away");
+        }
     }
 
     public static void sleep(long millis) {
@@ -113,15 +113,4 @@ public final class JfrFixtures {
         }
     }
 
-    public static Duration ms(long millis) {
-        return Duration.ofMillis(millis);
-    }
-
-    public static void delete(Path file) {
-        try {
-            Files.deleteIfExists(file);
-        } catch (IOException ignored) {
-            // temp files; best effort
-        }
-    }
 }
