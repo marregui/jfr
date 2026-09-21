@@ -16,16 +16,17 @@ import dev.jfrq.core.util.Durations;
 /**
  * Command-line arguments: positionals plus {@code --name value} / {@code --name=value}
  * options and {@code --flag} switches. Small enough that a library is not worth the
- * dependency. Unknown options are an error, so typos never pass silently.
+ * dependency. Unknown options are an error, so typos never pass silently. Public because
+ * {@code jfrq-live} parses its own command line with it.
  */
-final class Args {
+public final class Args {
 
     private final List<String> positional = new ArrayList<>();
     private final Map<String, String> options = new LinkedHashMap<>();
     private final Set<String> flags;
 
     /** Parses {@code argv}; {@code valued} names options that take a value, {@code flags} those that do not. */
-    static Args parse(String[] argv, Set<String> valued, Set<String> flags) {
+    public static Args parse(String[] argv, Set<String> valued, Set<String> flags) {
         Args a = new Args(flags);
         for (int i = 0; i < argv.length; i++) {
             String arg = argv[i];
@@ -64,28 +65,28 @@ final class Args {
         this.flags = flags;
     }
 
-    List<String> positional() {
+    public List<String> positional() {
         return positional;
     }
 
     /** The first positional argument, or a usage error naming what is missing. */
-    String first(String what) {
+    public String first(String what) {
         if (positional.isEmpty()) {
             throw new UsageException("missing " + what);
         }
         return positional.getFirst();
     }
 
-    Optional<String> option(String name) {
+    public Optional<String> option(String name) {
         return Optional.ofNullable(options.get(name));
     }
 
-    boolean flag(String name) {
+    public boolean flag(String name) {
         return flags.contains(name) && options.containsKey(name);
     }
 
     /** {@code --top N}: rows per table, a positive number, 15 by default. */
-    int top() {
+    public int top() {
         String v = options.get("top");
         if (v == null) {
             return 15;
@@ -101,7 +102,7 @@ final class Args {
         }
     }
 
-    long durationOption(String name, String fallback, boolean zeroAllowed) {
+    public long durationOption(String name, String fallback, boolean zeroAllowed) {
         String v = options.getOrDefault(name, fallback);
         if (!v.isEmpty() && Character.isDigit(v.charAt(v.length() - 1)) && !v.trim().equals("0")) {
             // A bare number would be nanoseconds, which nobody means on a command line.
@@ -119,11 +120,11 @@ final class Args {
     }
 
     /** A usage error: the message is printed with the command's help and exit code 2. */
-    static final class UsageException extends RuntimeException {
+    public static final class UsageException extends RuntimeException {
         @Serial
         private static final long serialVersionUID = 1L;
 
-        UsageException(String message) {
+        public UsageException(String message) {
             super(message);
         }
     }

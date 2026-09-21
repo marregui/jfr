@@ -267,7 +267,8 @@ Both text and HTML come from the same report objects, so they never disagree.
   file that ends inside its first chunk is refused.
 - **Still being written** (a live recording copied from under the JVM): refused, with
   the size to truncate the file to. The JDK parser would otherwise spin forever waiting
-  for the chunk to finish; see section 1.
+  for the chunk to finish; see section 1. Questioning a running JVM is what `jfrq-live`
+  is for ([LIVE.md](LIVE.md)): it takes windowed dumps, which are finished files.
 - **Several recordings in one JVM:** the span is the file's own (section 1); the
   settings reported are the last chunk's, since settings can change between chunks.
 - **A blocking call still in progress when the recording stopped** is not in the file at

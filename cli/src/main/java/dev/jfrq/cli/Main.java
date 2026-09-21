@@ -43,7 +43,7 @@ import dev.jfrq.core.util.Glob;
  */
 public final class Main {
 
-    static final String VERSION = "0.1.0";
+    public static final String VERSION = "0.1.0";
 
     static final String USAGE = """
             jfrq %s - ask a JFR recording one question
@@ -122,6 +122,14 @@ public final class Main {
 
     static void main(String[] argv) {
         System.exit(new Main(System.out, System.err).run(argv));
+    }
+
+    /**
+     * Runs a command from another program ({@code jfrq-live} runs one on each dump it
+     * takes) and returns the exit status without calling {@link System#exit}.
+     */
+    public static int run(String[] argv, PrintStream out, PrintStream err) {
+        return new Main(out, err).run(argv);
     }
 
     /** Runs a command and returns the exit status without calling {@link System#exit}. */

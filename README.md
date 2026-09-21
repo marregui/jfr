@@ -12,6 +12,39 @@ STALLS >= 50.0 ms: 46 found, showing 3, longest first
         ...
 ```
 
+## What JFR is
+
+JFR is Java Flight Recorder: the JVM's built-in, low-overhead event recorder. It lives
+inside HotSpot (JEP 328, open-sourced in JDK 11) and writes a binary `.jfr` file of
+timestamped events, which is analysed offline.
+
+What it records:
+
+- Periodic samples: which threads are running and their stack traces
+  (`jdk.ExecutionSample`, `jdk.NativeMethodSample`). This is the profiling side.
+- Blocking events with exact durations: monitor contention (`jdk.JavaMonitorEnter`),
+  waits, parks, socket and file I/O, safepoints, GC pauses; each with the thread, the
+  stack and the object involved.
+- Allocation events (`jdk.ObjectAllocationSample`), GC and heap statistics, thread start
+  and end, compiler activity, OS and CPU load, JVM and GC configuration.
+- Anchor metadata: the settings and thresholds that were active (`jdk.ActiveSetting`),
+  so a reader knows what the recording could and could not see.
+
+How it works:
+
+- Per-thread buffers in the JVM, flushed to disk in chunks. Overhead is typically 1-2 %
+  because the JVM emits the events itself; no agent instruments bytecode.
+- Threshold-based: durations below a per-event threshold (20 ms for monitor enter in the
+  default profile) are dropped, so the absence of an event is not the absence of the
+  behaviour.
+- Started with `-XX:StartFlightRecording`, `jcmd <pid> JFR.start`, or the `jdk.jfr` API
+  in-process (which is what `netty-demo` does).
+- Read with `jfr print` and `jfr summary`, JDK Mission Control, or programmatically via
+  `jdk.jfr.consumer.RecordingFile` and `EventStream`; the latter is what `jfrq` uses.
+
+`jfrq` exists because raw JFR output is a firehose of events with no verdict. It streams
+the file once and turns those events into one answer per question.
+
 JDK Mission Control shows you the data; `jfr view` shows you aggregate tables. Neither
 tells you *why the event loop stopped at 14:03:07*, *who held the lock that thread was
 waiting for*, or *what changed between the recording before the fix and the one after*.
@@ -45,11 +78,13 @@ one, instead of the parser hanging on it.
 ## Build and install
 
 ```
-./gradlew build          # compiles, runs 120+ tests, checks coverage
-./gradlew installDist    # cli/build/install/jfrq/bin/jfrq and netty-demo/build/install/netty-demo/bin/netty-demo
+./gradlew build          # compiles, runs 130+ tests, checks coverage
+./gradlew installDist    # cli/build/install/jfrq/bin/jfrq, live/build/install/jfrq-live/bin/jfrq-live,
+                         # netty-demo/build/install/netty-demo/bin/netty-demo
 ```
 
-Put `cli/build/install/jfrq/bin` on your `PATH`, or call the script by path.
+Put `cli/build/install/jfrq/bin` (and `live/build/install/jfrq-live/bin`) on your `PATH`,
+or call the scripts by path.
 The launcher needs `JAVA_HOME` or a `java` on the `PATH` that is JDK 25. The first run
 writes an AppCDS archive to `lib/jfrq.jsa` next to the jars, which makes every later run
 start in about a tenth of a second; if the directory is not writable nothing is written
@@ -98,6 +133,25 @@ application did. The `profile` settings also throttle socket and file events to 
 second across the JVM (JDK 25); `jfrq stalls` warns when a throttle is in force, and the
 line above switches it off so no blocking call goes unrecorded.
 
+## On a running JVM
+
+A recording the JVM is still writing cannot be read in place (its last chunk is open), so
+`jfrq-live` takes a dump of a window and asks the question of that: `full` for everything
+the recording holds, `delta` for what happened since the previous dump, `again` for the
+previous window once more. A cursor per JVM remembers where the last dump stopped, every
+dump prints its real span next to the window asked for, and `start`/`bound` put a
+`--max-age`/`--max-size` on the recording so it does not grow without end.
+
+```
+jfrq-live 4242 start --max-age 10m
+jfrq-live 4242 full  -- stalls --thread 'event-loop-*'
+jfrq-live 4242 delta -- stalls --thread 'event-loop-*'
+jfrq-live 4242 delta --out t2.jfr -- alloc --baseline t1.jfr
+```
+
+[docs/LIVE.md](docs/LIVE.md) explains how a dump is taken, why a delta never counts an
+event twice, and what the bounds do.
+
 ## Try it on the demo
 
 The `netty-demo` module is a small Netty service with four deliberately injected
@@ -123,8 +177,9 @@ it is too coarse to trust.
 ```
 core/         the analyses, one pass over the file, no dependencies
 cli/          the jfrq command: argument parsing and text rendering
+live/         the jfrq-live command: dumps from a running JVM, the cursor, the span check
 netty-demo/   the demo service and its scenarios
-docs/         TUTORIAL.md, DESIGN.md
+docs/         TUTORIAL.md, DESIGN.md, LIVE.md
 ```
 
 ## Status

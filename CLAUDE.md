@@ -4,15 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`jfrq`: a JDK 25 command-line tool that asks a JFR recording one question (`stalls`, `locks`, `alloc`, `info`) and answers it in text or a self-contained HTML report. Version 0.1.0, `group = dev.jfrq`. `README.md` is the user-facing description; `docs/DESIGN.md` explains each detector, the JFR events it reads, the evidence hierarchy and the performance history — read it before changing a verdict or trusting an unexpected result.
+`jfrq`: a JDK 25 command-line tool that asks a JFR recording one question (`stalls`, `locks`, `alloc`, `info`) and answers it in text or a self-contained HTML report. `jfrq-live` asks the same questions of a running JVM by taking windowed dumps (`full`, `delta`, `again`) with a per-JVM cursor. Version 0.1.0, `group = dev.jfrq`. `README.md` is the user-facing description; `docs/DESIGN.md` explains each detector, the JFR events it reads, the evidence hierarchy and the performance history — read it before changing a verdict or trusting an unexpected result; `docs/LIVE.md` explains the dump mechanics (clone-and-stop, whole-chunk windows, the `T + 1 ms` cursor rule, bounds) — read it before touching `live/`.
 
 ## Build and test
 
-Gradle (Kotlin DSL), three modules, no convention plugins: each `*/build.gradle.kts` is self-contained on purpose. JDK 25 everywhere: the module toolchains, the Gradle daemon (`gradle/gradle-daemon-jvm.properties`, so the launching `java` may be older), the `.sdkmanrc` for the shell that runs the installed launcher. No toolchain auto-download: a local Temurin 25 must be installed. `core` has no runtime dependency beyond `jdk.jfr`.
+Gradle (Kotlin DSL), four modules, no convention plugins: each `*/build.gradle.kts` is self-contained on purpose. JDK 25 everywhere: the module toolchains, the Gradle daemon (`gradle/gradle-daemon-jvm.properties`, so the launching `java` may be older), the `.sdkmanrc` for the shell that runs the installed launcher. No toolchain auto-download: a local Temurin 25 must be installed. `core` has no runtime dependency beyond `jdk.jfr`.
 
 ```
-./gradlew build                       # compile + tests + JaCoCo coverage gates (85 % core, 80 % cli)
-./gradlew installDist                 # cli/build/install/jfrq/bin/jfrq, netty-demo/build/install/netty-demo/bin/netty-demo
+./gradlew build                       # compile + tests + JaCoCo coverage gates (85 % core, 80 % cli and live)
+./gradlew installDist                 # cli/build/install/jfrq/bin/jfrq, live/build/install/jfrq-live/bin/jfrq-live, netty-demo/build/install/netty-demo/bin/netty-demo
 ./gradlew :core:test                  # one module
 ./gradlew :core:test --tests 'dev.jfrq.core.stalls.StallAnalysisTest'
 ./gradlew :core:test --tests '*StallAnalysisTest.methodName'
@@ -21,7 +21,7 @@ Gradle (Kotlin DSL), three modules, no convention plugins: each `*/build.gradle.
 - Compilation runs with `-Xlint:all -Werror`: any warning fails the build.
 - `check` depends on `jacocoTestCoverageVerification`; dropping coverage below the module gate fails `build`.
 - Configuration cache, parallel and build cache are on (`gradle.properties`).
-- Tests in `core/.../jfr/RecordingTest`, `cli/.../MainTest` and the stall/lock tests make **real JFR recordings in-process** (`JfrFixtures.record`), so they take seconds and assert verdicts and orders of magnitude, not exact durations. Pure-logic tests (`StallAnalysisTest`, `ContentionReportTest`, `AllocationTest`) use hand-built timelines with exact expectations.
+- Tests in `core/.../jfr/RecordingTest`, `cli/.../MainTest` and the stall/lock tests make **real JFR recordings in-process** (`JfrFixtures.record`), so they take seconds and assert verdicts and orders of magnitude, not exact durations. Pure-logic tests (`StallAnalysisTest`, `ContentionReportTest`, `AllocationTest`) use hand-built timelines with exact expectations. `live/.../LiveTest` **attaches to the test JVM itself** (`-Djdk.attach.allowAttachSelf=true` in `live/build.gradle.kts`) and runs the whole loop against a recording it starts there; the recorder is JVM-global, so every test names its recording and addresses it with `--recording`.
 
 Run it after `installDist`:
 
@@ -50,6 +50,7 @@ jfrq stalls demo-lock.jfr --thread 'event-loop-*' --timing
 | `locks` | `locks/ContentionCollector` | `ContentionReport` (holder walk-back through `previousOwner`, convoy search) |
 | `stalls` | `stalls/StallCollector` | `StallAnalysis` + `IdleMatcher` + `Timeline` → `StallReport` |
 | `info` | everything | `RecordingInfo` |
+| `jfrq-live` (`live` module) | none: dumps a window from a running JVM over JMX, then delegates to `Main.run` | `Snapshot`, `Cursor`, the span check in `Live.check` |
 
 **Model (`core/model`).** Timestamps are epoch nanoseconds in `long`; absence is `Nulls.LONG_NULL`, not `Optional` (the `Optional`/`Duration` accessors on `RecordingInfo` and `Stack` exist for reports and tests; per-event and analysis code uses `periodNanos`, `culpritOrNull`, `depth()`/`frameQuick(i)`). `Interval` is half-open `[start, end)`. `Interner` dedups `Stack`/`Frame`/`ThreadRef`/method names by identity of the JDK's constant-pool objects (a `RecordedObject` field lookup is a linear by-name scan, so every resolution is done once), and its value tables are probed with raw components (a frame's type/method/line/kind, a stack's frame buffer) so a hit allocates nothing; the identity caches are bounded and cleared when full. `Stack` is a class with a cached hash, not a record, so aggregation maps compare by identity first. `core/jfr/Events` is the only place that reads fields off a `RecordedEvent`.
 
@@ -57,7 +58,9 @@ jfrq stalls demo-lock.jfr --thread 'event-loop-*' --timing
 
 **Rendering.** Text (`cli/Text`, `core/util/TextTable`) and HTML (`core/report/Html`) are both derived from the same report objects; HTML is built behind a supplier only when `--html` is given.
 
-**CLI (`cli/Main`, `cli/Args`).** Hand-rolled parsing, no library. Exit codes: 0 ok, 1 recording unreadable, 2 usage error. `Main` holds the `USAGE` text; keep it in sync with `README.md` when an option changes. The launcher adds `-XX:+AutoCreateSharedArchive` so an AppCDS archive lands in `lib/jfrq.jsa` after the first run (`cli/build.gradle.kts` patches the start script for `$APP_HOME`).
+**CLI (`cli/Main`, `cli/Args`).** Hand-rolled parsing, no library. Exit codes: 0 ok, 1 recording unreadable, 2 usage error. `Main` holds the `USAGE` text; keep it in sync with `README.md` when an option changes. The launcher adds `-XX:+AutoCreateSharedArchive` so an AppCDS archive lands in `lib/jfrq.jsa` after the first run (`cli/build.gradle.kts` patches the start script for `$APP_HOME`). `Main.run(argv, out, err)` and `Args` are public because `live` reuses them.
+
+**`live` (`live/Live`, `Jvm`, `Snapshot`, `Cursor`, `Window`).** `jfrq-live <pid> <command> [options] [-- <jfrq command>]`. `Jvm.attach` uses `com.sun.tools.attach` to start the target's local management agent and drives `jdk.management.jfr.FlightRecorderMXBean` over that JMX connector (it sets `java.rmi.server.hostname=127.0.0.1` on its own side: an unresolvable macOS hostname otherwise costs 5 s per connection). `Snapshot.take` is `jcmd JFR.dump` over JMX: `cloneRecording(id, stop=true)` seals the current chunk at instant `T`, `openStream` with `startTime`/`endTime` hands over every chunk overlapping the window (whole chunks, never cut), `closeRecording` on the clone. `Cursor` keeps `T + 1 ms` per JVM incarnation (`pid` + JVM start time) in `~/.jfrq/live/<pid>.properties`; the rule and why it makes deltas exact at chunk level is in `Cursor`'s javadoc and `docs/LIVE.md` §2. After each dump `Live.check` reads the file back with `JfrReader.read` and prints the span against the window; warnings when data was discarded by `max-age`/`max-size` or the recording is unbounded. In-memory recordings (`disk=false`) have no chunks and fail with "holds no data in the window".
 
 **`netty-demo`.** A Netty service with injected pathologies (`Scenario`, `RequestHandler`, `Background`), recorded in-process by `Recorder`; the walkthrough is `docs/TUTORIAL.md`. It is the only module with third-party dependencies.
 
