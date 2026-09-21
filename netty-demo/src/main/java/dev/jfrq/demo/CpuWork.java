@@ -13,8 +13,8 @@ final class CpuWork {
      * Burns roughly {@code millis} of CPU on the calling thread. The checksum is folded into
      * a volatile sink so the JIT cannot remove the work.
      */
-    static void burn(long millis) {
-        long deadline = System.nanoTime() + millis * 1_000_000L;
+    static void burn(final long millis) {
+        final long deadline = System.nanoTime() + millis * 1_000_000L;
         long acc = 0x9E3779B97F4A7C15L;
         do {
             for (int i = 0; i < 10_000; i++) {

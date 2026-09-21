@@ -21,11 +21,11 @@ final class SessionRegistry {
     private final Map<String, Long> lastSeen = new HashMap<>();
     private final Persistence persistence;
 
-    SessionRegistry(Persistence persistence) {
+    SessionRegistry(final Persistence persistence) {
         this.persistence = persistence;
     }
 
-    synchronized void touch(String session) {
+    synchronized void touch(final String session) {
         lastSeen.put(session, System.nanoTime());
     }
 

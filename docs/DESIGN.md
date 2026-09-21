@@ -354,7 +354,7 @@ in order of effect:
 
 ### 8.1 The per-event path after the coding-guidelines pass (2026-09-18)
 
-`CODING_GUIDELINES-SEP-18.md` was applied to everything that runs per event: the reader
+`CODING-GUIDELINES.md` was applied to everything that runs per event: the reader
 resolves an `EventType` object once (by identity) to its name, its `int` tag, its
 counter and its sinks, so no string is hashed per event; the interner's value tables are
 probed with a frame's components and a stack's frame buffer, so a hit allocates nothing;

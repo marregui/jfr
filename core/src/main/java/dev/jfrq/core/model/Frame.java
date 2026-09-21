@@ -13,10 +13,10 @@ import jdk.jfr.consumer.RecordedMethod;
  */
 public record Frame(String type, String method, int line, String kind) {
 
-    public static Frame of(RecordedFrame f) {
-        RecordedMethod m = f.getMethod();
-        String type = m != null && m.getType() != null ? m.getType().getName() : "?";
-        String method = m != null ? m.getName() : "?";
+    public static Frame of(final RecordedFrame f) {
+        final RecordedMethod m = f.getMethod();
+        final String type = m != null && m.getType() != null ? m.getType().getName() : "?";
+        final String method = m != null ? m.getName() : "?";
         return new Frame(type, method, f.getLineNumber(), f.getType());
     }
 
@@ -46,16 +46,16 @@ public record Frame(String type, String method, int line, String kind) {
     /** {@code java.lang.Thread.sleep(Thread.java:509)} in the style of a stack trace line. */
     public String pretty() {
         if (isHidden()) {
-            int cut = type.indexOf("$$Lambda");
-            String shown = cut > 0 ? type.substring(0, cut + "$$Lambda".length()) : type;
+            final int cut = type.indexOf("$$Lambda");
+            final String shown = cut > 0 ? type.substring(0, cut + "$$Lambda".length()) : type;
             return shown + "." + method + "(lambda)";
         }
         String file = type.substring(type.lastIndexOf('.') + 1);
-        int inner = file.indexOf('$');
+        final int inner = file.indexOf('$');
         if (inner > 0) {
             file = file.substring(0, inner);
         }
-        String location = line > 0 ? file + ".java:" + line : isNative() ? "Native Method" : file + ".java";
+        final String location = line > 0 ? file + ".java:" + line : isNative() ? "Native Method" : file + ".java";
         return qualifiedName() + "(" + location + ")";
     }
 

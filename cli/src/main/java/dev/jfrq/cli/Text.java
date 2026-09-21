@@ -32,22 +32,22 @@ final class Text {
     private Text() {
     }
 
-    static String header(RecordingInfo info) {
-        StringBuilder sb = new StringBuilder(String.format(Locale.ROOT, "Recording  %s  %s  starting %s%n",
+    static String header(final RecordingInfo info) {
+        final StringBuilder sb = new StringBuilder(String.format(Locale.ROOT, "Recording  %s  %s  starting %s%n",
                 info.file().getFileName(), Durations.format(info.duration()), info.start()));
-        for (String w : info.warnings()) {
+        for (final String w : info.warnings()) {
             sb.append("WARNING    ").append(w).append('\n');
         }
         return sb.toString();
     }
 
-    static String settingsLine(RecordingInfo info, String label, String... types) {
+    static String settingsLine(final RecordingInfo info, final String label, final String... types) {
         if (!info.hasSettings()) {
             return String.format(Locale.ROOT, "%-10s unknown: the recording has no jdk.ActiveSetting events%n", label);
         }
-        StringBuilder sb = new StringBuilder();
-        for (String t : types) {
-            String value = info.threshold(t).map(Durations::format)
+        final StringBuilder sb = new StringBuilder();
+        for (final String t : types) {
+            final String value = info.threshold(t).map(Durations::format)
                     .or(() -> info.period(t).map(Durations::format))
                     .or(() -> info.setting(t, "throttle"))
                     .orElse(null);
@@ -62,8 +62,8 @@ final class Text {
         return sb.isEmpty() ? "" : String.format(Locale.ROOT, "%-10s %s%n", label, sb);
     }
 
-    static String info(RecordingInfo info) {
-        StringBuilder sb = new StringBuilder(header(info));
+    static String info(final RecordingInfo info) {
+        final StringBuilder sb = new StringBuilder(header(info));
         sb.append(String.format(Locale.ROOT, "%-10s %d%n", "Threads", info.threads().size()));
         sb.append(String.format(Locale.ROOT, "%-10s %d%n", "Chunks", info.chunks()));
         sb.append(settingsLine(info, "Sampling", "jdk.ExecutionSample", "jdk.NativeMethodSample"));
@@ -71,11 +71,11 @@ final class Text {
                 "jdk.SocketRead", "jdk.FileRead"));
         sb.append(settingsLine(info, "Allocation", "jdk.ObjectAllocationSample", "jdk.ObjectAllocationInNewTLAB"));
         sb.append('\n');
-        TextTable t = new TextTable("Event type", "Count", "Enabled", "Threshold", "Period").numeric(1);
-        List<Map.Entry<String, Long>> byCount = new ArrayList<>(info.eventCounts().entrySet());
+        final TextTable t = new TextTable("Event type", "Count", "Enabled", "Threshold", "Period").numeric(1);
+        final List<Map.Entry<String, Long>> byCount = new ArrayList<>(info.eventCounts().entrySet());
         byCount.sort(Map.Entry.<String, Long>comparingByValue().reversed().thenComparing(Map.Entry.comparingByKey()));
-        for (Map.Entry<String, Long> e : byCount) {
-            String type = e.getKey();
+        for (final Map.Entry<String, Long> e : byCount) {
+            final String type = e.getKey();
             t.row(type, e.getValue(), info.settings().containsKey(type) ? (info.enabled(type) ? "yes" : "no") : "",
                     info.threshold(type).map(Durations::format).orElse(""),
                     info.period(type).map(Durations::format).or(() -> info.setting(type, "period")).orElse(""));
@@ -84,8 +84,8 @@ final class Text {
         return sb.toString();
     }
 
-    static String alloc(AllocationReport r, int top, boolean sites) {
-        StringBuilder sb = new StringBuilder(header(r.info()));
+    static String alloc(final AllocationReport r, final int top, final boolean sites) {
+        final StringBuilder sb = new StringBuilder(header(r.info()));
         sb.append(String.format(Locale.ROOT, "%-10s %s (%d samples)%n", "Source", r.source(), r.samples()));
         sb.append(String.format(Locale.ROOT, "%-10s %s over %s = %s%n", "Estimate", Bytes.format(r.totalBytes()),
                 Durations.format(r.info().duration()), Bytes.rate(r.rate())));
@@ -107,10 +107,10 @@ final class Text {
             }
             if (r.hasCounters()) {
                 sb.append("\nBY THREAD (JVM counters)\n");
-                TextTable counted = new TextTable("Thread", "Counted").numeric(1);
-                List<Map.Entry<String, Long>> rows = new ArrayList<>(r.countedByThread().entrySet());
+                final TextTable counted = new TextTable("Thread", "Counted").numeric(1);
+                final List<Map.Entry<String, Long>> rows = new ArrayList<>(r.countedByThread().entrySet());
                 rows.sort(Map.Entry.<String, Long>comparingByValue().reversed());
-                for (Map.Entry<String, Long> e : rows.subList(0, Math.min(top, rows.size()))) {
+                for (final Map.Entry<String, Long> e : rows.subList(0, Math.min(top, rows.size()))) {
                     counted.row(e.getKey(), Bytes.format(e.getValue()));
                 }
                 sb.append(counted.render("  "));
@@ -119,10 +119,10 @@ final class Text {
         }
 
         sb.append("\nBY THREAD\n");
-        TextTable threads = new TextTable("Thread", "Bytes", "Counted", "Rate", "Share", "Top classes").numeric(1, 2, 3, 4);
-        for (AllocationReport.Row<String> row : r.threads(top)) {
-            StringBuilder classes = new StringBuilder();
-            for (AllocationReport.Row<String> c : r.classesOf(row.key(), 3)) {
+        final TextTable threads = new TextTable("Thread", "Bytes", "Counted", "Rate", "Share", "Top classes").numeric(1, 2, 3, 4);
+        for (final AllocationReport.Row<String> row : r.threads(top)) {
+            final StringBuilder classes = new StringBuilder();
+            for (final AllocationReport.Row<String> c : r.classesOf(row.key(), 3)) {
                 if (!classes.isEmpty()) {
                     classes.append(", ");
                 }
@@ -135,8 +135,8 @@ final class Text {
         sb.append(threads.render("  "));
 
         sb.append("\nBY CLASS\n");
-        TextTable classes = new TextTable("Class", "Bytes", "Rate", "Share").numeric(1, 2, 3);
-        for (AllocationReport.Row<String> row : r.classes(top)) {
+        final TextTable classes = new TextTable("Class", "Bytes", "Rate", "Share").numeric(1, 2, 3);
+        for (final AllocationReport.Row<String> row : r.classes(top)) {
             classes.row(ClassNames.pretty(row.key()), Bytes.format(row.bytes()), Bytes.rate(r.rate(row.bytes())),
                     pct(row.share()));
         }
@@ -145,7 +145,7 @@ final class Text {
         if (sites) {
             sb.append("\nBY SITE\n");
             int n = 1;
-            for (AllocationReport.Row<Stack> row : r.sites(top)) {
+            for (final AllocationReport.Row<Stack> row : r.sites(top)) {
                 sb.append(String.format(Locale.ROOT, "  %2d  %10s  %10s  %6s%n", n++, Bytes.format(row.bytes()),
                         Bytes.rate(r.rate(row.bytes())), pct(row.share())));
                 sb.append(row.key().pretty("        ", STACK_FRAMES));
@@ -154,16 +154,16 @@ final class Text {
         return sb.toString();
     }
 
-    static String allocDiff(AllocationDiff d, int top, boolean sites) {
-        StringBuilder sb = new StringBuilder();
+    static String allocDiff(final AllocationDiff d, final int top, final boolean sites) {
+        final StringBuilder sb = new StringBuilder();
         sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s%n", "Baseline", d.baseline().info().file().getFileName(),
                 Durations.format(d.baseline().info().duration()), Bytes.rate(d.baseline().rate())));
-        for (String w : d.baseline().info().warnings()) {
+        for (final String w : d.baseline().info().warnings()) {
             sb.append("WARNING    baseline: ").append(w).append('\n');
         }
         sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s%n", "Current", d.current().info().file().getFileName(),
                 Durations.format(d.current().info().duration()), Bytes.rate(d.current().rate())));
-        for (String w : d.current().info().warnings()) {
+        for (final String w : d.current().info().warnings()) {
             sb.append("WARNING    current: ").append(w).append('\n');
         }
         sb.append(String.format(Locale.ROOT, "%-10s %s (%s)%n", "Change", Bytes.signedRate(d.total().delta()),
@@ -171,16 +171,16 @@ final class Text {
         sb.append("Rates are bytes/second so recordings of different length compare.\n");
 
         sb.append("\nBY THREAD\n");
-        TextTable threads = new TextTable("Thread", "Before", "After", "Change", "").numeric(1, 2, 3);
-        for (AllocationDiff.Delta<String> x : d.threads(top)) {
+        final TextTable threads = new TextTable("Thread", "Before", "After", "Change", "").numeric(1, 2, 3);
+        for (final AllocationDiff.Delta<String> x : d.threads(top)) {
             threads.row(x.key(), Bytes.rate(x.beforeRate()), Bytes.rate(x.afterRate()), Bytes.signedRate(x.delta()),
                     ratio(x.ratio()));
         }
         sb.append(threads.render("  "));
 
         sb.append("\nBY CLASS\n");
-        TextTable classes = new TextTable("Class", "Before", "After", "Change", "").numeric(1, 2, 3);
-        for (AllocationDiff.Delta<String> x : d.classes(top)) {
+        final TextTable classes = new TextTable("Class", "Before", "After", "Change", "").numeric(1, 2, 3);
+        for (final AllocationDiff.Delta<String> x : d.classes(top)) {
             classes.row(ClassNames.pretty(x.key()), Bytes.rate(x.beforeRate()), Bytes.rate(x.afterRate()),
                     Bytes.signedRate(x.delta()), ratio(x.ratio()));
         }
@@ -189,7 +189,7 @@ final class Text {
         if (sites) {
             sb.append("\nBY SITE\n");
             int n = 1;
-            for (AllocationDiff.Delta<Stack> x : d.sites(top)) {
+            for (final AllocationDiff.Delta<Stack> x : d.sites(top)) {
                 sb.append(String.format(Locale.ROOT, "  %2d  %10s -> %-10s %10s (%s)%n", n++, Bytes.rate(x.beforeRate()),
                         Bytes.rate(x.afterRate()), Bytes.signedRate(x.delta()), ratio(x.ratio())));
                 sb.append(x.key().pretty("        ", STACK_FRAMES));
@@ -198,8 +198,8 @@ final class Text {
         return sb.toString();
     }
 
-    static String locks(ContentionReport r, int top) {
-        StringBuilder sb = new StringBuilder(header(r.info()));
+    static String locks(final ContentionReport r, final int top) {
+        final StringBuilder sb = new StringBuilder(header(r.info()));
         sb.append(settingsLine(r.info(), "Thresholds", "jdk.JavaMonitorEnter", "jdk.ThreadPark"));
         if (r.isEmpty()) {
             sb.append(r.filtered()
@@ -212,29 +212,29 @@ final class Text {
                 r.waits().size()));
 
         sb.append("\nLOCKS BY TOTAL WAIT\n");
-        TextTable locks = new TextTable("Lock", "Kind", "Total", "Waits", "Max", "Waiters", "Held by").numeric(2, 3, 4);
-        for (ContentionReport.LockStats l : r.locks(top)) {
+        final TextTable locks = new TextTable("Lock", "Kind", "Total", "Waits", "Max", "Waiters", "Held by").numeric(2, 3, 4);
+        for (final ContentionReport.LockStats l : r.locks(top)) {
             locks.row(l.lock().pretty(), l.lock().kind().label(), Durations.format(l.totalNanos()), l.count(),
                     Durations.format(l.maxNanos()), names(l.waiters()), names(l.owners()));
         }
         sb.append(locks.render("  "));
 
         sb.append("\nTHREADS BY TIME BLOCKED\n");
-        TextTable threads = new TextTable("Thread", "Total", "Waits", "Max", "Share").numeric(1, 2, 3, 4);
-        double span = Math.max(1, r.info().span().length());
-        for (ContentionReport.ThreadStats t : r.waiters(top)) {
+        final TextTable threads = new TextTable("Thread", "Total", "Waits", "Max", "Share").numeric(1, 2, 3, 4);
+        final double span = Math.max(1, r.info().span().length());
+        for (final ContentionReport.ThreadStats t : r.waiters(top)) {
             threads.row(t.thread().name(), Durations.format(t.totalNanos()), t.count(), Durations.format(t.maxNanos()),
                     pct(t.totalNanos() / span));
         }
         sb.append(threads.render("  "));
 
-        List<ContentionReport.Convoy> convoys = r.convoys(5, top);
+        final List<ContentionReport.Convoy> convoys = r.convoys(5, top);
         if (!convoys.isEmpty()) {
             sb.append("\nCONVOYS (the holder was itself blocked)\n");
-            for (ContentionReport.Convoy c : convoys) {
+            for (final ContentionReport.Convoy c : convoys) {
                 sb.append("  ").append(Durations.offset(c.head().start() - r.info().startNanos())).append("  ");
                 boolean first = true;
-                for (Wait w : c.links()) {
+                for (final Wait w : c.links()) {
                     if (!first) {
                         sb.append("\n              -> ");
                     }
@@ -251,7 +251,7 @@ final class Text {
 
         sb.append("\nLONGEST WAITS\n");
         int n = 1;
-        for (Wait w : r.longest(top)) {
+        for (final Wait w : r.longest(top)) {
             sb.append(String.format(Locale.ROOT, "  %2d  %s  %8s  %s waited for %s%s%n", n++,
                     Durations.offset(w.start() - r.info().startNanos()), Durations.format(w.duration()),
                     w.waiter().name(), w.lock().pretty(), w.owner() == null ? "" : " " + w.heldBy()));
@@ -260,8 +260,8 @@ final class Text {
         return sb.toString();
     }
 
-    static String stalls(StallReport r, int top) {
-        StringBuilder sb = new StringBuilder(header(r.info()));
+    static String stalls(final StallReport r, final int top) {
+        final StringBuilder sb = new StringBuilder(header(r.info()));
         sb.append(settingsLine(r.info(), "Sampling", "jdk.ExecutionSample", "jdk.NativeMethodSample"));
         sb.append(settingsLine(r.info(), "Thresholds", "jdk.JavaMonitorEnter", "jdk.ThreadPark", "jdk.ThreadSleep",
                 "jdk.SocketRead", "jdk.FileRead"));
@@ -270,8 +270,8 @@ final class Text {
             sb.append("\nNo thread matched. Use `jfrq info` to list the threads in the recording.\n");
             return sb.toString();
         }
-        StringBuilder threads = new StringBuilder();
-        for (StallReport.ThreadSummary t : r.threads()) {
+        final StringBuilder threads = new StringBuilder();
+        for (final StallReport.ThreadSummary t : r.threads()) {
             if (!threads.isEmpty()) {
                 threads.append(", ");
             }
@@ -280,11 +280,11 @@ final class Text {
                     .append(Durations.format(t.nativeCadenceNanos())).append(" native)");
         }
         sb.append(String.format(Locale.ROOT, "%-10s %d matched: %s%n", "Threads", r.threads().size(), threads));
-        for (String w : r.warnings()) {
+        for (final String w : r.warnings()) {
             sb.append("WARNING    ").append(w).append('\n');
         }
 
-        List<Stall> shown = r.top(top);
+        final List<Stall> shown = r.top(top);
         sb.append(String.format(Locale.ROOT, "%nSTALLS >= %s: %d found%s, longest first%n",
                 Durations.format(r.gapNanos()), r.stalls().size(),
                 shown.size() < r.stalls().size() ? ", showing " + shown.size() : ""));
@@ -292,7 +292,7 @@ final class Text {
             sb.append("  none\n");
         }
         int n = 1;
-        for (Stall s : shown) {
+        for (final Stall s : shown) {
             sb.append(String.format(Locale.ROOT, "  %2d  %-22s %s  %8s  %-15s %s%s%n", n++, s.thread().name(),
                     Durations.offset(s.start() - r.info().startNanos()), Durations.format(s.duration()),
                     s.verdict(), s.detail(), evidence(s)));
@@ -301,17 +301,17 @@ final class Text {
 
         if (!r.stalls().isEmpty()) {
             sb.append("\nBY VERDICT\n");
-            TextTable verdicts = new TextTable("Verdict", "Stalls", "Stalled", "Worst").numeric(1, 2, 3);
-            for (StallReport.VerdictSummary v : r.byVerdict()) {
+            final TextTable verdicts = new TextTable("Verdict", "Stalls", "Stalled", "Worst").numeric(1, 2, 3);
+            for (final StallReport.VerdictSummary v : r.byVerdict()) {
                 verdicts.row(v.verdict(), v.count(), Durations.format(v.totalNanos()), Durations.format(v.worstNanos()));
             }
             sb.append(verdicts.render("  "));
         }
 
         sb.append("\nPER THREAD\n");
-        TextTable summary = new TextTable("Thread", "Stalls", "Stalled", "Share", "Worst").numeric(1, 2, 3, 4);
-        double span = Math.max(1, r.info().span().length());
-        for (StallReport.ThreadSummary t : r.threads()) {
+        final TextTable summary = new TextTable("Thread", "Stalls", "Stalled", "Share", "Worst").numeric(1, 2, 3, 4);
+        final double span = Math.max(1, r.info().span().length());
+        for (final StallReport.ThreadSummary t : r.threads()) {
             summary.row(t.thread().name(), t.stalls(), Durations.format(t.stalledNanos()), pct(t.stalledNanos() / span),
                     Durations.format(t.worstNanos()));
         }
@@ -319,9 +319,9 @@ final class Text {
 
         if (!r.pauses().isEmpty()) {
             sb.append("\nJVM-WIDE PAUSES >= gap (stop every thread)\n");
-            List<Pause> pauses = r.pauses();
+            final List<Pause> pauses = r.pauses();
             for (int i = 0; i < Math.min(top, pauses.size()); i++) {
-                Pause p = pauses.get(i);
+                final Pause p = pauses.get(i);
                 sb.append(String.format(Locale.ROOT, "  %s  %8s  %s: %s%n", Durations.offset(p.interval().start()
                         - r.info().startNanos()), Durations.format(p.length()), p.kind().label(), p.detail()));
             }
@@ -333,21 +333,21 @@ final class Text {
     }
 
     /** {@code " (+7%)"} when the counted threads carry enough of the estimate for the comparison to mean something. */
-    static String errorNote(AllocationReport r) {
+    static String errorNote(final AllocationReport r) {
         return r.estimateErrorMaterial() ? String.format(Locale.ROOT, " (%+.0f%%)", r.estimateError() * 100) : "";
     }
 
     /** How a stall was found, for anything less exact than an event: {@code  [samples]}, {@code  [silence]}. */
-    static String evidence(Stall s) {
+    static String evidence(final Stall s) {
         return s.evidence() == Stall.Evidence.EVENT ? "" : " [" + s.evidence().name().toLowerCase(Locale.ROOT) + "]";
     }
 
-    static String pct(double share) {
+    static String pct(final double share) {
         return String.format(Locale.ROOT, "%.1f%%", share * 100);
     }
 
     /** {@code +25%}, {@code -96%}, {@code ×2349} beyond tenfold, {@code new} from nothing. */
-    static String ratio(double r) {
+    static String ratio(final double r) {
         if (Double.isInfinite(r)) {
             return "new";
         }
@@ -357,9 +357,9 @@ final class Text {
         return String.format(Locale.ROOT, "%+.0f%%", r * 100);
     }
 
-    private static String names(Set<ThreadRef> threads) {
-        List<String> names = new ArrayList<>();
-        for (ThreadRef t : threads) {
+    private static String names(final Set<ThreadRef> threads) {
+        final List<String> names = new ArrayList<>();
+        for (final ThreadRef t : threads) {
             names.add(t.name());
         }
         return String.join(", ", names);

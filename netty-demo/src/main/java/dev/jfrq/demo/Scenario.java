@@ -25,7 +25,7 @@ public enum Scenario {
 
     private final String flag;
 
-    Scenario(String flag) {
+    Scenario(final String flag) {
         this.flag = flag;
     }
 
@@ -33,8 +33,8 @@ public enum Scenario {
         return flag;
     }
 
-    public static Scenario parse(String text) {
-        for (Scenario s : values()) {
+    public static Scenario parse(final String text) {
+        for (final Scenario s : values()) {
             if (s.flag.equalsIgnoreCase(text) || s.name().equalsIgnoreCase(text)) {
                 return s;
             }
@@ -43,8 +43,8 @@ public enum Scenario {
     }
 
     public static String flags() {
-        StringBuilder sb = new StringBuilder();
-        for (Scenario s : values()) {
+        final StringBuilder sb = new StringBuilder();
+        for (final Scenario s : values()) {
             if (!sb.isEmpty()) {
                 sb.append(", ");
             }

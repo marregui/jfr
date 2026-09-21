@@ -17,24 +17,24 @@ public final class TextTable {
     private final boolean[] numeric;
     private final List<String[]> rows = new ArrayList<>();
 
-    public TextTable(String... headers) {
+    public TextTable(final String... headers) {
         this.headers = headers.clone();
         this.numeric = new boolean[headers.length];
     }
 
     /** Marks columns (by index) as right-aligned. */
-    public TextTable numeric(int... columns) {
-        for (int c : columns) {
+    public TextTable numeric(final int... columns) {
+        for (final int c : columns) {
             numeric[c] = true;
         }
         return this;
     }
 
-    public TextTable row(Object... cells) {
+    public TextTable row(final Object... cells) {
         if (cells.length != headers.length) {
             throw new IllegalArgumentException("expected " + headers.length + " cells, got " + cells.length);
         }
-        String[] row = new String[cells.length];
+        final String[] row = new String[cells.length];
         for (int i = 0; i < cells.length; i++) {
             row[i] = cells[i] == null ? "" : String.valueOf(cells[i]);
         }
@@ -47,19 +47,19 @@ public final class TextTable {
     }
 
     /** Renders with the given indent on every line. The last column is never padded. */
-    public String render(String indent) {
-        int[] width = new int[headers.length];
+    public String render(final String indent) {
+        final int[] width = new int[headers.length];
         for (int i = 0; i < headers.length; i++) {
             width[i] = headers[i].length();
         }
-        for (String[] row : rows) {
+        for (final String[] row : rows) {
             for (int i = 0; i < row.length; i++) {
                 width[i] = Math.max(width[i], row[i].length());
             }
         }
-        StringBuilder sb = new StringBuilder();
+        final StringBuilder sb = new StringBuilder();
         appendRow(sb, indent, headers, width);
-        for (String[] row : rows) {
+        for (final String[] row : rows) {
             appendRow(sb, indent, row, width);
         }
         return sb.toString();
@@ -69,12 +69,12 @@ public final class TextTable {
         return render("");
     }
 
-    private void appendRow(StringBuilder sb, String indent, String[] row, int[] width) {
+    private void appendRow(final StringBuilder sb, final String indent, final String[] row, final int[] width) {
         sb.append(indent);
         for (int i = 0; i < row.length; i++) {
-            boolean last = i == row.length - 1;
-            String cell = row[i];
-            int pad = width[i] - cell.length();
+            final boolean last = i == row.length - 1;
+            final String cell = row[i];
+            final int pad = width[i] - cell.length();
             if (numeric[i]) {
                 sb.repeat(' ', pad).append(cell);
             } else {

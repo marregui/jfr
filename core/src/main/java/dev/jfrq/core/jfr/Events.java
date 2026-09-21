@@ -23,32 +23,32 @@ public final class Events {
     private Events() {
     }
 
-    public static long nanos(Instant instant) {
+    public static long nanos(final Instant instant) {
         return instant.getEpochSecond() * 1_000_000_000L + instant.getNano();
     }
 
-    public static long startNanos(RecordedEvent e) {
+    public static long startNanos(final RecordedEvent e) {
         return nanos(e.getStartTime());
     }
 
-    public static long endNanos(RecordedEvent e) {
+    public static long endNanos(final RecordedEvent e) {
         return nanos(e.getEndTime());
     }
 
-    public static Interval interval(RecordedEvent e) {
-        long start = startNanos(e);
-        long end = endNanos(e);
+    public static Interval interval(final RecordedEvent e) {
+        final long start = startNanos(e);
+        final long end = endNanos(e);
         return new Interval(start, Math.max(start, end));
     }
 
     /** The thread an event belongs to, or {@code null} for VM-level events without one. */
-    public static ThreadRef thread(RecordedEvent e) {
-        RecordedThread t = e.hasField("sampledThread") ? e.getThread("sampledThread") : e.getThread();
+    public static ThreadRef thread(final RecordedEvent e) {
+        final RecordedThread t = e.hasField("sampledThread") ? e.getThread("sampledThread") : e.getThread();
         return ThreadRef.of(t);
     }
 
     /** A thread-valued field such as {@code previousOwner}, or {@code null}. */
-    public static ThreadRef thread(RecordedEvent e, String field) {
+    public static ThreadRef thread(final RecordedEvent e, final String field) {
         if (!e.hasField(field)) {
             return null;
         }
@@ -56,7 +56,7 @@ public final class Events {
     }
 
     /** {@link #thread(RecordedEvent, String)} resolved through the interner's identity cache. */
-    public static ThreadRef thread(RecordedEvent e, String field, Interner interner) {
+    public static ThreadRef thread(final RecordedEvent e, final String field, final Interner interner) {
         if (!e.hasField(field)) {
             return null;
         }
@@ -64,12 +64,12 @@ public final class Events {
     }
 
     /** The event's stack without interning; collectors use {@link #stack(RecordedEvent, Interner)}. */
-    public static Stack stack(RecordedEvent e) {
+    public static Stack stack(final RecordedEvent e) {
         return Stack.of(e.getStackTrace());
     }
 
     /** The event's stack, canonicalised through {@code interner}. */
-    public static Stack stack(RecordedEvent e, Interner interner) {
+    public static Stack stack(final RecordedEvent e, final Interner interner) {
         return interner.stack(e.getStackTrace());
     }
 
@@ -77,22 +77,22 @@ public final class Events {
      * The JVM name of a class-valued field ({@code [B}, {@code java.lang.Object}) resolved
      * through the interner's identity cache, or {@code null}.
      */
-    public static String className(RecordedEvent e, String field, Interner interner) {
+    public static String className(final RecordedEvent e, final String field, final Interner interner) {
         if (!e.hasField(field)) {
             return null;
         }
         return interner.className(e.getClass(field));
     }
 
-    public static long longOr(RecordedEvent e, String field, long fallback) {
+    public static long longOr(final RecordedEvent e, final String field, final long fallback) {
         return e.hasField(field) ? e.getLong(field) : fallback;
     }
 
-    public static String stringOr(RecordedEvent e, String field, String fallback) {
+    public static String stringOr(final RecordedEvent e, final String field, final String fallback) {
         if (!e.hasField(field)) {
             return fallback;
         }
-        String v = e.getString(field);
+        final String v = e.getString(field);
         return v == null ? fallback : v;
     }
 }

@@ -26,17 +26,17 @@ public final class Args {
     private final Set<String> flags;
 
     /** Parses {@code argv}; {@code valued} names options that take a value, {@code flags} those that do not. */
-    public static Args parse(String[] argv, Set<String> valued, Set<String> flags) {
-        Args a = new Args(flags);
+    public static Args parse(final String[] argv, final Set<String> valued, final Set<String> flags) {
+        final Args a = new Args(flags);
         for (int i = 0; i < argv.length; i++) {
-            String arg = argv[i];
+            final String arg = argv[i];
             if (!arg.startsWith("--")) {
                 a.positional.add(arg);
                 continue;
             }
             String name = arg.substring(2);
             String value = null;
-            int eq = name.indexOf('=');
+            final int eq = name.indexOf('=');
             if (eq >= 0) {
                 value = name.substring(eq + 1);
                 name = name.substring(0, eq);
@@ -61,7 +61,7 @@ public final class Args {
         return a;
     }
 
-    private Args(Set<String> flags) {
+    private Args(final Set<String> flags) {
         this.flags = flags;
     }
 
@@ -70,51 +70,51 @@ public final class Args {
     }
 
     /** The first positional argument, or a usage error naming what is missing. */
-    public String first(String what) {
+    public String first(final String what) {
         if (positional.isEmpty()) {
             throw new UsageException("missing " + what);
         }
         return positional.getFirst();
     }
 
-    public Optional<String> option(String name) {
+    public Optional<String> option(final String name) {
         return Optional.ofNullable(options.get(name));
     }
 
-    public boolean flag(String name) {
+    public boolean flag(final String name) {
         return flags.contains(name) && options.containsKey(name);
     }
 
     /** {@code --top N}: rows per table, a positive number, 15 by default. */
     public int top() {
-        String v = options.get("top");
+        final String v = options.get("top");
         if (v == null) {
             return 15;
         }
         try {
-            int n = Integer.parseInt(v);
+            final int n = Integer.parseInt(v);
             if (n <= 0) {
                 throw new UsageException("--top must be positive");
             }
             return n;
-        } catch (NumberFormatException e) {
+        } catch (final NumberFormatException e) {
             throw new UsageException("--top is not a number: " + v);
         }
     }
 
-    public long durationOption(String name, String fallback, boolean zeroAllowed) {
-        String v = options.getOrDefault(name, fallback);
+    public long durationOption(final String name, final String fallback, final boolean zeroAllowed) {
+        final String v = options.getOrDefault(name, fallback);
         if (!v.isEmpty() && Character.isDigit(v.charAt(v.length() - 1)) && !v.trim().equals("0")) {
             // A bare number would be nanoseconds, which nobody means on a command line.
             throw new UsageException("--" + name + " needs a unit: " + v + "ms, " + v + "s ...");
         }
         try {
-            long nanos = Durations.parseNanos(v);
+            final long nanos = Durations.parseNanos(v);
             if (nanos < 0 || (nanos == 0 && !zeroAllowed)) {
                 throw new UsageException("--" + name + " must be " + (zeroAllowed ? "zero or more" : "positive"));
             }
             return nanos;
-        } catch (IllegalArgumentException e) {
+        } catch (final IllegalArgumentException e) {
             throw new UsageException("--" + name + ": " + e.getMessage());
         }
     }
@@ -124,7 +124,7 @@ public final class Args {
         @Serial
         private static final long serialVersionUID = 1L;
 
-        public UsageException(String message) {
+        public UsageException(final String message) {
             super(message);
         }
     }

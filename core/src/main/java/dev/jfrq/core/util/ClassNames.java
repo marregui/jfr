@@ -13,7 +13,7 @@ public final class ClassNames {
     private ClassNames() {
     }
 
-    public static String pretty(String jvmName) {
+    public static String pretty(final String jvmName) {
         if (jvmName == null || jvmName.isEmpty()) {
             return "?";
         }
@@ -24,8 +24,8 @@ public final class ClassNames {
         if (dims == 0) {
             return jvmName;
         }
-        String base = jvmName.substring(dims);
-        String element = switch (base) {
+        final String base = jvmName.substring(dims);
+        final String element = switch (base) {
             case "B" -> "byte";
             case "C" -> "char";
             case "D" -> "double";
@@ -45,9 +45,9 @@ public final class ClassNames {
     }
 
     /** {@code java.util.HashMap$Node} to {@code HashMap$Node}; arrays keep their brackets. */
-    public static String simple(String name) {
-        String pretty = pretty(name);
-        int dot = pretty.lastIndexOf('.');
+    public static String simple(final String name) {
+        final String pretty = pretty(name);
+        final int dot = pretty.lastIndexOf('.');
         return dot < 0 ? pretty : pretty.substring(dot + 1);
     }
 }

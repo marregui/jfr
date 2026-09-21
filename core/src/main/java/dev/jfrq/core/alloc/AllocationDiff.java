@@ -48,26 +48,26 @@ public record AllocationDiff(AllocationReport baseline, AllocationReport current
         return new Delta<>("total", baseline.rate(), current.rate());
     }
 
-    public List<Delta<String>> threads(int top) {
+    public List<Delta<String>> threads(final int top) {
         return compare(baseline.byThread(), current.byThread(), top);
     }
 
-    public List<Delta<String>> classes(int top) {
+    public List<Delta<String>> classes(final int top) {
         return compare(baseline.byClass(), current.byClass(), top);
     }
 
-    public List<Delta<Stack>> sites(int top) {
+    public List<Delta<Stack>> sites(final int top) {
         return compare(baseline.bySite(), current.bySite(), top);
     }
 
     /** Sorted by absolute rate change, largest first. */
-    <K> List<Delta<K>> compare(Map<K, Long> before, Map<K, Long> after, int top) {
-        Set<K> keys = new HashSet<>(before.keySet());
+    <K> List<Delta<K>> compare(final Map<K, Long> before, final Map<K, Long> after, final int top) {
+        final Set<K> keys = new HashSet<>(before.keySet());
         keys.addAll(after.keySet());
-        List<Delta<K>> deltas = new ArrayList<>(keys.size());
-        for (K k : keys) {
-            double b = baseline.rate(before.getOrDefault(k, 0L));
-            double a = current.rate(after.getOrDefault(k, 0L));
+        final List<Delta<K>> deltas = new ArrayList<>(keys.size());
+        for (final K k : keys) {
+            final double b = baseline.rate(before.getOrDefault(k, 0L));
+            final double a = current.rate(after.getOrDefault(k, 0L));
             deltas.add(new Delta<>(k, b, a));
         }
         deltas.sort(Comparator.<Delta<K>>comparingDouble(d -> Math.abs(d.delta())).reversed());

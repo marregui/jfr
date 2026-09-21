@@ -33,8 +33,8 @@ public final class ObjObjHashMap<K, V> implements Mutable {
         this(Hashing.MIN_CAPACITY);
     }
 
-    public ObjObjHashMap(int initialCapacity) {
-        int capacity = Hashing.capacityFor(initialCapacity);
+    public ObjObjHashMap(final int initialCapacity) {
+        final int capacity = Hashing.capacityFor(initialCapacity);
         keys = new Object[capacity];
         values = new Object[capacity];
         mask = capacity - 1;
@@ -49,22 +49,22 @@ public final class ObjObjHashMap<K, V> implements Mutable {
         size = 0;
     }
 
-    public boolean contains(K key) {
+    public boolean contains(final K key) {
         return keyIndex(key) < 0;
     }
 
-    public boolean excludes(K key) {
+    public boolean excludes(final K key) {
         return keyIndex(key) > -1;
     }
 
     /** The value for {@code key}, or {@code null} when absent. */
-    public V get(K key) {
-        int index = keyIndex(key);
+    public V get(final K key) {
+        final int index = keyIndex(key);
         return index < 0 ? valueAtQuick(index) : null;
     }
 
     /** Whether {@code slot} (see {@link #slots()}) holds an entry. */
-    public boolean hasKeyAtSlot(int slot) {
+    public boolean hasKeyAtSlot(final int slot) {
         return keys[slot] != null;
     }
 
@@ -74,7 +74,7 @@ public final class ObjObjHashMap<K, V> implements Mutable {
 
     /** The key at {@code slot}, or {@code null} for a free slot. */
     @SuppressWarnings("unchecked")
-    public K keyAtSlot(int slot) {
+    public K keyAtSlot(final int slot) {
         return (K) keys[slot];
     }
 
@@ -83,9 +83,9 @@ public final class ObjObjHashMap<K, V> implements Mutable {
      * {@code -index - 1} means the key is present at {@code index}; a non-negative result
      * is the free slot an insert of this key would take.
      */
-    public int keyIndex(K key) {
-        int index = Hashing.spread(key.hashCode()) & mask;
-        Object k = keys[index];
+    public int keyIndex(final K key) {
+        final int index = Hashing.spread(key.hashCode()) & mask;
+        final Object k = keys[index];
         if (k == null) {
             return index;
         }
@@ -100,10 +100,10 @@ public final class ObjObjHashMap<K, V> implements Mutable {
     }
 
     /** Inserts or replaces; returns the previous value or {@code null}. */
-    public V put(K key, V value) {
-        int index = keyIndex(key);
+    public V put(final K key, final V value) {
+        final int index = keyIndex(key);
         if (index < 0) {
-            V previous = valueAtQuick(index);
+            final V previous = valueAtQuick(index);
             values[-index - 1] = value;
             return previous;
         }
@@ -116,7 +116,7 @@ public final class ObjObjHashMap<K, V> implements Mutable {
      *
      * @return {@code value}, so the get-or-insert idiom is one expression
      */
-    public V putAt(int index, K key, V value) {
+    public V putAt(final int index, final K key, final V value) {
         assert index >= 0 && keys[index] == null;
         keys[index] = key;
         values[index] = value;
@@ -128,8 +128,8 @@ public final class ObjObjHashMap<K, V> implements Mutable {
     }
 
     /** Removes {@code key} if present; re-homes the keys probed past it instead of leaving a tombstone. */
-    public boolean remove(K key) {
-        int index = keyIndex(key);
+    public boolean remove(final K key) {
+        final int index = keyIndex(key);
         if (index < 0) {
             removeAt(index);
             return true;
@@ -138,7 +138,7 @@ public final class ObjObjHashMap<K, V> implements Mutable {
     }
 
     /** Removes the entry a negative {@link #keyIndex} result denotes. */
-    public void removeAt(int index) {
+    public void removeAt(final int index) {
         assert index < 0;
         int slot = -index - 1;
         keys[slot] = null;
@@ -147,7 +147,7 @@ public final class ObjObjHashMap<K, V> implements Mutable {
         free++;
         int next = (slot + 1) & mask;
         while (keys[next] != null) {
-            int home = Hashing.spread(keys[next].hashCode()) & mask;
+            final int home = Hashing.spread(keys[next].hashCode()) & mask;
             if (Hashing.mayMove(slot, next, home)) {
                 keys[slot] = keys[next];
                 values[slot] = values[next];
@@ -169,7 +169,7 @@ public final class ObjObjHashMap<K, V> implements Mutable {
     }
 
     /** The value a negative {@link #keyIndex} result denotes; throws on a non-negative one. */
-    public V valueAt(int index) {
+    public V valueAt(final int index) {
         if (index >= 0) {
             throw new IllegalArgumentException("key is absent: keyIndex " + index);
         }
@@ -178,21 +178,21 @@ public final class ObjObjHashMap<K, V> implements Mutable {
 
     /** {@link #valueAt} without the sign check (G-1.6). */
     @SuppressWarnings("unchecked")
-    public V valueAtQuick(int index) {
+    public V valueAtQuick(final int index) {
         assert index < 0;
         return (V) values[-index - 1];
     }
 
     /** The value at {@code slot} (see {@link #slots()}); {@code null} for a free slot. */
     @SuppressWarnings("unchecked")
-    public V valueAtSlot(int slot) {
+    public V valueAtSlot(final int slot) {
         return (V) values[slot];
     }
 
-    private int probe(K key, int index) {
+    private int probe(final K key, int index) {
         do {
             index = (index + 1) & mask;
-            Object k = keys[index];
+            final Object k = keys[index];
             if (k == null) {
                 return index;
             }
@@ -203,15 +203,15 @@ public final class ObjObjHashMap<K, V> implements Mutable {
     }
 
     private void rehash() {
-        Object[] oldKeys = keys;
-        Object[] oldValues = values;
-        int capacity = oldKeys.length << 1;
+        final Object[] oldKeys = keys;
+        final Object[] oldValues = values;
+        final int capacity = oldKeys.length << 1;
         keys = new Object[capacity];
         values = new Object[capacity];
         mask = capacity - 1;
         free = Hashing.freeFor(capacity) - size;
         for (int i = 0; i < oldKeys.length; i++) {
-            Object k = oldKeys[i];
+            final Object k = oldKeys[i];
             if (k != null) {
                 int index = Hashing.spread(k.hashCode()) & mask;
                 while (keys[index] != null) {

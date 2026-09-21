@@ -17,7 +17,7 @@ class UtilTest {
     class GlobTest {
         @Test
         void starAndQuestionMark() {
-            Glob g = Glob.of("event-loop-*,worker-?");
+            final Glob g = Glob.of("event-loop-*,worker-?");
             assertTrue(g.test("event-loop-2-1"));
             assertTrue(g.test("event-loop-"));
             assertTrue(g.test("worker-7"));
@@ -102,7 +102,7 @@ class UtilTest {
     class TextTableTest {
         @Test
         void alignsColumnsAndRightAlignsNumerics() {
-            String out = new TextTable("Name", "Count", "Note").numeric(1)
+            final String out = new TextTable("Name", "Count", "Note").numeric(1)
                     .row("alpha", 1, "x")
                     .row("b", 12345, "")
                     .render("> ");
@@ -114,7 +114,7 @@ class UtilTest {
 
         @Test
         void rejectsWrongArity() {
-            TextTable t = new TextTable("a", "b");
+            final TextTable t = new TextTable("a", "b");
             assertThrows(IllegalArgumentException.class, () -> t.row("only one"));
             assertEquals(0, t.size());
             t.row(null, 2);

@@ -30,7 +30,7 @@ public record Wait(Interval interval, ThreadRef waiter, LockKey lock, ThreadRef 
         via = List.copyOf(via);
     }
 
-    public Wait(Interval interval, ThreadRef waiter, LockKey lock, ThreadRef owner, Stack stack) {
+    public Wait(final Interval interval, final ThreadRef waiter, final LockKey lock, final ThreadRef owner, final Stack stack) {
         this(interval, waiter, lock, owner, stack, List.of());
     }
 
@@ -39,7 +39,7 @@ public record Wait(Interval interval, ThreadRef waiter, LockKey lock, ThreadRef 
         if (owner == null) {
             return "";
         }
-        StringBuilder sb = new StringBuilder("held by ").append(owner.name());
+        final StringBuilder sb = new StringBuilder("held by ").append(owner.name());
         if (!via.isEmpty()) {
             sb.append(" (handed on through ");
             for (int i = 0; i < via.size(); i++) {
@@ -59,7 +59,7 @@ public record Wait(Interval interval, ThreadRef waiter, LockKey lock, ThreadRef 
 
         private final String label;
 
-        Kind(String label) {
+        Kind(final String label) {
             this.label = label;
         }
 

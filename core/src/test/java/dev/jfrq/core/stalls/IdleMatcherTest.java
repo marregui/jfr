@@ -18,7 +18,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 class IdleMatcherTest {
 
-    static Stack top(String type, String method) {
+    static Stack top(final String type, final String method) {
         return new Stack(List.of(new Frame(type, method, 0, "Native"),
                 new Frame("io.netty.channel.nio.NioEventLoop", "run", 500, "JIT compiled")), false);
     }
@@ -38,7 +38,7 @@ class IdleMatcherTest {
             "java.util.concurrent.locks.LockSupport, parkNanos",
             "java.lang.Object, wait0",
     })
-    void defaultsRecogniseSelectorsAndParks(String type, String method) {
+    void defaultsRecogniseSelectorsAndParks(final String type, final String method) {
         assertTrue(IdleMatcher.defaults().isIdle(top(type, method)), type + "." + method);
     }
 
@@ -49,19 +49,19 @@ class IdleMatcherTest {
             "java.lang.Thread, sleep",
             "io.netty.channel.nio.NioEventLoop, processSelectedKeys",
     })
-    void defaultsRejectWork(String type, String method) {
+    void defaultsRejectWork(final String type, final String method) {
         assertFalse(IdleMatcher.defaults().isIdle(top(type, method)), type + "." + method);
     }
 
     @Test
     void onlyTheInnermostFramesCount() {
-        Stack deepIdle = new Stack(List.of(
+        final Stack deepIdle = new Stack(List.of(
                 new Frame("dev.app.Work", "a", 1, "JIT compiled"),
                 new Frame("dev.app.Work", "b", 1, "JIT compiled"),
                 new Frame("dev.app.Work", "c", 1, "JIT compiled"),
                 new Frame("sun.nio.ch.KQueue", "poll", 0, "Native")), false);
         assertFalse(IdleMatcher.defaults().isIdle(deepIdle));
-        Stack thirdFrame = new Stack(List.of(
+        final Stack thirdFrame = new Stack(List.of(
                 new Frame("dev.app.Work", "a", 1, "JIT compiled"),
                 new Frame("dev.app.Work", "b", 1, "JIT compiled"),
                 new Frame("sun.nio.ch.KQueue", "poll", 0, "Native")), false);
@@ -71,7 +71,7 @@ class IdleMatcherTest {
 
     @Test
     void customPatternsReplaceTheDefaults() {
-        IdleMatcher custom = IdleMatcher.of("dev\\.app\\.Loop\\.take, org\\.x\\.Y\\.z");
+        final IdleMatcher custom = IdleMatcher.of("dev\\.app\\.Loop\\.take, org\\.x\\.Y\\.z");
         assertTrue(custom.isIdle(top("dev.app.Loop", "take")));
         assertTrue(custom.isIdle(top("org.x.Y", "z")));
         assertFalse(custom.isIdle(top("sun.nio.ch.KQueue", "poll")));

@@ -16,9 +16,9 @@ class EventKindsTest {
 
     @Test
     void tagsAreDenseAndRoundTripThroughNames() {
-        Set<String> names = new HashSet<>();
+        final Set<String> names = new HashSet<>();
         for (int kind = 0; kind < EventKinds.COUNT; kind++) {
-            String name = EventKinds.nameOf(kind);
+            final String name = EventKinds.nameOf(kind);
             assertNotNull(name, "kind " + kind);
             assertTrue(name.startsWith("jdk."), name);
             assertTrue(names.add(name), "duplicate " + name);

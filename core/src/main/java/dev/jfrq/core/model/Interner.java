@@ -61,7 +61,7 @@ public final class Interner {
     private record Method(String type, String name) {
     }
 
-    public Stack stack(RecordedStackTrace trace) {
+    public Stack stack(final RecordedStackTrace trace) {
         if (trace == null) {
             return Stack.EMPTY;
         }
@@ -69,16 +69,16 @@ public final class Interner {
         if (index < 0) {
             return stacksByIdentity.valueAtQuick(index);
         }
-        List<RecordedFrame> recorded = trace.getFrames();
-        int depth = recorded.size();
+        final List<RecordedFrame> recorded = trace.getFrames();
+        final int depth = recorded.size();
         if (scratch.length < depth) {
             scratch = new Frame[Math.max(depth, scratch.length << 1)];
         }
-        Frame[] buffer = scratch;
+        final Frame[] buffer = scratch;
         for (int i = 0; i < depth; i++) {
             buffer[i] = frame(recorded.get(i));
         }
-        Stack result = stacks.intern(buffer, depth, trace.isTruncated());
+        final Stack result = stacks.intern(buffer, depth, trace.isTruncated());
         if (stacksByIdentity.size() >= IDENTITY_LIMIT) {
             stacksByIdentity.clear();
             index = stacksByIdentity.keyIndex(trace);
@@ -88,12 +88,12 @@ public final class Interner {
     }
 
     /** The canonical instance equal to {@code f}. */
-    public Frame frame(Frame f) {
+    public Frame frame(final Frame f) {
         return frames.intern(f.type(), f.method(), f.line(), f.kind());
     }
 
     /** The thread a {@link RecordedThread} denotes, or {@code null}. */
-    public ThreadRef thread(RecordedThread t) {
+    public ThreadRef thread(final RecordedThread t) {
         if (t == null) {
             return null;
         }
@@ -101,9 +101,9 @@ public final class Interner {
         if (index < 0) {
             return threadsByIdentity.valueAtQuick(index);
         }
-        ThreadRef ref = ThreadRef.of(t);
-        int canonical = threadRefs.keyIndex(ref);
-        ThreadRef result = canonical < 0 ? threadRefs.valueAtQuick(canonical) : threadRefs.putAt(canonical, ref, ref);
+        final ThreadRef ref = ThreadRef.of(t);
+        final int canonical = threadRefs.keyIndex(ref);
+        final ThreadRef result = canonical < 0 ? threadRefs.valueAtQuick(canonical) : threadRefs.putAt(canonical, ref, ref);
         if (threadsByIdentity.size() >= IDENTITY_LIMIT) {
             threadsByIdentity.clear();
             index = threadsByIdentity.keyIndex(t);
@@ -116,8 +116,8 @@ public final class Interner {
      * The thread an event belongs to: {@code sampledThread} for the sampler events,
      * {@code eventThread} otherwise, decided once per event type instead of per event.
      */
-    public ThreadRef thread(RecordedEvent e) {
-        EventType type = e.getEventType();
+    public ThreadRef thread(final RecordedEvent e) {
+        final EventType type = e.getEventType();
         int index = threadFieldByType.keyIndex(type);
         String field;
         if (index < 0) {
@@ -135,7 +135,7 @@ public final class Interner {
     }
 
     /** The JVM name of a class ({@code [B}, {@code java.lang.Object}), or {@code null}. */
-    public String className(RecordedClass c) {
+    public String className(final RecordedClass c) {
         if (c == null) {
             return null;
         }
@@ -143,7 +143,7 @@ public final class Interner {
         if (index < 0) {
             return classNamesByIdentity.valueAtQuick(index);
         }
-        String name = c.getName();
+        final String name = c.getName();
         if (classNamesByIdentity.size() >= IDENTITY_LIMIT) {
             classNamesByIdentity.clear();
             index = classNamesByIdentity.keyIndex(c);
@@ -160,12 +160,12 @@ public final class Interner {
         return frames.size();
     }
 
-    private Frame frame(RecordedFrame f) {
-        Method m = method(f.getMethod());
+    private Frame frame(final RecordedFrame f) {
+        final Method m = method(f.getMethod());
         return frames.intern(m.type(), m.name(), f.getLineNumber(), f.getType());
     }
 
-    private Method method(RecordedMethod m) {
+    private Method method(final RecordedMethod m) {
         if (m == null) {
             return NO_METHOD;
         }
@@ -173,8 +173,8 @@ public final class Interner {
         if (index < 0) {
             return methodsByIdentity.valueAtQuick(index);
         }
-        String type = className(m.getType());
-        Method method = new Method(type == null ? UNKNOWN : type, m.getName());
+        final String type = className(m.getType());
+        final Method method = new Method(type == null ? UNKNOWN : type, m.getName());
         if (methodsByIdentity.size() >= IDENTITY_LIMIT) {
             methodsByIdentity.clear();
             index = methodsByIdentity.keyIndex(m);
@@ -193,14 +193,14 @@ public final class Interner {
         private int free;
         private int size;
 
-        FrameTable(int capacity) {
-            int n = Integer.highestOneBit(Math.max(16, capacity * 2) - 1) << 1;
+        FrameTable(final int capacity) {
+            final int n = Integer.highestOneBit(Math.max(16, capacity * 2) - 1) << 1;
             entries = new Frame[n];
             mask = n - 1;
             free = n >>> 1;
         }
 
-        private static int hash(String type, String method, int line, String kind) {
+        private static int hash(final String type, final String method, final int line, final String kind) {
             int h = type.hashCode();
             h = 31 * h + method.hashCode();
             h = 31 * h + line;
@@ -208,12 +208,12 @@ public final class Interner {
             return h ^ (h >>> 16);
         }
 
-        Frame intern(String type, String method, int line, String kind) {
+        Frame intern(final String type, final String method, final int line, final String kind) {
             int index = hash(type, method, line, kind) & mask;
             while (true) {
-                Frame f = entries[index];
+                final Frame f = entries[index];
                 if (f == null) {
-                    Frame created = new Frame(type, method, line, kind);
+                    final Frame created = new Frame(type, method, line, kind);
                     entries[index] = created;
                     size++;
                     if (--free == 0) {
@@ -233,12 +233,12 @@ public final class Interner {
         }
 
         private void rehash() {
-            Frame[] old = entries;
-            int n = old.length << 1;
+            final Frame[] old = entries;
+            final int n = old.length << 1;
             entries = new Frame[n];
             mask = n - 1;
             free = (n >>> 1) - size;
-            for (Frame f : old) {
+            for (final Frame f : old) {
                 if (f != null) {
                     int index = hash(f.type(), f.method(), f.line(), f.kind()) & mask;
                     while (entries[index] != null) {
@@ -260,20 +260,20 @@ public final class Interner {
         private int free;
         private int size;
 
-        StackTable(int capacity) {
-            int n = Integer.highestOneBit(Math.max(16, capacity * 2) - 1) << 1;
+        StackTable(final int capacity) {
+            final int n = Integer.highestOneBit(Math.max(16, capacity * 2) - 1) << 1;
             entries = new Stack[n];
             mask = n - 1;
             free = n >>> 1;
         }
 
-        Stack intern(Frame[] frames, int depth, boolean truncated) {
-            int hash = Stack.hashOf(frames, depth, truncated);
+        Stack intern(final Frame[] frames, final int depth, final boolean truncated) {
+            final int hash = Stack.hashOf(frames, depth, truncated);
             int index = (hash ^ (hash >>> 16)) & mask;
             while (true) {
-                Stack s = entries[index];
+                final Stack s = entries[index];
                 if (s == null) {
-                    Stack created = new Stack(Arrays.copyOf(frames, depth), truncated);
+                    final Stack created = new Stack(Arrays.copyOf(frames, depth), truncated);
                     entries[index] = created;
                     size++;
                     if (--free == 0) {
@@ -293,14 +293,14 @@ public final class Interner {
         }
 
         private void rehash() {
-            Stack[] old = entries;
-            int n = old.length << 1;
+            final Stack[] old = entries;
+            final int n = old.length << 1;
             entries = new Stack[n];
             mask = n - 1;
             free = (n >>> 1) - size;
-            for (Stack s : old) {
+            for (final Stack s : old) {
                 if (s != null) {
-                    int h = s.hashCode();
+                    final int h = s.hashCode();
                     int index = (h ^ (h >>> 16)) & mask;
                     while (entries[index] != null) {
                         index = (index + 1) & mask;

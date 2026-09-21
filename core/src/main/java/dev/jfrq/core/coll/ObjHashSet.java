@@ -22,16 +22,16 @@ public final class ObjHashSet<T> implements Mutable {
         this(Hashing.MIN_CAPACITY);
     }
 
-    public ObjHashSet(int initialCapacity) {
-        int capacity = Hashing.capacityFor(initialCapacity);
+    public ObjHashSet(final int initialCapacity) {
+        final int capacity = Hashing.capacityFor(initialCapacity);
         keys = new Object[capacity];
         mask = capacity - 1;
         free = Hashing.freeFor(capacity);
     }
 
     /** @return true when the element was not there before */
-    public boolean add(T value) {
-        int index = keyIndex(value);
+    public boolean add(final T value) {
+        final int index = keyIndex(value);
         if (index < 0) {
             return false;
         }
@@ -40,7 +40,7 @@ public final class ObjHashSet<T> implements Mutable {
     }
 
     /** Stores a new element at the free slot a non-negative {@link #keyIndex} result named. */
-    public void addAt(int index, T value) {
+    public void addAt(final int index, final T value) {
         assert index >= 0 && keys[index] == null;
         keys[index] = value;
         size++;
@@ -56,16 +56,16 @@ public final class ObjHashSet<T> implements Mutable {
         size = 0;
     }
 
-    public boolean contains(T value) {
+    public boolean contains(final T value) {
         return keyIndex(value) < 0;
     }
 
-    public boolean excludes(T value) {
+    public boolean excludes(final T value) {
         return keyIndex(value) > -1;
     }
 
     /** Whether {@code slot} (see {@link #slots()}) holds an element. */
-    public boolean hasKeyAtSlot(int slot) {
+    public boolean hasKeyAtSlot(final int slot) {
         return keys[slot] != null;
     }
 
@@ -75,14 +75,14 @@ public final class ObjHashSet<T> implements Mutable {
 
     /** The element at {@code slot}, or {@code null} for a free slot. */
     @SuppressWarnings("unchecked")
-    public T keyAtSlot(int slot) {
+    public T keyAtSlot(final int slot) {
         return (T) keys[slot];
     }
 
     /** See {@link ObjObjHashMap#keyIndex}: negative means present at {@code -index - 1}. */
-    public int keyIndex(T value) {
-        int index = Hashing.spread(value.hashCode()) & mask;
-        Object k = keys[index];
+    public int keyIndex(final T value) {
+        final int index = Hashing.spread(value.hashCode()) & mask;
+        final Object k = keys[index];
         if (k == null) {
             return index;
         }
@@ -97,8 +97,8 @@ public final class ObjHashSet<T> implements Mutable {
     }
 
     /** Removes {@code value} if present; re-homes the elements probed past it instead of leaving a tombstone. */
-    public boolean remove(T value) {
-        int index = keyIndex(value);
+    public boolean remove(final T value) {
+        final int index = keyIndex(value);
         if (index >= 0) {
             return false;
         }
@@ -108,7 +108,7 @@ public final class ObjHashSet<T> implements Mutable {
         free++;
         int next = (slot + 1) & mask;
         while (keys[next] != null) {
-            int home = Hashing.spread(keys[next].hashCode()) & mask;
+            final int home = Hashing.spread(keys[next].hashCode()) & mask;
             if (Hashing.mayMove(slot, next, home)) {
                 keys[slot] = keys[next];
                 keys[next] = null;
@@ -128,10 +128,10 @@ public final class ObjHashSet<T> implements Mutable {
         return keys.length;
     }
 
-    private int probe(T value, int index) {
+    private int probe(final T value, int index) {
         do {
             index = (index + 1) & mask;
-            Object k = keys[index];
+            final Object k = keys[index];
             if (k == null) {
                 return index;
             }
@@ -142,12 +142,12 @@ public final class ObjHashSet<T> implements Mutable {
     }
 
     private void rehash() {
-        Object[] old = keys;
-        int capacity = old.length << 1;
+        final Object[] old = keys;
+        final int capacity = old.length << 1;
         keys = new Object[capacity];
         mask = capacity - 1;
         free = Hashing.freeFor(capacity) - size;
-        for (Object k : old) {
+        for (final Object k : old) {
             if (k != null) {
                 int index = Hashing.spread(k.hashCode()) & mask;
                 while (keys[index] != null) {

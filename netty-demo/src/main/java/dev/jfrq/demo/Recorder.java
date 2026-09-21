@@ -34,15 +34,15 @@ final class Recorder implements AutoCloseable {
     private final Recording recording;
     private boolean closed;
 
-    Recorder(Path destination) throws IOException, ParseException {
+    Recorder(final Path destination) throws IOException, ParseException {
         recording = new Recording(Configuration.getConfiguration("profile"));
         recording.setName("jfrq-demo");
-        Duration oneMs = Duration.ofMillis(1);
-        for (String blocking : new String[] {"jdk.JavaMonitorEnter", "jdk.ThreadPark", "jdk.ThreadSleep",
+        final Duration oneMs = Duration.ofMillis(1);
+        for (final String blocking : new String[] {"jdk.JavaMonitorEnter", "jdk.ThreadPark", "jdk.ThreadSleep",
                 "jdk.JavaMonitorWait"}) {
             recording.enable(blocking).withThreshold(oneMs).withStackTrace();
         }
-        for (String io : new String[] {"jdk.SocketRead", "jdk.SocketWrite", "jdk.FileRead", "jdk.FileWrite"}) {
+        for (final String io : new String[] {"jdk.SocketRead", "jdk.SocketWrite", "jdk.FileRead", "jdk.FileWrite"}) {
             recording.enable(io).withThreshold(oneMs).withStackTrace().with("throttle", "off");
         }
         recording.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(10));

@@ -86,9 +86,9 @@ public final class Main {
     private static final Set<String> COMMON_FLAGS = Set.of("help", "version", "timing");
 
     /** The options each command accepts, so an option in the wrong place is a usage error. */
-    private static Args parse(String command, String[] rest) {
-        Set<String> valued = new HashSet<>(COMMON_VALUED);
-        Set<String> flags = new HashSet<>(COMMON_FLAGS);
+    private static Args parse(final String command, final String[] rest) {
+        final Set<String> valued = new HashSet<>(COMMON_VALUED);
+        final Set<String> flags = new HashSet<>(COMMON_FLAGS);
         switch (command) {
             case "info" -> valued.remove("top");
             case "alloc" -> {
@@ -107,20 +107,20 @@ public final class Main {
     private boolean timing;
     private long phaseStart;
 
-    Main(PrintStream out, PrintStream err) {
+    Main(final PrintStream out, final PrintStream err) {
         this.out = out;
         this.err = err;
     }
 
-    private void phase(String name) {
-        long now = System.nanoTime();
+    private void phase(final String name) {
+        final long now = System.nanoTime();
         if (timing && name != null && phaseStart != 0) {
             err.printf("timing: %-10s %s%n", name, Durations.format(now - phaseStart));
         }
         phaseStart = now;
     }
 
-    static void main(String[] argv) {
+    static void main(final String[] argv) {
         System.exit(new Main(System.out, System.err).run(argv));
     }
 
@@ -128,12 +128,12 @@ public final class Main {
      * Runs a command from another program ({@code jfrq-live} runs one on each dump it
      * takes) and returns the exit status without calling {@link System#exit}.
      */
-    public static int run(String[] argv, PrintStream out, PrintStream err) {
+    public static int run(final String[] argv, final PrintStream out, final PrintStream err) {
         return new Main(out, err).run(argv);
     }
 
     /** Runs a command and returns the exit status without calling {@link System#exit}. */
-    int run(String[] argv) {
+    int run(final String[] argv) {
         try {
             if (argv.length == 0 || argv[0].equals("--help") || argv[0].equals("-h") || argv[0].equals("help")) {
                 out.print(USAGE);
@@ -143,9 +143,9 @@ public final class Main {
                 out.println("jfrq " + VERSION);
                 return 0;
             }
-            String command = argv[0];
-            String[] rest = Arrays.copyOfRange(argv, 1, argv.length);
-            Args args = parse(command, rest);
+            final String command = argv[0];
+            final String[] rest = Arrays.copyOfRange(argv, 1, argv.length);
+            final Args args = parse(command, rest);
             if (args.flag("help")) {
                 out.print(USAGE);
                 return 0;
@@ -163,20 +163,20 @@ public final class Main {
                 case "stalls" -> stalls(args);
                 default -> throw new IllegalStateException(command);
             };
-        } catch (Args.UsageException e) {
+        } catch (final Args.UsageException e) {
             err.println("jfrq: " + e.getMessage());
             err.println("Run 'jfrq --help' for usage.");
             return 2;
-        } catch (NoSuchFileException e) {
+        } catch (final NoSuchFileException e) {
             err.println("jfrq: no such file: " + e.getFile());
             return 1;
-        } catch (HtmlWriteException e) {
+        } catch (final HtmlWriteException e) {
             err.println("jfrq: cannot write HTML report " + e.target + ": " + e.getCause().getMessage());
             return 1;
-        } catch (IOException e) {
+        } catch (final IOException e) {
             err.println("jfrq: cannot read recording: " + e.getMessage());
             return 1;
-        } catch (RuntimeException e) {
+        } catch (final RuntimeException e) {
             // The JDK parser signals a damaged file with unchecked exceptions; say so instead of a bare trace.
             err.println("jfrq: failed while reading the recording (damaged file?): " + e);
             e.printStackTrace(err);
@@ -184,9 +184,9 @@ public final class Main {
         }
     }
 
-    private int info(Args args) throws IOException {
-        Path file = recording(args);
-        RecordingInfo info = JfrReader.read(file);
+    private int info(final Args args) throws IOException {
+        final Path file = recording(args);
+        final RecordingInfo info = JfrReader.read(file);
         phase("read");
         out.print(Text.info(info));
         html(args, () -> Html.info(info));
@@ -194,24 +194,24 @@ public final class Main {
         return 0;
     }
 
-    private int alloc(Args args) throws IOException {
-        Path file = recording(args);
-        int top = args.top();
-        boolean sites = args.flag("sites");
-        AllocationCollector current = new AllocationCollector();
+    private int alloc(final Args args) throws IOException {
+        final Path file = recording(args);
+        final int top = args.top();
+        final boolean sites = args.flag("sites");
+        final AllocationCollector current = new AllocationCollector();
 
         if (args.option("baseline").isPresent()) {
-            Path baselineFile = existing(Path.of(args.option("baseline").orElseThrow()));
-            AllocationCollector baseline = new AllocationCollector();
+            final Path baselineFile = existing(Path.of(args.option("baseline").orElseThrow()));
+            final AllocationCollector baseline = new AllocationCollector();
             readBoth(file, current, baselineFile, baseline);
             phase("read");
-            AllocationDiff diff = new AllocationDiff(baseline.report(), current.report());
+            final AllocationDiff diff = new AllocationDiff(baseline.report(), current.report());
             out.print(Text.allocDiff(diff, top, sites));
             html(args, () -> Html.allocDiff(diff, top));
         } else {
             JfrReader.read(file, current);
             phase("read");
-            AllocationReport report = current.report();
+            final AllocationReport report = current.report();
             out.print(Text.alloc(report, top, sites));
             html(args, () -> Html.alloc(report, top));
         }
@@ -219,15 +219,15 @@ public final class Main {
         return 0;
     }
 
-    private int locks(Args args) throws IOException {
-        Path file = recording(args);
-        int top = args.top();
-        long min = args.durationOption("min", "0", true);
-        Glob threads = args.option("thread").map(Glob::of).orElse(Glob.any());
+    private int locks(final Args args) throws IOException {
+        final Path file = recording(args);
+        final int top = args.top();
+        final long min = args.durationOption("min", "0", true);
+        final Glob threads = args.option("thread").map(Glob::of).orElse(Glob.any());
         if (threads.isEmpty()) {
             throw new Args.UsageException("--thread must name at least one pattern");
         }
-        ContentionCollector collector = new ContentionCollector(min, threads);
+        final ContentionCollector collector = new ContentionCollector(min, threads);
         JfrReader.read(file, collector);
         phase("read");
         out.print(Text.locks(collector.report(), top));
@@ -236,22 +236,22 @@ public final class Main {
         return 0;
     }
 
-    private int stalls(Args args) throws IOException {
-        Path file = recording(args);
-        int top = args.top();
-        Glob threads = Glob.of(args.option("thread")
+    private int stalls(final Args args) throws IOException {
+        final Path file = recording(args);
+        final int top = args.top();
+        final Glob threads = Glob.of(args.option("thread")
                 .orElseThrow(() -> new Args.UsageException("stalls needs --thread GLOB (see 'jfrq info' for names)")));
         if (threads.isEmpty()) {
             throw new Args.UsageException("--thread must name at least one pattern");
         }
-        long gap = args.durationOption("gap", "50ms", false);
+        final long gap = args.durationOption("gap", "50ms", false);
         IdleMatcher idle;
         try {
             idle = args.option("idle").map(IdleMatcher::of).orElse(IdleMatcher.defaults());
-        } catch (IllegalArgumentException e) {
+        } catch (final IllegalArgumentException e) {
             throw new Args.UsageException("--idle: " + e.getMessage());
         }
-        StallCollector collector = new StallCollector(threads, idle, gap);
+        final StallCollector collector = new StallCollector(threads, idle, gap);
         JfrReader.read(file, collector);
         phase("read");
         out.print(Text.stalls(collector.report(), top));
@@ -264,31 +264,31 @@ public final class Main {
      * Reads two recordings concurrently, one per virtual thread; the parser is single-threaded
      * per file, so a diff otherwise costs two sequential passes.
      */
-    private static void readBoth(Path a, JfrReader.Sink sinkA, Path b, JfrReader.Sink sinkB) throws IOException {
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            Future<RecordingInfo> first = executor.submit(() -> JfrReader.read(a, sinkA));
-            Future<RecordingInfo> second = executor.submit(() -> JfrReader.read(b, sinkB));
+    private static void readBoth(final Path a, final JfrReader.Sink sinkA, final Path b, final JfrReader.Sink sinkB) throws IOException {
+        try (final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            final Future<RecordingInfo> first = executor.submit(() -> JfrReader.read(a, sinkA));
+            final Future<RecordingInfo> second = executor.submit(() -> JfrReader.read(b, sinkB));
             first.get();
             second.get();
-        } catch (ExecutionException e) {
+        } catch (final ExecutionException e) {
             if (e.getCause() instanceof IOException io) {
                 throw io;
             }
             throw new IllegalStateException(e.getCause());
-        } catch (InterruptedException e) {
+        } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("interrupted while reading", e);
         }
     }
 
-    private static Path recording(Args args) throws IOException {
+    private static Path recording(final Args args) throws IOException {
         if (args.positional().size() > 1) {
             throw new Args.UsageException("unexpected argument '" + args.positional().get(1) + "'");
         }
         return existing(Path.of(args.first("recording file")));
     }
 
-    private static Path existing(Path p) throws IOException {
+    private static Path existing(final Path p) throws IOException {
         if (Files.isDirectory(p)) {
             throw new Args.UsageException(p + " is a directory, not a recording");
         }
@@ -299,14 +299,14 @@ public final class Main {
     }
 
     /** Writes the HTML report if {@code --html} was given; the page is only built then. */
-    private void html(Args args, Supplier<String> html) throws HtmlWriteException {
+    private void html(final Args args, final Supplier<String> html) throws HtmlWriteException {
         if (args.option("html").isEmpty()) {
             return;
         }
-        Path target = Path.of(args.option("html").orElseThrow());
+        final Path target = Path.of(args.option("html").orElseThrow());
         try {
             Files.writeString(target, html.get(), StandardCharsets.UTF_8);
-        } catch (IOException e) {
+        } catch (final IOException e) {
             throw new HtmlWriteException(target, e);
         }
         err.println("HTML report written to " + target);
@@ -318,7 +318,7 @@ public final class Main {
         private static final long serialVersionUID = 1L;
         private final transient Path target;
 
-        HtmlWriteException(Path target, IOException cause) {
+        HtmlWriteException(final Path target, final IOException cause) {
             super(cause);
             this.target = target;
         }

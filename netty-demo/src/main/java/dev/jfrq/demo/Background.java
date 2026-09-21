@@ -27,7 +27,7 @@ final class Background {
     static final long ALLOCATOR_RETAINED_BYTES = 48L * 1024 * 1024;
 
     /** Every {@link #HOUSEKEEPER_PERIOD_MILLIS}, compacts the registry, holding its lock throughout. */
-    void housekeeper(SessionRegistry registry) {
+    void housekeeper(final SessionRegistry registry) {
         start("housekeeper", () -> {
             while (running) {
                 //noinspection BusyWait
@@ -38,7 +38,7 @@ final class Background {
     }
 
     /** Every {@link #FLUSHER_PERIOD_MILLIS}, takes the persistence lock for a checkpoint. */
-    void flusher(Persistence persistence) {
+    void flusher(final Persistence persistence) {
         start("persistence-flusher", () -> {
             while (running) {
                 //noinspection BusyWait
@@ -55,13 +55,13 @@ final class Background {
     void allocators() {
         for (int i = 1; i <= ALLOCATORS; i++) {
             start("bulk-allocator-" + i, () -> {
-                ArrayDeque<byte[]> window = new ArrayDeque<>();
+                final ArrayDeque<byte[]> window = new ArrayDeque<>();
                 List<Long> boxed = new ArrayList<>();
                 long retained = 0;
                 while (running) {
                     for (int n = 0; n < 200; n++) {
-                        int size = ThreadLocalRandom.current().nextInt(1024, 64 * 1024);
-                        byte[] chunk = new byte[size];
+                        final int size = ThreadLocalRandom.current().nextInt(1024, 64 * 1024);
+                        final byte[] chunk = new byte[size];
                         chunk[0] = (byte) n;
                         window.addLast(chunk);
                         retained += size;
@@ -80,11 +80,11 @@ final class Background {
         }
     }
 
-    private void start(String name, Task task) {
-        Thread t = new Thread(() -> {
+    private void start(final String name, final Task task) {
+        final Thread t = new Thread(() -> {
             try {
                 task.run();
-            } catch (InterruptedException stop) {
+            } catch (final InterruptedException stop) {
                 Thread.currentThread().interrupt();
             }
         }, name);
@@ -95,7 +95,7 @@ final class Background {
 
     void stop() {
         running = false;
-        for (Thread t : threads) {
+        for (final Thread t : threads) {
             t.interrupt();
         }
     }

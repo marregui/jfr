@@ -66,15 +66,15 @@ public record Chunks(List<Header> headers, boolean truncated) {
         headers = List.copyOf(headers);
     }
 
-    public static Chunks scan(Path file) throws IOException {
-        List<Header> headers = new ArrayList<>();
+    public static Chunks scan(final Path file) throws IOException {
+        final List<Header> headers = new ArrayList<>();
         boolean truncated = false;
-        try (FileChannel ch = FileChannel.open(file)) {
-            long length = ch.size();
+        try (final FileChannel ch = FileChannel.open(file)) {
+            final long length = ch.size();
             if (length < HEADER_SIZE) {
                 throw new IOException("not a Flight Recorder file: " + file + " is only " + length + " bytes");
             }
-            ByteBuffer buf = ByteBuffer.allocate(HEADER_SIZE);
+            final ByteBuffer buf = ByteBuffer.allocate(HEADER_SIZE);
             long offset = 0;
             while (offset + HEADER_SIZE <= length) {
                 buf.clear();
@@ -91,16 +91,16 @@ public record Chunks(List<Header> headers, boolean truncated) {
                     truncated = true;
                     break;
                 }
-                int major = buf.getShort(4);
+                final int major = buf.getShort(4);
                 if (major != MAJOR) {
                     throw new IOException("unsupported Flight Recorder file version " + major + "." + buf.getShort(6)
                             + " in " + file + " (JDK 9 or later writes version 2)");
                 }
-                long size = buf.getLong(8);
-                long start = buf.getLong(32);
-                long duration = buf.getLong(40);
-                int fileState = buf.get(64) & 0xff;
-                Header header = new Header(offset, size, start, duration, fileState);
+                final long size = buf.getLong(8);
+                final long start = buf.getLong(32);
+                final long duration = buf.getLong(40);
+                final int fileState = buf.get(64) & 0xff;
+                final Header header = new Header(offset, size, start, duration, fileState);
                 if (header.inProgress()) {
                     // Still being written: nothing after this header can be trusted, and the JDK
                     // parser would wait for the chunk to finish rather than fail.
@@ -131,7 +131,7 @@ public record Chunks(List<Header> headers, boolean truncated) {
     /** Earliest chunk start, or 0 without chunks. */
     public long startNanos() {
         long start = Long.MAX_VALUE;
-        for (Header h : headers) {
+        for (final Header h : headers) {
             start = Math.min(start, h.startNanos());
         }
         return start == Long.MAX_VALUE ? 0 : start;
@@ -140,7 +140,7 @@ public record Chunks(List<Header> headers, boolean truncated) {
     /** Latest chunk end (start + duration), or 0 without chunks; an in-progress chunk contributes its start. */
     public long endNanos() {
         long end = Long.MIN_VALUE;
-        for (Header h : headers) {
+        for (final Header h : headers) {
             end = Math.max(end, h.endNanos());
         }
         return end == Long.MIN_VALUE ? 0 : end;
@@ -154,7 +154,7 @@ public record Chunks(List<Header> headers, boolean truncated) {
     /** Chunks the JDK parser will read completely: every finalised chunk that fits in the file. */
     public int complete() {
         int n = 0;
-        for (Header h : headers) {
+        for (final Header h : headers) {
             if (!h.inProgress()) {
                 n++;
             }

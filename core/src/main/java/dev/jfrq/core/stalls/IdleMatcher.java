@@ -45,7 +45,7 @@ public final class IdleMatcher {
     /** Frames recur across every sample; regex matching runs once per distinct frame (G-2.2). */
     private final ObjLongHashMap<Frame> decided = new ObjLongHashMap<>(1024);
 
-    private IdleMatcher(String source, Pattern[] patterns) {
+    private IdleMatcher(final String source, final Pattern[] patterns) {
         this.source = source;
         this.patterns = patterns;
     }
@@ -55,10 +55,10 @@ public final class IdleMatcher {
     }
 
     /** Compiles a comma-separated list of regular expressions; replaces the defaults. */
-    public static IdleMatcher of(String spec) {
-        List<Pattern> compiled = new ArrayList<>();
-        for (String p : spec.split(",")) {
-            String t = p.trim();
+    public static IdleMatcher of(final String spec) {
+        final List<Pattern> compiled = new ArrayList<>();
+        for (final String p : spec.split(",")) {
+            final String t = p.trim();
             if (!t.isEmpty()) {
                 compiled.add(Pattern.compile(t));
             }
@@ -69,8 +69,8 @@ public final class IdleMatcher {
         return new IdleMatcher(spec, compiled.toArray(new Pattern[0]));
     }
 
-    public boolean isIdle(Stack stack) {
-        int depth = Math.min(DEPTH, stack.depth());
+    public boolean isIdle(final Stack stack) {
+        final int depth = Math.min(DEPTH, stack.depth());
         for (int i = 0; i < depth; i++) {
             if (isIdle(stack.frameQuick(i))) {
                 return true;
@@ -79,14 +79,14 @@ public final class IdleMatcher {
         return false;
     }
 
-    private boolean isIdle(Frame frame) {
-        int index = decided.keyIndex(frame);
+    private boolean isIdle(final Frame frame) {
+        final int index = decided.keyIndex(frame);
         if (index < 0) {
             return decided.valueAtQuick(index) == IDLE;
         }
         long verdict = BUSY;
-        String name = frame.qualifiedName();
-        for (Pattern p : patterns) {
+        final String name = frame.qualifiedName();
+        for (final Pattern p : patterns) {
             if (p.matcher(name).matches()) {
                 verdict = IDLE;
                 break;

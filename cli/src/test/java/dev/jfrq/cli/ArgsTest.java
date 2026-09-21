@@ -18,13 +18,13 @@ class ArgsTest {
     static final Set<String> VALUED = Set.of("top", "gap", "thread");
     static final Set<String> FLAGS = Set.of("sites");
 
-    static Args parse(String... argv) {
+    static Args parse(final String... argv) {
         return Args.parse(argv, VALUED, FLAGS);
     }
 
     @Test
     void positionalsOptionsAndFlags() {
-        Args a = parse("rec.jfr", "--top", "5", "--gap=20ms", "--sites", "second");
+        final Args a = parse("rec.jfr", "--top", "5", "--gap=20ms", "--sites", "second");
         assertEquals(List.of("rec.jfr", "second"), a.positional());
         assertEquals("rec.jfr", a.first("file"));
         assertEquals(5, a.top());
@@ -36,7 +36,7 @@ class ArgsTest {
 
     @Test
     void defaultsApplyWhenAbsent() {
-        Args a = parse();
+        final Args a = parse();
         assertEquals(15, a.top());
         assertEquals(50_000_000L, a.durationOption("gap", "50ms", false));
         assertThrows(Args.UsageException.class, () -> a.first("recording file"));
@@ -55,7 +55,7 @@ class ArgsTest {
         assertEquals(0, parse("--gap", "0").durationOption("gap", "1s", true));
         assertThrows(Args.UsageException.class, () -> parse("--gap", "50").durationOption("gap", "1s", false));
         assertThrows(Args.UsageException.class, () -> parse("--gap", "-1ms").durationOption("gap", "1s", true));
-        String message = assertThrows(Args.UsageException.class, () -> parse("--bogus")).getMessage();
+        final String message = assertThrows(Args.UsageException.class, () -> parse("--bogus")).getMessage();
         assertEquals("unknown option --bogus", message);
     }
 }

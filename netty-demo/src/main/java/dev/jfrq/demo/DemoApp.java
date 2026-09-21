@@ -24,7 +24,7 @@ public final class DemoApp {
     private DemoApp() {
     }
 
-    public static void main(String[] argv) throws Exception {
+    public static void main(final String[] argv) throws Exception {
         Scenario scenario = Scenario.ALL;
         Duration duration = Duration.ofSeconds(20);
         Path out = null;
@@ -56,7 +56,7 @@ public final class DemoApp {
         if (out == null) {
             out = Path.of("demo-" + scenario.flag() + ".jfr");
         }
-        Result r = run(scenario, duration, jfr ? out : null, connections, rate, loops);
+        final Result r = run(scenario, duration, jfr ? out : null, connections, rate, loops);
         System.out.println(r.describe());
         if (jfr) {
             System.out.println();
@@ -71,7 +71,7 @@ public final class DemoApp {
     /** What a run produced; used by the tests and printed by {@link #main}. */
     public record Result(Scenario scenario, int requests, String latency, Path recording, long lookups) {
         String describe() {
-            String s = String.format(Locale.ROOT, "scenario %s: %s", scenario.flag(), latency);
+            final String s = String.format(Locale.ROOT, "scenario %s: %s", scenario.flag(), latency);
             return lookups == 0 ? s : s + "; " + lookups + " synchronous backend lookups on the event loops";
         }
     }
@@ -86,15 +86,15 @@ public final class DemoApp {
      * @param rate        requests per second per connection; 0 for unpaced
      * @param loops       Netty event loops
      */
-    public static Result run(Scenario scenario, Duration duration, Path recording, int connections, int rate,
-                             int loops) throws Exception {
-        Persistence persistence = new Persistence();
-        SessionRegistry registry = new SessionRegistry(persistence);
-        Background background = new Background();
-        try (SlowBackend backend = scenario.blockingIo() ? new SlowBackend(120, 220) : null;
-             Recorder recorder = recording == null ? null : new Recorder(recording);
-             Server server = new Server(scenario, registry, backend == null ? -1 : backend.port(), loops)) {
-            LoadClient load = new LoadClient(server.port(), connections, rate, 2_000_000);
+    public static Result run(final Scenario scenario, final Duration duration, final Path recording, final int connections, final int rate,
+                             final int loops) throws Exception {
+        final Persistence persistence = new Persistence();
+        final SessionRegistry registry = new SessionRegistry(persistence);
+        final Background background = new Background();
+        try (final SlowBackend backend = scenario.blockingIo() ? new SlowBackend(120, 220) : null;
+             final Recorder recorder = recording == null ? null : new Recorder(recording);
+             final Server server = new Server(scenario, registry, backend == null ? -1 : backend.port(), loops)) {
+            final LoadClient load = new LoadClient(server.port(), connections, rate, 2_000_000);
             if (scenario.lock()) {
                 background.flusher(persistence);
                 background.housekeeper(registry);
@@ -117,15 +117,15 @@ public final class DemoApp {
         }
     }
 
-    private static String need(String[] argv, int i, String flag) {
+    private static String need(final String[] argv, final int i, final String flag) {
         if (i >= argv.length) {
             throw new IllegalArgumentException(flag + " needs a value");
         }
         return argv[i];
     }
 
-    private static Duration parseDuration(String text) {
-        String t = text.trim().toLowerCase(Locale.ROOT);
+    private static Duration parseDuration(final String text) {
+        final String t = text.trim().toLowerCase(Locale.ROOT);
         if (t.endsWith("ms")) {
             return Duration.ofMillis(number(t, 2));
         }
@@ -138,7 +138,7 @@ public final class DemoApp {
         return Duration.ofSeconds(number(t, 0));
     }
 
-    private static long number(String text, int unitLength) {
+    private static long number(final String text, final int unitLength) {
         return Long.parseLong(text.substring(0, text.length() - unitLength).trim());
     }
 

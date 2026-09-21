@@ -27,14 +27,14 @@ public final class ObjLongHashMap<K> implements Mutable {
         this(Hashing.MIN_CAPACITY);
     }
 
-    public ObjLongHashMap(int initialCapacity) {
+    public ObjLongHashMap(final int initialCapacity) {
         this(initialCapacity, DEFAULT_NO_ENTRY_VALUE);
     }
 
     /** @param noEntryValue what {@link #get} answers for an absent key (G-1.2) */
-    public ObjLongHashMap(int initialCapacity, long noEntryValue) {
+    public ObjLongHashMap(final int initialCapacity, final long noEntryValue) {
         this.noEntryValue = noEntryValue;
-        int capacity = Hashing.capacityFor(initialCapacity);
+        final int capacity = Hashing.capacityFor(initialCapacity);
         keys = new Object[capacity];
         values = new long[capacity];
         mask = capacity - 1;
@@ -49,28 +49,28 @@ public final class ObjLongHashMap<K> implements Mutable {
         size = 0;
     }
 
-    public boolean contains(K key) {
+    public boolean contains(final K key) {
         return keyIndex(key) < 0;
     }
 
-    public boolean excludes(K key) {
+    public boolean excludes(final K key) {
         return keyIndex(key) > -1;
     }
 
     /** The value for {@code key}, or the no-entry value. */
-    public long get(K key) {
-        int index = keyIndex(key);
+    public long get(final K key) {
+        final int index = keyIndex(key);
         return index < 0 ? valueAtQuick(index) : noEntryValue;
     }
 
     /** Whether {@code slot} (see {@link #slots()}) holds an entry. */
-    public boolean hasKeyAtSlot(int slot) {
+    public boolean hasKeyAtSlot(final int slot) {
         return keys[slot] != null;
     }
 
     /** Adds {@code delta} to the key's value, inserting {@code delta} for a new key; returns the new value. */
-    public long increment(K key, long delta) {
-        int index = keyIndex(key);
+    public long increment(final K key, final long delta) {
+        final int index = keyIndex(key);
         if (index < 0) {
             return values[-index - 1] += delta;
         }
@@ -84,14 +84,14 @@ public final class ObjLongHashMap<K> implements Mutable {
 
     /** The key at {@code slot}, or {@code null} for a free slot. */
     @SuppressWarnings("unchecked")
-    public K keyAtSlot(int slot) {
+    public K keyAtSlot(final int slot) {
         return (K) keys[slot];
     }
 
     /** See {@link ObjObjHashMap#keyIndex}: negative means present at {@code -index - 1}. */
-    public int keyIndex(K key) {
-        int index = Hashing.spread(key.hashCode()) & mask;
-        Object k = keys[index];
+    public int keyIndex(final K key) {
+        final int index = Hashing.spread(key.hashCode()) & mask;
+        final Object k = keys[index];
         if (k == null) {
             return index;
         }
@@ -110,8 +110,8 @@ public final class ObjLongHashMap<K> implements Mutable {
     }
 
     /** Inserts or replaces. */
-    public void put(K key, long value) {
-        int index = keyIndex(key);
+    public void put(final K key, final long value) {
+        final int index = keyIndex(key);
         if (index < 0) {
             values[-index - 1] = value;
         } else {
@@ -120,7 +120,7 @@ public final class ObjLongHashMap<K> implements Mutable {
     }
 
     /** Stores a new entry at the free slot a non-negative {@link #keyIndex} result named. */
-    public void putAt(int index, K key, long value) {
+    public void putAt(final int index, final K key, final long value) {
         assert index >= 0 && keys[index] == null;
         keys[index] = key;
         values[index] = value;
@@ -131,8 +131,8 @@ public final class ObjLongHashMap<K> implements Mutable {
     }
 
     /** Removes {@code key} if present; re-homes the keys probed past it instead of leaving a tombstone. */
-    public boolean remove(K key) {
-        int index = keyIndex(key);
+    public boolean remove(final K key) {
+        final int index = keyIndex(key);
         if (index < 0) {
             removeAt(index);
             return true;
@@ -141,7 +141,7 @@ public final class ObjLongHashMap<K> implements Mutable {
     }
 
     /** Removes the entry a negative {@link #keyIndex} result denotes. */
-    public void removeAt(int index) {
+    public void removeAt(final int index) {
         assert index < 0;
         int slot = -index - 1;
         keys[slot] = null;
@@ -149,7 +149,7 @@ public final class ObjLongHashMap<K> implements Mutable {
         free++;
         int next = (slot + 1) & mask;
         while (keys[next] != null) {
-            int home = Hashing.spread(keys[next].hashCode()) & mask;
+            final int home = Hashing.spread(keys[next].hashCode()) & mask;
             if (Hashing.mayMove(slot, next, home)) {
                 keys[slot] = keys[next];
                 values[slot] = values[next];
@@ -170,7 +170,7 @@ public final class ObjLongHashMap<K> implements Mutable {
     }
 
     /** The value a negative {@link #keyIndex} result denotes; throws on a non-negative one. */
-    public long valueAt(int index) {
+    public long valueAt(final int index) {
         if (index >= 0) {
             throw new IllegalArgumentException("key is absent: keyIndex " + index);
         }
@@ -178,20 +178,20 @@ public final class ObjLongHashMap<K> implements Mutable {
     }
 
     /** {@link #valueAt} without the sign check (G-1.6). */
-    public long valueAtQuick(int index) {
+    public long valueAtQuick(final int index) {
         assert index < 0;
         return values[-index - 1];
     }
 
     /** The value at {@code slot} (see {@link #slots()}); meaningless for a free slot. */
-    public long valueAtSlot(int slot) {
+    public long valueAtSlot(final int slot) {
         return values[slot];
     }
 
-    private int probe(K key, int index) {
+    private int probe(final K key, int index) {
         do {
             index = (index + 1) & mask;
-            Object k = keys[index];
+            final Object k = keys[index];
             if (k == null) {
                 return index;
             }
@@ -202,15 +202,15 @@ public final class ObjLongHashMap<K> implements Mutable {
     }
 
     private void rehash() {
-        Object[] oldKeys = keys;
-        long[] oldValues = values;
-        int capacity = oldKeys.length << 1;
+        final Object[] oldKeys = keys;
+        final long[] oldValues = values;
+        final int capacity = oldKeys.length << 1;
         keys = new Object[capacity];
         values = new long[capacity];
         mask = capacity - 1;
         free = Hashing.freeFor(capacity) - size;
         for (int i = 0; i < oldKeys.length; i++) {
-            Object k = oldKeys[i];
+            final Object k = oldKeys[i];
             if (k != null) {
                 int index = Hashing.spread(k.hashCode()) & mask;
                 while (keys[index] != null) {

@@ -17,7 +17,7 @@ class ListsTest {
 
     @Test
     void objListGrowsSortsAndClears() {
-        ObjList<String> list = new ObjList<>(1);
+        final ObjList<String> list = new ObjList<>(1);
         assertTrue(list.isEmpty());
         assertFalse(list.notEmpty());
         for (int i = 0; i < 100; i++) {
@@ -34,11 +34,11 @@ class ListsTest {
         assertEquals("s99", list.getLast());
         list.setQuick(0, "first");
         assertEquals("first", list.get(0));
-        List<String> snapshot = list.toList();
+        final List<String> snapshot = list.toList();
         assertEquals(100, snapshot.size());
         assertEquals("first", snapshot.getFirst());
         assertThrows(UnsupportedOperationException.class, () -> snapshot.add("x"));
-        ObjList<String> other = new ObjList<>();
+        final ObjList<String> other = new ObjList<>();
         other.add("a");
         other.addAll(list);
         assertEquals(101, other.size());
@@ -52,7 +52,7 @@ class ListsTest {
 
     @Test
     void longListGrowsSortsAndSearches() {
-        LongList list = new LongList(1);
+        final LongList list = new LongList(1);
         assertTrue(list.isEmpty());
         assertEquals(-1, list.getLast());
         assertEquals(7, new LongList(4, 7).getLast());

@@ -77,18 +77,18 @@ public final class EventKinds {
     }
 
     /** The tag for a JFR event type name, or {@link #UNKNOWN}. */
-    public static int kindOf(String eventTypeName) {
+    public static int kindOf(final String eventTypeName) {
         return (int) BY_NAME.get(eventTypeName);
     }
 
     /** The JFR event type name of a tag. */
-    public static String nameOf(int kind) {
+    public static String nameOf(final int kind) {
         return NAMES[kind];
     }
 
     /** The names of the given tags, for {@link JfrReader.Sink#eventTypes()}. */
-    public static Set<String> names(int... kinds) {
-        String[] names = new String[kinds.length];
+    public static Set<String> names(final int... kinds) {
+        final String[] names = new String[kinds.length];
         for (int i = 0; i < kinds.length; i++) {
             names[i] = NAMES[kinds[i]];
         }

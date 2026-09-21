@@ -22,7 +22,7 @@ class DemoAppTest {
 
     @Test
     void cleanScenarioServesRequestsWithoutRecording() throws Exception {
-        DemoApp.Result r = DemoApp.run(Scenario.CLEAN, Duration.ofMillis(1500), null, 4, 100, 1);
+        final DemoApp.Result r = DemoApp.run(Scenario.CLEAN, Duration.ofMillis(1500), null, 4, 100, 1);
         assertTrue(r.requests() > 50, r.latency());
         assertTrue(r.latency().contains("p99"));
         assertNull(r.recording());
@@ -31,8 +31,8 @@ class DemoAppTest {
 
     @Test
     void allScenarioWritesARecording() throws Exception {
-        Path out = dir.resolve("all.jfr");
-        DemoApp.Result r = DemoApp.run(Scenario.ALL, Duration.ofMillis(2500), out, 4, 100, 2);
+        final Path out = dir.resolve("all.jfr");
+        final DemoApp.Result r = DemoApp.run(Scenario.ALL, Duration.ofMillis(2500), out, 4, 100, 2);
         assertTrue(r.requests() > 0, r.latency());
         assertTrue(Files.size(out) > 10_000, "recording is too small");
         assertEquals(out, r.recording());
@@ -52,9 +52,9 @@ class DemoAppTest {
 
     @Test
     void cpuWorkRespectsItsBudget() {
-        long t0 = System.nanoTime();
+        final long t0 = System.nanoTime();
         CpuWork.burn(50);
-        long elapsed = (System.nanoTime() - t0) / 1_000_000;
+        final long elapsed = (System.nanoTime() - t0) / 1_000_000;
         assertTrue(elapsed >= 50 && elapsed < 1000, "took " + elapsed + " ms");
     }
 }

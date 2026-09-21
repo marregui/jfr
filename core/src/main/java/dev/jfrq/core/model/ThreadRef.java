@@ -14,11 +14,11 @@ import jdk.jfr.consumer.RecordedThread;
  */
 public record ThreadRef(long id, String name) {
 
-    public static ThreadRef of(RecordedThread t) {
+    public static ThreadRef of(final RecordedThread t) {
         if (t == null) {
             return null;
         }
-        long id = t.getJavaThreadId() > 0 ? t.getJavaThreadId() : t.getOSThreadId();
+        final long id = t.getJavaThreadId() > 0 ? t.getJavaThreadId() : t.getOSThreadId();
         String name = t.getJavaName();
         if (name == null || name.isEmpty()) {
             name = t.getOSName();

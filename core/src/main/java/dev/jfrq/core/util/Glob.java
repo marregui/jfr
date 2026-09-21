@@ -18,17 +18,17 @@ public final class Glob implements Predicate<String> {
     private final List<Pattern> patterns;
     private final String source;
 
-    private Glob(String source, List<Pattern> patterns) {
+    private Glob(final String source, final List<Pattern> patterns) {
         this.source = source;
         this.patterns = patterns;
     }
 
     /** Compiles {@code "event-loop-*,worker-?"}. An empty or null spec matches nothing. */
-    public static Glob of(String spec) {
-        List<Pattern> patterns = new ArrayList<>();
+    public static Glob of(final String spec) {
+        final List<Pattern> patterns = new ArrayList<>();
         if (spec != null) {
-            for (String part : spec.split(",")) {
-                String p = part.trim();
+            for (final String part : spec.split(",")) {
+                final String p = part.trim();
                 if (!p.isEmpty()) {
                     patterns.add(Pattern.compile(toRegex(p)));
                 }
@@ -42,10 +42,10 @@ public final class Glob implements Predicate<String> {
         return of("*");
     }
 
-    static String toRegex(String glob) {
-        StringBuilder sb = new StringBuilder("^");
+    static String toRegex(final String glob) {
+        final StringBuilder sb = new StringBuilder("^");
         for (int i = 0; i < glob.length(); i++) {
-            char c = glob.charAt(i);
+            final char c = glob.charAt(i);
             switch (c) {
                 case '*' -> sb.append(".*");
                 case '?' -> sb.append('.');
@@ -56,11 +56,11 @@ public final class Glob implements Predicate<String> {
     }
 
     @Override
-    public boolean test(String name) {
+    public boolean test(final String name) {
         if (name == null) {
             return false;
         }
-        for (Pattern p : patterns) {
+        for (final Pattern p : patterns) {
             if (p.matcher(name).matches()) {
                 return true;
             }

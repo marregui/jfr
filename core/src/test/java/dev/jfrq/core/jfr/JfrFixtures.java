@@ -25,9 +25,9 @@ public final class JfrFixtures {
     }
 
     /** Records {@code body} with the given settings into a fresh file under {@code dir}. */
-    public static Path record(Path dir, String name, Consumer<Recording> settings, Body body) throws Exception {
-        Path file = Files.createTempFile(dir, name, ".jfr");
-        try (Recording r = new Recording()) {
+    public static Path record(final Path dir, final String name, final Consumer<Recording> settings, final Body body) throws Exception {
+        final Path file = Files.createTempFile(dir, name, ".jfr");
+        try (final Recording r = new Recording()) {
             // Without this event the file does not say which thresholds and periods were active.
             r.enable("jdk.ActiveSetting");
             settings.accept(r);
@@ -40,12 +40,12 @@ public final class JfrFixtures {
     }
 
     /** Runs {@code body} on a thread with the given name and waits for it. */
-    public static void onThread(String name, Body body) throws Exception {
-        Throwable[] failure = new Throwable[1];
-        Thread t = new Thread(() -> {
+    public static void onThread(final String name, final Body body) throws Exception {
+        final Throwable[] failure = new Throwable[1];
+        final Thread t = new Thread(() -> {
             try {
                 body.run();
-            } catch (Throwable e) {
+            } catch (final Throwable e) {
                 failure[0] = e;
             }
         }, name);
@@ -60,9 +60,9 @@ public final class JfrFixtures {
      * Makes {@code waiter} block on {@code lock} for about {@code holdMillis} while
      * {@code holder} holds it; returns when both are done.
      */
-    public static void contend(Object lock, String holder, String waiter, long holdMillis) throws Exception {
-        CountDownLatch held = new CountDownLatch(1);
-        Thread h = new Thread(() -> {
+    public static void contend(final Object lock, final String holder, final String waiter, final long holdMillis) throws Exception {
+        final CountDownLatch held = new CountDownLatch(1);
+        final Thread h = new Thread(() -> {
             synchronized (lock) {
                 held.countDown();
                 sleep(holdMillis);
@@ -71,7 +71,7 @@ public final class JfrFixtures {
             // thread that exits the instant it releases the lock can be recorded as unknown.
             sleep(150);
         }, holder);
-        Thread w = new Thread(() -> {
+        final Thread w = new Thread(() -> {
             await(held);
             sleep(20); // let the holder settle inside the critical section
             synchronized (lock) {
@@ -85,8 +85,8 @@ public final class JfrFixtures {
     }
 
     /** Burns CPU on the calling thread for about {@code millis}; sampled as Java execution. */
-    public static void burn(long millis) {
-        long deadline = System.nanoTime() + millis * 1_000_000L;
+    public static void burn(final long millis) {
+        final long deadline = System.nanoTime() + millis * 1_000_000L;
         long acc = 1;
         do {
             for (int i = 0; i < 5_000; i++) {
@@ -98,19 +98,19 @@ public final class JfrFixtures {
         }
     }
 
-    public static void sleep(long millis) {
+    public static void sleep(final long millis) {
         try {
             Thread.sleep(millis);
-        } catch (InterruptedException e) {
+        } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(e);
         }
     }
 
-    private static void await(CountDownLatch latch) {
+    private static void await(final CountDownLatch latch) {
         try {
             latch.await();
-        } catch (InterruptedException e) {
+        } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(e);
         }

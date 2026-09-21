@@ -29,14 +29,14 @@ class DurationsTest {
             "42, 42",
             " 20 MS , 20000000",
     })
-    void parsesJfrAndCommandLineForms(String text, long nanos) {
+    void parsesJfrAndCommandLineForms(final String text, final long nanos) {
         assertEquals(nanos, Durations.parseNanos(text));
         assertEquals(Duration.ofNanos(nanos), Durations.parse(text));
     }
 
     @ParameterizedTest
     @CsvSource({"abc", "10 parsecs", "''", "ms", "1..2s"})
-    void rejectsNonDurations(String text) {
+    void rejectsNonDurations(final String text) {
         assertThrows(IllegalArgumentException.class, () -> Durations.parse(text));
     }
 
@@ -58,7 +58,7 @@ class DurationsTest {
         assertEquals(Nulls.LONG_NULL, Durations.parseNanosQuiet(null));
         // Past eighteen digits the mantissa is parsed as a double rather than overflowing a long.
         assertEquals(Math.round(1e19), Durations.parseNanosQuiet("10000000000000000000"));
-        String unit = assertThrows(IllegalArgumentException.class, () -> Durations.parse("10 parsecs")).getMessage();
+        final String unit = assertThrows(IllegalArgumentException.class, () -> Durations.parse("10 parsecs")).getMessage();
         assertTrue(unit.startsWith("unknown duration unit"), unit);
     }
 
@@ -74,7 +74,7 @@ class DurationsTest {
             "67000000000, 1m07s",
             "-312000000, -312 ms",
     })
-    void formatsCompactly(long nanos, String expected) {
+    void formatsCompactly(final long nanos, final String expected) {
         assertEquals(expected, Durations.format(nanos));
     }
 

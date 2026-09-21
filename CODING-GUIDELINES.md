@@ -1,4 +1,6 @@
-# Coding Guidelines for High-Throughput Java (2026-09-18)
+# Coding Guidelines for High-Throughput Java
+
+Revision 2026-09-21 (first issued 2026-09-18; G-10.2 now covers locals and parameters).
 
 These rules describe how to write Java that stays fast under sustained load: a
 hot path that allocates nothing, boxes nothing, builds no `String`, throws no
@@ -34,7 +36,7 @@ public final class Nulls {
     private Nulls() {}
 
     // widening preserves nullness
-    public static long intToLong(int v) { return v == INT_NULL ? LONG_NULL : v; }
+    public static long intToLong(final int v) { return v == INT_NULL ? LONG_NULL : v; }
 }
 ```
 
@@ -48,7 +50,7 @@ no-entry value in the constructor, or the caller uses the two-step
 `keyIndex()` / `valueAt()` API (G-1.5) instead of `get()`:
 
 ```java
-public LongList(int capacity, long noEntryValue) { ... }
+public LongList(final int capacity, final long noEntryValue) { ... }
 
 public long getLast() {
     return pos > 0 ? data[pos - 1] : noEntryValue;
@@ -81,8 +83,8 @@ public final class ObjList<T> implements Mutable {
     private T[] buffer;
     private int pos;
 
-    public void add(T value) { checkCapacity(pos + 1); buffer[pos++] = value; }
-    public T getQuick(int index) { assert index < pos; return buffer[index]; }
+    public void add(final T value) { checkCapacity(pos + 1); buffer[pos++] = value; }
+    public T getQuick(final int index) { assert index < pos; return buffer[index]; }
     public int size() { return pos; }
 
     @Override
@@ -95,14 +97,14 @@ convention, backward-shift delete.** One probe returns both the answer and the
 slot, so get-or-insert costs one hash and no entry object:
 
 ```java
-public int keyIndex(int key) {
-    int index = key & mask;
+public int keyIndex(final int key) {
+    final int index = key & mask;
     if (keys[index] == noEntryKey) return index;        // free slot:  >= 0
     if (keys[index] == key)        return -index - 1;   // present:    <  0
     return probe(key, index);
 }
 
-private int probe(int key, int index) {
+private int probe(final int key, int index) {
     do {
         index = (index + 1) & mask;                     // no modulo
         if (keys[index] == noEntryKey) return index;
@@ -111,7 +113,7 @@ private int probe(int key, int index) {
 }
 
 // caller: one probe, no boxing, no Map.Entry
-int i = map.keyIndex(k);
+final int i = map.keyIndex(k);
 if (i < 0) {
     map.valueAtQuick(i).increment();
 } else {
@@ -144,15 +146,15 @@ sparse write. Guard against `int` overflow when doubling. Document that
 `setPos` reveals uninitialised or stale slots.
 
 ```java
-public void checkCapacity(int capacity) {
-    int len = data.length;
+public void checkCapacity(final int capacity) {
+    final int len = data.length;
     if (capacity > len) {
-        long doubled = Math.max((long) len << 1, capacity);
+        final long doubled = Math.max((long) len << 1, capacity);
         data = Arrays.copyOf(data, (int) Math.min(doubled, Integer.MAX_VALUE - 8));
     }
 }
 
-public void extendAndSet(int index, long value) {
+public void extendAndSet(final int index, final long value) {
     checkCapacity(index + 1);
     if (index >= pos) pos = index + 1;
     data[index] = value;
@@ -172,7 +174,7 @@ static final int OFF_END    = 1;
 static final int OFF_KIND   = 2;
 static final int OFF_ID     = 3;
 
-long start = blocks.getQuick(i * SLOT_SIZE + OFF_START);
+final long start = blocks.getQuick(i * SLOT_SIZE + OFF_START);
 ```
 
 *Apply:* a thread's `(startNanos, endNanos, kind, monitorId)` blocks are one
@@ -218,10 +220,10 @@ immutability.
 // reusable window over the input; re-pointed, never re-created
 public final class Window implements CharSequence {
     private CharSequence base; private int lo, hi;
-    public Window of(CharSequence base, int lo, int hi) { this.base = base; this.lo = lo; this.hi = hi; return this; }
+    public Window of(final CharSequence base, final int lo, final int hi) { this.base = base; this.lo = lo; this.hi = hi; return this; }
     @Override public int length() { return hi - lo; }
-    @Override public char charAt(int i) { return base.charAt(lo + i); }
-    @Override public CharSequence subSequence(int s, int e) { throw new UnsupportedOperationException(); }
+    @Override public char charAt(final int i) { return base.charAt(lo + i); }
+    @Override public CharSequence subSequence(final int s, final int e) { throw new UnsupportedOperationException(); }
 }
 ```
 
@@ -232,7 +234,7 @@ has a `(seq, lo, hi)` overload so callers avoid `subSequence`. Lookup maps hash
 the raw `CharSequence` and support `keyIndex(seq, lo, hi)`.
 
 ```java
-public static boolean isMonitorEnter(CharSequence tok) {
+public static boolean isMonitorEnter(final CharSequence tok) {
     return tok.length() == 20
             && tok.charAt(0) == 'j' && tok.charAt(1) == 'd' && tok.charAt(2) == 'k' && tok.charAt(3) == '.'
             && (tok.charAt(4) | 32) == 'j' && (tok.charAt(5) | 32) == 'a'
@@ -265,9 +267,9 @@ public interface CharSink<T extends CharSink<?>> {
     T put(char c);
     T put(CharSequence cs);
     T putAscii(CharSequence cs);
-    default T put(int v)      { Numbers.append(this, v); return self(); }
-    default T put(long v)     { Numbers.append(this, v); return self(); }
-    default T put(Sinkable s) { if (s != null) s.toSink(this); return self(); }
+    default T put(final int v)      { Numbers.append(this, v); return self(); }
+    default T put(final long v)     { Numbers.append(this, v); return self(); }
+    default T put(final Sinkable s) { if (s != null) s.toSink(this); return self(); }
     @SuppressWarnings("unchecked") default T self() { return (T) this; }
 }
 ```
@@ -310,7 +312,7 @@ cursors or iterators reuses the same cursor instance across calls and
 documents that callers must not hold a copy.
 
 ```java
-public Cursor cursor(Source src) {
+public Cursor cursor(final Source src) {
     return cursor.of(src);        // same field every call
 }
 ```
@@ -343,7 +345,7 @@ public final class ObjectPool<T extends Mutable> implements Mutable {
 
     public T next() {
         if (pos == list.size()) list.add(factory.get());
-        T o = list.getQuick(pos++);
+        final T o = list.getQuick(pos++);
         o.clear();
         return o;
     }
@@ -417,12 +419,12 @@ non-owning fields (configuration, clock, facades) before the `try`; acquire
 owning fields inside it; on any throwable call your own `close()` and rethrow.
 
 ```java
-public Reader(Config cfg) {
+public Reader(final Config cfg) {
     this.cfg = cfg;
     try {
         this.index = new IndexBuffer(cfg.indexSize());
         this.input = cfg.files().open(cfg.path());
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
         close();            // idempotent, null-tolerant
         throw e;
     }
@@ -435,15 +437,15 @@ A best-effort variant threads a failure chain so **every** resource is
 attempted and later failures are added as suppressed to the first:
 
 ```java
-public static <T extends Closeable> T free(T o) {
+public static <T extends Closeable> T free(final T o) {
     if (o != null) {
-        try { o.close(); } catch (IOException e) { throw new FatalError(e); }
+        try { o.close(); } catch (final IOException e) { throw new FatalError(e); }
     }
     return null;
 }
 
-public static Throwable freeBestEffort(Throwable primary, Closeable o) {
-    try { free(o); } catch (Throwable t) {
+public static Throwable freeBestEffort(final Throwable primary, final Closeable o) {
+    try { free(o); } catch (final Throwable t) {
         if (primary == null) return t;
         primary.addSuppressed(t);
     }
@@ -505,7 +507,7 @@ public final class ParseException extends RuntimeException implements Sinkable {
 
     private ParseException() { super(null, null, false, false); }   // no trace, no suppression
 
-    public static ParseException at(int position) {
+    public static ParseException at(final int position) {
         ParseException ex = TL.get();
         assert (ex = new ParseException()) != null;
         ex.message.clear();
@@ -513,10 +515,10 @@ public final class ParseException extends RuntimeException implements Sinkable {
         return ex;
     }
 
-    public ParseException put(CharSequence cs) { message.put(cs); return this; }
-    public ParseException put(long v)          { message.put(v);  return this; }
+    public ParseException put(final CharSequence cs) { message.put(cs); return this; }
+    public ParseException put(final long v)    { message.put(v);  return this; }
     public CharSequence getFlyweightMessage()  { return message; }
-    @Override public void toSink(CharSink<?> s) { s.put('[').put(position).put("] ").put(message); }
+    @Override public void toSink(final CharSink<?> s) { s.put('[').put(position).put("] ").put(message); }
 }
 
 public final class BufferFull extends Exception {
@@ -607,7 +609,7 @@ pre-allocated from a factory, capacity is a power of two, `get(cursor)` is
 
 ```java
 while (true) {
-    long c = seq.next();
+    final long c = seq.next();
     if (c > -1) {
         try { process(queue.get(c)); } finally { seq.done(c); }
         return true;
@@ -638,8 +640,8 @@ private static final VarHandle VALUE = MethodHandles.lookup()
         .findVarHandle(Sequence.class, "value", long.class);
 private volatile long value = -1;
 
-boolean casValue(long expected, long next) { return VALUE.compareAndSet(this, expected, next); }
-void publish(long v) { VALUE.setRelease(this, v); }
+boolean casValue(final long expected, final long next) { return VALUE.compareAndSet(this, expected, next); }
+void publish(final long v) { VALUE.setRelease(this, v); }
 ```
 
 **G-7.3 Hot shared fields get their own cache line.** Pad by inheritance
@@ -663,7 +665,7 @@ assigned to N workers runs on at most one; losing the CAS returns `false`.
 
 ```java
 @Override
-public boolean run(WorkerContext ctx) {
+public boolean run(final WorkerContext ctx) {
     if (!LOCKED.compareAndSet(this, 0, 1)) return false;
     try { return runSerially(); } finally { locked = 0; }
 }
@@ -729,9 +731,9 @@ the buffer, never copies; after the caller compacts the buffer it calls
 `shift(n)` on the parser so every held offset moves with the data.
 
 ```java
-public ParseResult parse(byte[] buf, int limit) {
+public ParseResult parse(final byte[] buf, final int limit) {
     while (at < limit) {
-        byte b = buf[at];
+        final byte b = buf[at];
         if (!CONTROL[b & 0xFF]) { at++; continue; }   // hot path: one branch
         switch (b) { /* ... */ }
     }
@@ -811,10 +813,34 @@ static methods → public methods → private static methods → private methods
 nested types. Enforce with the IDE's arrangement rules or a formatter; do not
 hand-order.
 
-**G-10.2 `final` on every field that can be; optional on locals; not on
-parameters.** Owned scratch objects are `private final X x = new X();` at the
-declaration and reused for life. Mutable state (`data`, `pos`) is the
-exception.
+**G-10.2 `final` on every declaration that is never reassigned: fields,
+locals and parameters.** Owned scratch objects are `private final X x = new
+X();` at the declaration and reused for life; mutable state (`data`, `pos`) is
+the exception, and the only one for fields. Every other declaration that is
+never assigned after it is declared carries `final`, wherever it occurs: a
+local variable, a `try`-with-resources variable, a basic-`for` initialiser
+variable, an enhanced-`for` variable, a catch parameter (single-type or
+multi-catch) and a method or constructor parameter. That the language already
+makes some of these final is no reason to leave it off: the word is there so
+the reader does not have to know the rule. The absence of `final` then means
+exactly one thing: "this one is reassigned, look for the write". Only
+declarations without an assignment stay bare: a lambda parameter, a pattern
+variable, a local declared without an initialiser and assigned later, and the
+parameters of a method without a body (`abstract`, `native`, interface
+declarations). Enforce it mechanically: the compiler rejects a `final` on a
+reassigned variable, so the rule is applied by a tool and checked by the
+build, never by hand.
+
+```java
+public long sum(final LongList values, final int from) {
+    long total = 0;                                  // reassigned: bare
+    for (int i = from, n = values.size(); i < n; i++) {   // i is reassigned, and n shares its declaration: bare
+        final long v = values.getQuick(i);
+        total += v;
+    }
+    return total;
+}
+```
 
 **G-10.3 Nullability annotations from one library, used sparsely.**
 `@NotNull` / `@Nullable` on public API parameters where `null` has defined
@@ -877,7 +903,7 @@ each unchanged after, naming the category that leaked:
 @Test
 public void testReaderReleasesBuffers() throws Exception {
     assertNoLeak(() -> {
-        try (Reader r = new Reader(cfg)) { r.readAll(); }
+        try (final Reader r = new Reader(cfg)) { r.readAll(); }
     });
 }
 ```
@@ -900,7 +926,7 @@ the file. No mocking library.
 ```java
 files = new TrackingFilesFacade() {
     @Override
-    public long open(CharSequence name) {
+    public long open(final CharSequence name) {
         if (endsWith(name, ".idx") && failures.decrementAndGet() >= 0) return -1;
         return super.open(name);
     }
@@ -917,13 +943,13 @@ with backoff instead of `Thread.sleep`, races hunted with seeded repeat
 loops.**
 
 ```java
-CyclicBarrier start = new CyclicBarrier(threads);
-CountDownLatch done = new CountDownLatch(threads);
-AtomicInteger anomalies = new AtomicInteger();
+final CyclicBarrier start = new CyclicBarrier(threads);
+final CountDownLatch done = new CountDownLatch(threads);
+final AtomicInteger anomalies = new AtomicInteger();
 for (int t = 0; t < threads; t++) {
     new Thread(() -> {
         try { start.await(); work(anomalies); }
-        catch (Exception e) { anomalies.incrementAndGet(); }
+        catch (final Exception e) { anomalies.incrementAndGet(); }
         finally { done.countDown(); }
     }).start();
 }
@@ -933,7 +959,7 @@ Assert.assertEquals(0, anomalies.get());
 
 **G-11.6 Heavy fixtures are static per class; every mutable piece is reset in
 `@Before`; overrides go through a typed `Overrides` object the test
-configuration consults live.** `try (X x = ...)` for every `Closeable` in
+configuration consults live.** `try (final X x = ...)` for every `Closeable` in
 tests. Parameterise over modes rather than copy tests. Assert meaning, not
 representation. Narrow unit tests need no base class.
 
@@ -978,6 +1004,15 @@ the tests exercise the real filesystem and the real JFR parser) and G-3.3 object
 nothing to return to a pool). One rule cannot be applied: the JDK exposes event
 timestamps only as `Instant`, so `getStartTime()` allocates once per read; the value is
 converted to `long` immediately and nothing else is kept.
+
+Applied on 2026-09-21 to every module, main and test sources alike: G-10.2 in its
+revised form (1901 declarations gained `final`: locals, `try`-with-resources variables,
+enhanced-`for` variables, single- and multi-catch parameters and method parameters; the
+ones still bare are reassigned, or are of the exempt shapes the rule lists),
+done by a javac-tree rewriter and proven by the build (`-Werror` and the test suites) plus
+a second run of the rewriter reporting nothing left. The `live` module, written after the
+first application, was checked against the rest of §10 at the same time; its one stream
+(a digit check on the pid) became a loop (G-10.7).
 
 Measure with `--timing` before and after each further step; `docs/DESIGN.md` §8 holds the
 numbers.

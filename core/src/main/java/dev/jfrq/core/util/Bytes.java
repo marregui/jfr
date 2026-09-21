@@ -13,7 +13,7 @@ public final class Bytes {
     private Bytes() {
     }
 
-    public static String format(long bytes) {
+    public static String format(final long bytes) {
         if (bytes == Long.MIN_VALUE) {
             return "-" + format(Long.MAX_VALUE);
         }
@@ -29,14 +29,14 @@ public final class Bytes {
         if (unit == 0) {
             return bytes + " B";
         }
-        String num = v >= 100 ? String.format(Locale.ROOT, "%.0f", v)
+        final String num = v >= 100 ? String.format(Locale.ROOT, "%.0f", v)
                 : v >= 10 ? String.format(Locale.ROOT, "%.1f", v)
                 : String.format(Locale.ROOT, "%.2f", v);
         return num + " " + UNITS[unit];
     }
 
     /** Signed form for diffs: {@code +12.3 MB}, {@code -850 B}, {@code 0 B}. */
-    public static String signed(long bytes) {
+    public static String signed(final long bytes) {
         if (bytes > 0) {
             return "+" + format(bytes);
         }
@@ -44,13 +44,13 @@ public final class Bytes {
     }
 
     /** Bytes per second, e.g. {@code 45.1 MB/s}. */
-    public static String rate(double bytesPerSecond) {
-        long rounded = Math.round(bytesPerSecond);
+    public static String rate(final double bytesPerSecond) {
+        final long rounded = Math.round(bytesPerSecond);
         return (bytesPerSecond < 0 && rounded == 0 ? "-0 B" : format(rounded)) + "/s";
     }
 
     /** Signed rate for diffs. */
-    public static String signedRate(double bytesPerSecond) {
+    public static String signedRate(final double bytesPerSecond) {
         return (bytesPerSecond > 0 ? "+" : "") + rate(bytesPerSecond);
     }
 }

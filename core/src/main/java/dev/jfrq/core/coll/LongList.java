@@ -25,25 +25,25 @@ public final class LongList implements Mutable {
         this(DEFAULT_CAPACITY, DEFAULT_NO_ENTRY_VALUE);
     }
 
-    public LongList(int capacity) {
+    public LongList(final int capacity) {
         this(capacity, DEFAULT_NO_ENTRY_VALUE);
     }
 
-    public LongList(int capacity, long noEntryValue) {
+    public LongList(final int capacity, final long noEntryValue) {
         this.data = new long[Math.max(capacity, 1)];
         this.noEntryValue = noEntryValue;
     }
 
-    public void add(long value) {
+    public void add(final long value) {
         checkCapacity(pos + 1);
         data[pos++] = value;
     }
 
     /** Grows the backing array to hold at least {@code capacity} elements, doubling (G-1.7). */
-    public void checkCapacity(int capacity) {
-        int len = data.length;
+    public void checkCapacity(final int capacity) {
+        final int len = data.length;
         if (capacity > len) {
-            long doubled = Math.max((long) len << 1, capacity);
+            final long doubled = Math.max((long) len << 1, capacity);
             data = Arrays.copyOf(data, (int) Math.min(doubled, Integer.MAX_VALUE - 8));
         }
     }
@@ -54,7 +54,7 @@ public final class LongList implements Mutable {
     }
 
     /** Sparse write: grows the list to {@code index + 1} when needed; slots skipped over are stale. */
-    public void extendAndSet(int index, long value) {
+    public void extendAndSet(final int index, final long value) {
         checkCapacity(index + 1);
         if (index >= pos) {
             pos = index + 1;
@@ -63,7 +63,7 @@ public final class LongList implements Mutable {
     }
 
     /** Bounds-checked read: throws on a bad index. */
-    public long get(int index) {
+    public long get(final int index) {
         if (index < 0 || index >= pos) {
             throw new IndexOutOfBoundsException("index " + index + " of " + pos);
         }
@@ -76,7 +76,7 @@ public final class LongList implements Mutable {
     }
 
     /** Unchecked read: the caller has proven {@code index < size()} (G-1.6). */
-    public long getQuick(int index) {
+    public long getQuick(final int index) {
         assert index >= 0 && index < pos;
         return data[index];
     }
@@ -89,11 +89,11 @@ public final class LongList implements Mutable {
      * On a sorted list, the index of the first element at or above {@code value};
      * {@link #size()} when there is none.
      */
-    public int lowerBound(long value) {
+    public int lowerBound(final long value) {
         int lo = 0;
         int hi = pos;
         while (lo < hi) {
-            int mid = (lo + hi) >>> 1;
+            final int mid = (lo + hi) >>> 1;
             if (data[mid] < value) {
                 lo = mid + 1;
             } else {
@@ -108,13 +108,13 @@ public final class LongList implements Mutable {
     }
 
     /** Pre-sizes for index writes; slots between the old and new size hold stale values. */
-    public void setPos(int size) {
+    public void setPos(final int size) {
         checkCapacity(size);
         pos = size;
     }
 
     /** Unchecked write to an existing slot. */
-    public void setQuick(int index, long value) {
+    public void setQuick(final int index, final long value) {
         assert index >= 0 && index < pos;
         data[index] = value;
     }

@@ -45,7 +45,7 @@ public final class Timeline {
 
         private final String label;
 
-        BlockKind(String label) {
+        BlockKind(final String label) {
             this.label = label;
         }
 
@@ -80,11 +80,11 @@ public final class Timeline {
             via = List.copyOf(via);
         }
 
-        public Block(Interval interval, BlockKind kind, String detail, Stack stack, ThreadRef owner) {
+        public Block(final Interval interval, final BlockKind kind, final String detail, final Stack stack, final ThreadRef owner) {
             this(interval, kind, detail, stack, owner, List.of(), 0);
         }
 
-        public Block(Interval interval, BlockKind kind, String detail, Stack stack, long bytes) {
+        public Block(final Interval interval, final BlockKind kind, final String detail, final Stack stack, final long bytes) {
             this(interval, kind, detail, stack, null, List.of(), bytes);
         }
 
@@ -104,7 +104,7 @@ public final class Timeline {
 
         private final String label;
 
-        PauseKind(String label) {
+        PauseKind(final String label) {
             this.label = label;
         }
 

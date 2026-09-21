@@ -35,7 +35,7 @@ final class RequestHandler extends SimpleChannelInboundHandler<String> {
     private BufferedReader backendIn;
     private OutputStream backendOut;
 
-    RequestHandler(Scenario scenario, SessionRegistry registry, int backendPort) {
+    RequestHandler(final Scenario scenario, final SessionRegistry registry, final int backendPort) {
         this.scenario = scenario;
         this.registry = registry;
         this.backendPort = backendPort;
@@ -47,9 +47,9 @@ final class RequestHandler extends SimpleChannelInboundHandler<String> {
     }
 
     @Override
-    protected void channelRead0(ChannelHandlerContext ctx, String line) throws Exception {
-        long n = REQUESTS.incrementAndGet();
-        String session = "session-" + ctx.channel().id().asShortText();
+    protected void channelRead0(final ChannelHandlerContext ctx, final String line) throws Exception {
+        final long n = REQUESTS.incrementAndGet();
+        final String session = "session-" + ctx.channel().id().asShortText();
 
         if (scenario.lock()) {
             // Bug: a hot-path touch on a lock that housekeeping holds for hundreds of ms.
@@ -67,7 +67,7 @@ final class RequestHandler extends SimpleChannelInboundHandler<String> {
         }
         if (scenario.alloc()) {
             // Ordinary per-request garbage; the bulk allocators dwarf it, which is the point.
-            String padded = (line + " ").repeat(16);
+            final String padded = (line + " ").repeat(16);
             if (padded.isEmpty()) {
                 throw new IllegalStateException();
             }
@@ -75,7 +75,7 @@ final class RequestHandler extends SimpleChannelInboundHandler<String> {
         ctx.writeAndFlush("OK " + line.substring(line.indexOf(' ') + 1) + "\n");
     }
 
-    private String lookup(String key) throws IOException {
+    private String lookup(final String key) throws IOException {
         if (backend == null) {
             backend = new Socket(InetAddress.getLoopbackAddress(), backendPort);
             backend.setTcpNoDelay(true);
@@ -88,7 +88,7 @@ final class RequestHandler extends SimpleChannelInboundHandler<String> {
     }
 
     @Override
-    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+    public void channelInactive(final ChannelHandlerContext ctx) throws Exception {
         if (backend != null) {
             backend.close();
         }
@@ -96,7 +96,7 @@ final class RequestHandler extends SimpleChannelInboundHandler<String> {
     }
 
     @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+    public void exceptionCaught(final ChannelHandlerContext ctx, final Throwable cause) {
         ctx.close();
     }
 }

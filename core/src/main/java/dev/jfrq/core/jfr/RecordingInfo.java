@@ -44,7 +44,7 @@ public record RecordingInfo(
 
     public RecordingInfo {
         eventCounts = Map.copyOf(new TreeMap<>(eventCounts));
-        Map<String, Map<String, String>> copy = new TreeMap<>();
+        final Map<String, Map<String, String>> copy = new TreeMap<>();
         settings.forEach((k, v) -> copy.put(k, Map.copyOf(v)));
         settings = Map.copyOf(copy);
         threads = Set.copyOf(threads);
@@ -67,11 +67,11 @@ public record RecordingInfo(
         return Instant.ofEpochSecond(0, span.start());
     }
 
-    public long count(String eventType) {
+    public long count(final String eventType) {
         return eventCounts.getOrDefault(eventType, 0L);
     }
 
-    public boolean has(String eventType) {
+    public boolean has(final String eventType) {
         return count(eventType) > 0;
     }
 
@@ -85,31 +85,31 @@ public record RecordingInfo(
     }
 
     /** The raw setting value, e.g. {@code setting("jdk.JavaMonitorEnter", "threshold")}. */
-    public Optional<String> setting(String eventType, String name) {
-        Map<String, String> s = settings.get(eventType);
+    public Optional<String> setting(final String eventType, final String name) {
+        final Map<String, String> s = settings.get(eventType);
         return s == null ? Optional.empty() : Optional.ofNullable(s.get(name));
     }
 
     /** {@code true} when the event type was enabled in the recording's settings. */
-    public boolean enabled(String eventType) {
+    public boolean enabled(final String eventType) {
         return setting(eventType, "enabled").map(Boolean::parseBoolean).orElse(false);
     }
 
-    public Optional<Duration> threshold(String eventType) {
+    public Optional<Duration> threshold(final String eventType) {
         return durationSetting(eventType, "threshold");
     }
 
     /** {@link #threshold} as nanoseconds, or {@link Nulls#LONG_NULL} when unknown (G-1.1). */
-    public long thresholdNanos(String eventType) {
+    public long thresholdNanos(final String eventType) {
         return nanosSetting(eventType, "threshold");
     }
 
-    public Optional<Duration> period(String eventType) {
+    public Optional<Duration> period(final String eventType) {
         return durationSetting(eventType, "period");
     }
 
     /** {@link #period} as nanoseconds, or {@link Nulls#LONG_NULL} when unknown (G-1.1). */
-    public long periodNanos(String eventType) {
+    public long periodNanos(final String eventType) {
         return nanosSetting(eventType, "period");
     }
 
@@ -117,19 +117,19 @@ public record RecordingInfo(
      * The event's throttle ({@code "300/s"}) when one is set and is not "off": a throttled
      * event type is sampled, so not every occurrence is in the file.
      */
-    public Optional<String> throttle(String eventType) {
+    public Optional<String> throttle(final String eventType) {
         return setting(eventType, "throttle").filter(v -> !v.isBlank() && !"off".equalsIgnoreCase(v.trim()));
     }
 
-    private Optional<Duration> durationSetting(String eventType, String name) {
-        long nanos = nanosSetting(eventType, name);
+    private Optional<Duration> durationSetting(final String eventType, final String name) {
+        final long nanos = nanosSetting(eventType, name);
         return nanos == Nulls.LONG_NULL ? Optional.empty() : Optional.of(Duration.ofNanos(nanos));
     }
 
     /** "everyChunk", "beginChunk", "endChunk" are periods without a duration: a sentinel, not an exception (G-5.1). */
-    private long nanosSetting(String eventType, String name) {
-        Map<String, String> s = settings.get(eventType);
-        String value = s == null ? null : s.get(name);
+    private long nanosSetting(final String eventType, final String name) {
+        final Map<String, String> s = settings.get(eventType);
+        final String value = s == null ? null : s.get(name);
         return value == null ? Nulls.LONG_NULL : Durations.parseNanosQuiet(value);
     }
 }

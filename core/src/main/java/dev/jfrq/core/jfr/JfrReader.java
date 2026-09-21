@@ -71,16 +71,16 @@ public final class JfrReader {
          * resolved once per type rather than per event; sinks that dispatch on the type
          * override this one and switch on the tag.
          */
-        default void accept(@Transient RecordedEvent event, int kind) {
+        default void accept(@Transient final RecordedEvent event, final int kind) {
             accept(event);
         }
 
         /** Called before the first event with the interner to build stacks through. */
-        default void begin(Interner interner) {
+        default void begin(final Interner interner) {
         }
 
         /** Called once after the last event, with the recording facts now known. */
-        default void finish(RecordingInfo info) {
+        default void finish(final RecordingInfo info) {
         }
     }
 
@@ -93,11 +93,11 @@ public final class JfrReader {
      *                     case is refused outright because the JDK parser does not fail on
      *                     it: it waits for the chunk to finish, forever.
      */
-    public static RecordingInfo read(Path file, Sink... sinks) throws IOException {
-        Chunks chunks = Chunks.scan(file);
-        List<String> warnings = new ArrayList<>();
+    public static RecordingInfo read(final Path file, final Sink... sinks) throws IOException {
+        final Chunks chunks = Chunks.scan(file);
+        final List<String> warnings = new ArrayList<>();
         if (chunks.inProgress()) {
-            Chunks.Header last = chunks.headers().getLast();
+            final Chunks.Header last = chunks.headers().getLast();
             throw new IOException("recording is still being written: its last chunk (at byte " + last.offset()
                     + ") is not finished. Dump the recording from the JVM (jcmd <pid> JFR.dump) or, to read the "
                     + chunks.complete() + " complete chunk(s), truncate the file to " + last.offset() + " bytes");
@@ -112,15 +112,15 @@ public final class JfrReader {
                     + " complete chunk(s) were read");
         }
 
-        Pass pass = new Pass(sinks);
-        for (Sink s : sinks) {
+        final Pass pass = new Pass(sinks);
+        for (final Sink s : sinks) {
             s.begin(pass.interner);
         }
-        try (EventStream stream = EventStream.openFile(file)) {
+        try (final EventStream stream = EventStream.openFile(file)) {
             stream.setReuse(true);
             stream.setOrdered(false);
             stream.onMetadata(m -> {
-                for (EventType t : m.getEventTypes()) {
+                for (final EventType t : m.getEventTypes()) {
                     pass.typeNames.put(t.getId(), t.getName());
                 }
             });
@@ -139,11 +139,11 @@ public final class JfrReader {
 
         // The chunk headers bound the span; the last event read is a safety net for a header
         // whose duration undershoots (it never should, but the file is not ours).
-        long start = chunks.startNanos();
-        long end = Math.max(chunks.endNanos(), Math.max(start, pass.lastEnd));
-        RecordingInfo info = new RecordingInfo(file, new Interval(start, end), chunks.count(), pass.eventCounts(),
+        final long start = chunks.startNanos();
+        final long end = Math.max(chunks.endNanos(), Math.max(start, pass.lastEnd));
+        final RecordingInfo info = new RecordingInfo(file, new Interval(start, end), chunks.count(), pass.eventCounts(),
                 pass.settings(), pass.threads(), warnings);
-        for (Sink s : sinks) {
+        for (final Sink s : sinks) {
             s.finish(info);
         }
         return info;
@@ -156,7 +156,7 @@ public final class JfrReader {
         final Sink[] targets;
         long count;
 
-        Dispatch(String name, int kind, Sink[] targets) {
+        Dispatch(final String name, final int kind, final Sink[] targets) {
             this.name = name;
             this.kind = kind;
             this.targets = targets;
@@ -181,15 +181,15 @@ public final class JfrReader {
         private final ObjObjHashMap<String, ObjObjHashMap<String, String>> settings = new ObjObjHashMap<>(256);
         private final ObjHashSet<ThreadRef> threads = new ObjHashSet<>(256);
 
-        Pass(Sink[] sinks) {
-            ObjList<Sink> everything = new ObjList<>();
-            for (Sink s : sinks) {
+        Pass(final Sink[] sinks) {
+            final ObjList<Sink> everything = new ObjList<>();
+            for (final Sink s : sinks) {
                 if (s.eventTypes().isEmpty()) {
                     everything.add(s);
                 } else {
-                    for (String t : s.eventTypes()) {
-                        int index = sinksByName.keyIndex(t);
-                        ObjList<Sink> targets = index < 0 ? sinksByName.valueAtQuick(index) : subscribe(t, index);
+                    for (final String t : s.eventTypes()) {
+                        final int index = sinksByName.keyIndex(t);
+                        final ObjList<Sink> targets = index < 0 ? sinksByName.valueAtQuick(index) : subscribe(t, index);
                         targets.add(s);
                     }
                 }
@@ -197,31 +197,31 @@ public final class JfrReader {
             all = everything.isEmpty() ? NO_SINKS : everything.toList().toArray(NO_SINKS);
         }
 
-        void subscribe(String type) {
-            int index = sinksByName.keyIndex(type);
+        void subscribe(final String type) {
+            final int index = sinksByName.keyIndex(type);
             if (index >= 0) {
                 subscribe(type, index);
             }
         }
 
-        private ObjList<Sink> subscribe(String type, int index) {
+        private ObjList<Sink> subscribe(final String type, final int index) {
             subscribed.add(type);
             return sinksByName.putAt(index, type, new ObjList<>(2));
         }
 
         @Override
-        public void accept(RecordedEvent e) {
-            EventType type = e.getEventType();
-            int index = byType.keyIndex(type);
-            Dispatch dispatch = index < 0 ? byType.valueAtQuick(index) : resolve(type, index);
+        public void accept(final RecordedEvent e) {
+            final EventType type = e.getEventType();
+            final int index = byType.keyIndex(type);
+            final Dispatch dispatch = index < 0 ? byType.valueAtQuick(index) : resolve(type, index);
             dispatch.count++;
-            long en = Events.endNanos(e);
+            final long en = Events.endNanos(e);
             if (en > lastEnd) {
                 lastEnd = en;
             }
-            ThreadRef thread = interner.thread(e);
+            final ThreadRef thread = interner.thread(e);
             if (thread != null) {
-                int t = threads.keyIndex(thread);
+                final int t = threads.keyIndex(thread);
                 if (t >= 0) {
                     threads.addAt(t, thread);
                 }
@@ -229,37 +229,37 @@ public final class JfrReader {
             if (dispatch.kind == EventKinds.ACTIVE_SETTING) {
                 setting(e);
             }
-            Sink[] targets = dispatch.targets;
+            final Sink[] targets = dispatch.targets;
             for (int i = 0; i < targets.length; i++) {
                 targets[i].accept(e, dispatch.kind);
             }
         }
 
         /** Settings can change between chunks; the last chunk's values are the ones reported. */
-        private void setting(RecordedEvent e) {
-            String owner = typeNames.get(e.getLong("id"));
+        private void setting(final RecordedEvent e) {
+            final String owner = typeNames.get(e.getLong("id"));
             if (owner == null) {
                 return;
             }
-            int index = settings.keyIndex(owner);
-            ObjObjHashMap<String, String> values = index < 0 ? settings.valueAtQuick(index)
+            final int index = settings.keyIndex(owner);
+            final ObjObjHashMap<String, String> values = index < 0 ? settings.valueAtQuick(index)
                     : settings.putAt(index, owner, new ObjObjHashMap<>(16));
             values.put(e.getString("name"), e.getString("value"));
         }
 
         /** First sight of an {@link EventType} object: one string hash, then identity. */
-        private Dispatch resolve(EventType type, int index) {
-            String name = type.getName();
-            int byNameIndex = byName.keyIndex(name);
+        private Dispatch resolve(final EventType type, int index) {
+            final String name = type.getName();
+            final int byNameIndex = byName.keyIndex(name);
             Dispatch dispatch;
             if (byNameIndex < 0) {
                 dispatch = byName.valueAtQuick(byNameIndex);
             } else {
-                ObjList<Sink> targets = new ObjList<>(all.length + 2);
-                for (Sink s : all) {
+                final ObjList<Sink> targets = new ObjList<>(all.length + 2);
+                for (final Sink s : all) {
                     targets.add(s);
                 }
-                ObjList<Sink> named = sinksByName.get(name);
+                final ObjList<Sink> named = sinksByName.get(name);
                 if (named != null) {
                     targets.addAll(named);
                 }
@@ -274,10 +274,10 @@ public final class JfrReader {
         }
 
         Map<String, Long> eventCounts() {
-            Map<String, Long> counts = new HashMap<>(byName.size() * 2);
+            final Map<String, Long> counts = new HashMap<>(byName.size() * 2);
             for (int s = 0, n = byName.slots(); s < n; s++) {
                 if (byName.hasKeyAtSlot(s)) {
-                    Dispatch d = byName.valueAtSlot(s);
+                    final Dispatch d = byName.valueAtSlot(s);
                     counts.put(d.name, d.count);
                 }
             }
@@ -285,11 +285,11 @@ public final class JfrReader {
         }
 
         Map<String, Map<String, String>> settings() {
-            Map<String, Map<String, String>> out = new HashMap<>(settings.size() * 2);
+            final Map<String, Map<String, String>> out = new HashMap<>(settings.size() * 2);
             for (int s = 0, n = settings.slots(); s < n; s++) {
                 if (settings.hasKeyAtSlot(s)) {
-                    ObjObjHashMap<String, String> values = settings.valueAtSlot(s);
-                    Map<String, String> copy = new HashMap<>(values.size() * 2);
+                    final ObjObjHashMap<String, String> values = settings.valueAtSlot(s);
+                    final Map<String, String> copy = new HashMap<>(values.size() * 2);
                     for (int v = 0, m = values.slots(); v < m; v++) {
                         if (values.hasKeyAtSlot(v)) {
                             copy.put(values.keyAtSlot(v), values.valueAtSlot(v));
@@ -302,7 +302,7 @@ public final class JfrReader {
         }
 
         Set<ThreadRef> threads() {
-            Set<ThreadRef> out = new HashSet<>(threads.size() * 2);
+            final Set<ThreadRef> out = new HashSet<>(threads.size() * 2);
             for (int s = 0, n = threads.slots(); s < n; s++) {
                 if (threads.hasKeyAtSlot(s)) {
                     out.add(threads.keyAtSlot(s));

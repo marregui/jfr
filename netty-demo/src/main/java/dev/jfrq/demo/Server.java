@@ -29,15 +29,15 @@ final class Server implements AutoCloseable {
     private final MultiThreadIoEventLoopGroup loops;
     private final Channel channel;
 
-    Server(Scenario scenario, SessionRegistry registry, int backendPort, int loopCount) throws InterruptedException {
+    Server(final Scenario scenario, final SessionRegistry registry, final int backendPort, final int loopCount) throws InterruptedException {
         acceptor = new MultiThreadIoEventLoopGroup(1, new DefaultThreadFactory("acceptor"), NioIoHandler.newFactory());
         loops = new MultiThreadIoEventLoopGroup(loopCount, new DefaultThreadFactory("event-loop"), NioIoHandler.newFactory());
-        ServerBootstrap b = new ServerBootstrap()
+        final ServerBootstrap b = new ServerBootstrap()
                 .group(acceptor, loops)
                 .channel(NioServerSocketChannel.class)
                 .childHandler(new ChannelInitializer<SocketChannel>() {
                     @Override
-                    protected void initChannel(SocketChannel ch) {
+                    protected void initChannel(final SocketChannel ch) {
                         ch.pipeline().addLast(
                                 new LineBasedFrameDecoder(1024),
                                 new StringDecoder(StandardCharsets.UTF_8),

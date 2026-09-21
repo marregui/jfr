@@ -25,27 +25,27 @@ public final class ObjList<T> implements Mutable {
         this(DEFAULT_CAPACITY);
     }
 
-    public ObjList(int capacity) {
+    public ObjList(final int capacity) {
         buffer = new Object[Math.max(capacity, 1)];
     }
 
-    public void add(T value) {
+    public void add(final T value) {
         checkCapacity(pos + 1);
         buffer[pos++] = value;
     }
 
-    public void addAll(ObjList<? extends T> other) {
-        int n = other.pos;
+    public void addAll(final ObjList<? extends T> other) {
+        final int n = other.pos;
         checkCapacity(pos + n);
         System.arraycopy(other.buffer, 0, buffer, pos, n);
         pos += n;
     }
 
     /** Grows the backing array to hold at least {@code capacity} elements, doubling (G-1.7). */
-    public void checkCapacity(int capacity) {
-        int len = buffer.length;
+    public void checkCapacity(final int capacity) {
+        final int len = buffer.length;
         if (capacity > len) {
-            long doubled = Math.max((long) len << 1, capacity);
+            final long doubled = Math.max((long) len << 1, capacity);
             buffer = Arrays.copyOf(buffer, (int) Math.min(doubled, Integer.MAX_VALUE - 8));
         }
     }
@@ -57,7 +57,7 @@ public final class ObjList<T> implements Mutable {
     }
 
     /** Bounds-checked read: throws on a bad index. */
-    public T get(int index) {
+    public T get(final int index) {
         if (index < 0 || index >= pos) {
             throw new IndexOutOfBoundsException("index " + index + " of " + pos);
         }
@@ -71,7 +71,7 @@ public final class ObjList<T> implements Mutable {
 
     /** Unchecked read: the caller has proven {@code index < size()} (G-1.6). */
     @SuppressWarnings("unchecked")
-    public T getQuick(int index) {
+    public T getQuick(final int index) {
         assert index >= 0 && index < pos;
         return (T) buffer[index];
     }
@@ -85,7 +85,7 @@ public final class ObjList<T> implements Mutable {
     }
 
     /** Unchecked write to an existing slot. */
-    public void setQuick(int index, T value) {
+    public void setQuick(final int index, final T value) {
         assert index >= 0 && index < pos;
         buffer[index] = value;
     }
@@ -95,7 +95,7 @@ public final class ObjList<T> implements Mutable {
     }
 
     @SuppressWarnings("unchecked")
-    public void sort(Comparator<? super T> comparator) {
+    public void sort(final Comparator<? super T> comparator) {
         Arrays.sort((T[]) buffer, 0, pos, comparator);
     }
 

@@ -13,7 +13,7 @@ class SortedTest {
 
     @Test
     void lowerBoundFindsTheFirstElementAtOrAboveTheValue() {
-        List<Long> keys = List.of(10L, 20L, 20L, 30L);
+        final List<Long> keys = List.of(10L, 20L, 20L, 30L);
         assertEquals(0, Sorted.lowerBound(keys, Long::longValue, 5));
         assertEquals(0, Sorted.lowerBound(keys, Long::longValue, 10));
         assertEquals(1, Sorted.lowerBound(keys, Long::longValue, 15));

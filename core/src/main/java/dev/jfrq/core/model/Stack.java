@@ -28,7 +28,7 @@ public final class Stack {
     private final boolean truncated;
     private final int hash;
 
-    Stack(Frame[] frames, boolean truncated) {
+    Stack(final Frame[] frames, final boolean truncated) {
         this.frames = frames;
         this.truncated = truncated;
         this.hash = hashOf(frames, frames.length, truncated);
@@ -38,17 +38,17 @@ public final class Stack {
      * @param frames    innermost first; may be empty when JFR could not walk the stack
      * @param truncated true when JFR cut the stack at its depth limit (default 64)
      */
-    public Stack(List<Frame> frames, boolean truncated) {
+    public Stack(final List<Frame> frames, final boolean truncated) {
         this(frames.toArray(new Frame[0]), truncated);
     }
 
     /** Builds a stack without interning; {@link Interner#stack(RecordedStackTrace)} is preferred in bulk. */
-    public static Stack of(RecordedStackTrace trace) {
+    public static Stack of(final RecordedStackTrace trace) {
         if (trace == null) {
             return EMPTY;
         }
-        List<RecordedFrame> recorded = trace.getFrames();
-        Frame[] frames = new Frame[recorded.size()];
+        final List<RecordedFrame> recorded = trace.getFrames();
+        final Frame[] frames = new Frame[recorded.size()];
         for (int i = 0; i < frames.length; i++) {
             frames[i] = Frame.of(recorded.get(i));
         }
@@ -59,7 +59,7 @@ public final class Stack {
      * The hash a stack over the first {@code n} frames of {@code frames} would have,
      * which is what {@link #hashCode()} caches.
      */
-    static int hashOf(Frame[] frames, int n, boolean truncated) {
+    static int hashOf(final Frame[] frames, final int n, final boolean truncated) {
         int h = 1;
         for (int i = 0; i < n; i++) {
             h = 31 * h + frames[i].hashCode();
@@ -78,7 +78,7 @@ public final class Stack {
     }
 
     /** The frame at {@code index}, innermost first; unchecked (G-1.6). */
-    public Frame frameQuick(int index) {
+    public Frame frameQuick(final int index) {
         assert index >= 0 && index < frames.length;
         return frames[index];
     }
@@ -110,7 +110,7 @@ public final class Stack {
 
     /** {@link #culprit()} without the wrapper: {@code null} for an empty stack. */
     public Frame culpritOrNull() {
-        int index = culpritIndex();
+        final int index = culpritIndex();
         return index < 0 ? topOrNull() : frames[index];
     }
 
@@ -125,7 +125,7 @@ public final class Stack {
     }
 
     /** The first {@code n} frames, innermost first, as a new stack. */
-    public Stack head(int n) {
+    public Stack head(final int n) {
         if (frames.length <= n) {
             return this;
         }
@@ -137,13 +137,13 @@ public final class Stack {
      * {@code maxFrames} frames, and if the {@linkplain #culprit() culprit} lies deeper, an
      * elision followed by the culprit's own line, so the application frame is always visible.
      */
-    public String pretty(String indent, int maxFrames) {
-        StringBuilder sb = new StringBuilder();
+    public String pretty(final String indent, final int maxFrames) {
+        final StringBuilder sb = new StringBuilder();
         int shown = Math.min(maxFrames, frames.length);
         for (int i = 0; i < shown; i++) {
             sb.append(indent).append("at ").append(frames[i].pretty()).append('\n');
         }
-        int culpritIndex = culpritIndex();
+        final int culpritIndex = culpritIndex();
         if (culpritIndex >= shown) {
             if (culpritIndex > shown) {
                 sb.append(indent).append("... ").append(culpritIndex - shown).append(" more").append('\n');
@@ -158,13 +158,13 @@ public final class Stack {
     }
 
     /** Whether this stack is exactly the first {@code n} frames of {@code candidate} with the same truncation. */
-    boolean sameAs(Frame[] candidate, int n, boolean candidateTruncated) {
+    boolean sameAs(final Frame[] candidate, final int n, final boolean candidateTruncated) {
         if (truncated != candidateTruncated || frames.length != n) {
             return false;
         }
         for (int i = 0; i < n; i++) {
-            Frame a = frames[i];
-            Frame b = candidate[i];
+            final Frame a = frames[i];
+            final Frame b = candidate[i];
             if (a != b && !a.equals(b)) {
                 return false;
             }
@@ -173,7 +173,7 @@ public final class Stack {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(final Object o) {
         if (this == o) {
             return true;
         }

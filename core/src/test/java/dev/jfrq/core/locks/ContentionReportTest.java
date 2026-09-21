@@ -32,7 +32,7 @@ class ContentionReportTest {
     static final LockKey QUEUE = new LockKey("java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject",
             0x111, Kind.PARK);
 
-    static Wait wait(long fromMs, long toMs, ThreadRef waiter, LockKey lock, ThreadRef owner) {
+    static Wait wait(final long fromMs, final long toMs, final ThreadRef waiter, final LockKey lock, final ThreadRef owner) {
         return new Wait(new Interval(fromMs * MS, toMs * MS), waiter, lock, owner, Stack.EMPTY);
     }
 
@@ -42,7 +42,7 @@ class ContentionReportTest {
 
     @Test
     void emptyReport() {
-        ContentionReport r = new ContentionReport(info(), List.of());
+        final ContentionReport r = new ContentionReport(info(), List.of());
         assertTrue(r.isEmpty());
         assertEquals(0, r.totalNanos());
         assertTrue(r.locks(5).isEmpty());
@@ -54,14 +54,14 @@ class ContentionReportTest {
 
     @Test
     void locksAndWaitersAreRankedByTotalTime() {
-        ContentionReport r = new ContentionReport(info(), List.of(
+        final ContentionReport r = new ContentionReport(info(), List.of(
                 wait(100, 300, LOOP1, REGISTRY, HOUSEKEEPER),
                 wait(600, 650, LOOP2, REGISTRY, HOUSEKEEPER),
                 wait(700, 720, HOUSEKEEPER, STORE, FLUSHER),
                 wait(800, 805, LOOP1, QUEUE, null)));
 
         assertEquals(275 * MS, r.totalNanos());
-        List<ContentionReport.LockStats> locks = r.locks(10);
+        final List<ContentionReport.LockStats> locks = r.locks(10);
         assertEquals(3, locks.size());
         assertEquals(REGISTRY, locks.getFirst().lock());
         assertEquals(250 * MS, locks.getFirst().totalNanos());
@@ -73,7 +73,7 @@ class ContentionReportTest {
         assertTrue(locks.get(2).owners().isEmpty());
         assertEquals(1, r.locks(1).size());
 
-        List<ContentionReport.ThreadStats> waiters = r.waiters(10);
+        final List<ContentionReport.ThreadStats> waiters = r.waiters(10);
         assertEquals(LOOP1, waiters.getFirst().thread());
         assertEquals(205 * MS, waiters.getFirst().totalNanos());
         assertEquals(2, waiters.getFirst().count());
@@ -88,14 +88,14 @@ class ContentionReportTest {
     void theRealHolderIsResolvedThroughCoWaiters() {
         // JFR says loop-1 got the lock from loop-2, but loop-2 was itself waiting for the
         // housekeeper the whole time: the housekeeper is who held it.
-        ContentionReport r = new ContentionReport(info(), List.of(
+        final ContentionReport r = new ContentionReport(info(), List.of(
                 wait(100, 300, LOOP1, REGISTRY, LOOP2),
                 wait(100, 299, LOOP2, REGISTRY, HOUSEKEEPER)));
-        Wait resolved = r.waits().stream().filter(w -> w.waiter().equals(LOOP1)).findFirst().orElseThrow();
+        final Wait resolved = r.waits().stream().filter(w -> w.waiter().equals(LOOP1)).findFirst().orElseThrow();
         assertEquals(HOUSEKEEPER, resolved.owner());
         assertEquals(List.of(LOOP2), resolved.via());
         assertEquals("held by housekeeper (handed on through event-loop-2)", resolved.heldBy());
-        Wait direct = r.waits().stream().filter(w -> w.waiter().equals(LOOP2)).findFirst().orElseThrow();
+        final Wait direct = r.waits().stream().filter(w -> w.waiter().equals(LOOP2)).findFirst().orElseThrow();
         assertEquals(HOUSEKEEPER, direct.owner());
         assertTrue(direct.via().isEmpty());
         assertEquals("held by housekeeper", direct.heldBy());
@@ -104,27 +104,27 @@ class ContentionReportTest {
 
     @Test
     void resolutionStopsAtCyclesAndAtUnknownOwners() {
-        ContentionReport r = new ContentionReport(info(), List.of(
+        final ContentionReport r = new ContentionReport(info(), List.of(
                 wait(100, 300, LOOP1, REGISTRY, LOOP2),
                 wait(100, 300, LOOP2, REGISTRY, LOOP1)));
-        for (Wait w : r.waits()) {
+        for (final Wait w : r.waits()) {
             assertTrue(w.via().isEmpty(), w.toString());
         }
-        ContentionReport parks = new ContentionReport(info(), List.of(wait(0, 10, LOOP1, QUEUE, null)));
+        final ContentionReport parks = new ContentionReport(info(), List.of(wait(0, 10, LOOP1, QUEUE, null)));
         assertNull(parks.waits().getFirst().owner());
         assertEquals("", parks.waits().getFirst().heldBy());
     }
 
     @Test
     void convoysFollowTheHolderIntoADifferentLock() {
-        ContentionReport r = new ContentionReport(info(), List.of(
+        final ContentionReport r = new ContentionReport(info(), List.of(
                 wait(100, 300, LOOP1, REGISTRY, LOOP2),
                 wait(100, 299, LOOP2, REGISTRY, HOUSEKEEPER),
                 wait(150, 200, HOUSEKEEPER, STORE, FLUSHER),
                 wait(900, 950, LOOP1, REGISTRY, HOUSEKEEPER)));
-        List<ContentionReport.Convoy> convoys = r.convoys(5, 10);
+        final List<ContentionReport.Convoy> convoys = r.convoys(5, 10);
         assertEquals(2, convoys.size());
-        ContentionReport.Convoy first = convoys.getFirst();
+        final ContentionReport.Convoy first = convoys.getFirst();
         assertEquals(2, first.depth());
         assertEquals(LOOP1, first.head().waiter());
         assertEquals(HOUSEKEEPER, first.head().owner());
@@ -143,7 +143,7 @@ class ContentionReportTest {
         assertEquals("byte[]@1", new LockKey("[B", 1, Kind.PARK).pretty());
         assertEquals("monitor", Kind.MONITOR_ENTER.label());
         assertEquals("park", Kind.PARK.label());
-        Wait w = wait(1, 2, LOOP1, QUEUE, null);
+        final Wait w = wait(1, 2, LOOP1, QUEUE, null);
         assertEquals(Kind.PARK, w.kind());
         assertEquals(MS, w.start());
         assertEquals(2 * MS, w.end());
@@ -151,16 +151,16 @@ class ContentionReportTest {
 
     @Test
     void filtersApplyAfterHolderResolutionSoNarrowingTheQuestionKeepsTheAnswer() {
-        List<Wait> all = List.of(
+        final List<Wait> all = List.of(
                 wait(100, 300, LOOP1, REGISTRY, LOOP2),
                 wait(100, 299, LOOP2, REGISTRY, HOUSEKEEPER),
                 wait(150, 200, HOUSEKEEPER, STORE, FLUSHER),
                 wait(400, 405, LOOP1, QUEUE, null));
         // Only event-loop-1 asked about, only waits of 10 ms and more.
-        ContentionReport r = new ContentionReport(info(), all, 10 * MS, name -> name.equals("event-loop-1"));
+        final ContentionReport r = new ContentionReport(info(), all, 10 * MS, name -> name.equals("event-loop-1"));
 
         assertEquals(1, r.waits().size());
-        Wait w = r.waits().getFirst();
+        final Wait w = r.waits().getFirst();
         assertEquals(LOOP1, w.waiter());
         // The walk-back went through event-loop-2's wait, which the filter does not report.
         assertEquals(HOUSEKEEPER, w.owner());
@@ -169,7 +169,7 @@ class ContentionReportTest {
         assertEquals(LOOP1, r.waiters(10).getFirst().thread());
         assertEquals(200 * MS, r.totalNanos());
         // The convoy still follows the housekeeper into the store lock it was itself waiting for.
-        List<ContentionReport.Convoy> convoys = r.convoys(5, 10);
+        final List<ContentionReport.Convoy> convoys = r.convoys(5, 10);
         assertEquals(1, convoys.size());
         assertEquals(2, convoys.getFirst().depth());
         assertEquals(STORE, convoys.getFirst().links().get(1).lock());

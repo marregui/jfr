@@ -22,8 +22,8 @@ public final class IdentityObjObjHashMap<K, V> implements Mutable {
     private int free;
     private int size;
 
-    public IdentityObjObjHashMap(int initialCapacity) {
-        int capacity = Hashing.capacityFor(initialCapacity);
+    public IdentityObjObjHashMap(final int initialCapacity) {
+        final int capacity = Hashing.capacityFor(initialCapacity);
         keys = new Object[capacity];
         values = new Object[capacity];
         mask = capacity - 1;
@@ -39,8 +39,8 @@ public final class IdentityObjObjHashMap<K, V> implements Mutable {
     }
 
     /** The value for {@code key}, or {@code null} when absent. */
-    public V get(K key) {
-        int index = keyIndex(key);
+    public V get(final K key) {
+        final int index = keyIndex(key);
         return index < 0 ? valueAtQuick(index) : null;
     }
 
@@ -49,9 +49,9 @@ public final class IdentityObjObjHashMap<K, V> implements Mutable {
     }
 
     /** See {@link ObjObjHashMap#keyIndex}: negative means present at {@code -index - 1}. */
-    public int keyIndex(K key) {
-        int index = Hashing.spread(System.identityHashCode(key)) & mask;
-        Object k = keys[index];
+    public int keyIndex(final K key) {
+        final int index = Hashing.spread(System.identityHashCode(key)) & mask;
+        final Object k = keys[index];
         if (k == null) {
             return index;
         }
@@ -62,10 +62,10 @@ public final class IdentityObjObjHashMap<K, V> implements Mutable {
     }
 
     /** Inserts or replaces; returns the previous value or {@code null}. */
-    public V put(K key, V value) {
-        int index = keyIndex(key);
+    public V put(final K key, final V value) {
+        final int index = keyIndex(key);
         if (index < 0) {
-            V previous = valueAtQuick(index);
+            final V previous = valueAtQuick(index);
             values[-index - 1] = value;
             return previous;
         }
@@ -78,7 +78,7 @@ public final class IdentityObjObjHashMap<K, V> implements Mutable {
      *
      * @return {@code value}, so the get-or-insert idiom is one expression
      */
-    public V putAt(int index, K key, V value) {
+    public V putAt(final int index, final K key, final V value) {
         assert index >= 0 && keys[index] == null;
         keys[index] = key;
         values[index] = value;
@@ -95,15 +95,15 @@ public final class IdentityObjObjHashMap<K, V> implements Mutable {
 
     /** {@link ObjObjHashMap#valueAt} without the sign check (G-1.6). */
     @SuppressWarnings("unchecked")
-    public V valueAtQuick(int index) {
+    public V valueAtQuick(final int index) {
         assert index < 0;
         return (V) values[-index - 1];
     }
 
-    private int probe(K key, int index) {
+    private int probe(final K key, int index) {
         do {
             index = (index + 1) & mask;
-            Object k = keys[index];
+            final Object k = keys[index];
             if (k == null) {
                 return index;
             }
@@ -114,15 +114,15 @@ public final class IdentityObjObjHashMap<K, V> implements Mutable {
     }
 
     private void rehash() {
-        Object[] oldKeys = keys;
-        Object[] oldValues = values;
-        int capacity = oldKeys.length << 1;
+        final Object[] oldKeys = keys;
+        final Object[] oldValues = values;
+        final int capacity = oldKeys.length << 1;
         keys = new Object[capacity];
         values = new Object[capacity];
         mask = capacity - 1;
         free = Hashing.freeFor(capacity) - size;
         for (int i = 0; i < oldKeys.length; i++) {
-            Object k = oldKeys[i];
+            final Object k = oldKeys[i];
             if (k != null) {
                 int index = Hashing.spread(System.identityHashCode(k)) & mask;
                 while (keys[index] != null) {

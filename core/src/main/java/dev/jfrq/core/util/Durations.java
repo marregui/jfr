@@ -41,13 +41,13 @@ public final class Durations {
      *
      * @throws IllegalArgumentException when the text is not a duration
      */
-    public static Duration parse(String text) {
+    public static Duration parse(final String text) {
         return Duration.ofNanos(parseNanos(text));
     }
 
     /** Nanoseconds of {@link #parse(String)}. */
-    public static long parseNanos(String text) {
-        long nanos = parse0(text);
+    public static long parseNanos(final String text) {
+        final long nanos = parse0(text);
         if (nanos == UNKNOWN_UNIT) {
             throw new IllegalArgumentException("unknown duration unit in '" + text + "'");
         }
@@ -58,8 +58,8 @@ public final class Durations {
     }
 
     /** {@link #parseNanos(String)}, answering {@link Nulls#LONG_NULL} instead of throwing. */
-    public static long parseNanosQuiet(CharSequence text) {
-        long nanos = parse0(text);
+    public static long parseNanosQuiet(final CharSequence text) {
+        final long nanos = parse0(text);
         return nanos < 0 ? Nulls.LONG_NULL : nanos;
     }
 
@@ -67,7 +67,7 @@ public final class Durations {
      * Formats nanoseconds compactly for tables: {@code 312 ms}, {@code 1.42 s}, {@code 850 µs}.
      * Negative values are formatted with a leading minus.
      */
-    public static String format(long nanos) {
+    public static String format(final long nanos) {
         if (nanos == Long.MIN_VALUE) {
             return "-" + format(Long.MAX_VALUE);
         }
@@ -86,17 +86,17 @@ public final class Durations {
         if (nanos < 60_000_000_000L) {
             return trim(nanos / 1_000_000_000.0) + " s";
         }
-        long seconds = nanos / 1_000_000_000L;
+        final long seconds = nanos / 1_000_000_000L;
         return String.format(Locale.ROOT, "%dm%02ds", seconds / 60, seconds % 60);
     }
 
     /** {@link #format(long)} for a {@link Duration}. */
-    public static String format(Duration duration) {
+    public static String format(final Duration duration) {
         return format(duration.toNanos());
     }
 
     /** Formats an offset from the recording start as {@code +3.412s}. */
-    public static String offset(long nanos) {
+    public static String offset(final long nanos) {
         return String.format(Locale.ROOT, "%+.3fs", nanos / 1_000_000_000.0);
     }
 
@@ -105,7 +105,7 @@ public final class Durations {
      * optional whitespace, digits with an optional fraction, optional whitespace, an
      * optional unit of ASCII letters or {@code µ}, optional whitespace.
      */
-    private static long parse0(CharSequence text) {
+    private static long parse0(final CharSequence text) {
         if (text == null) {
             return NOT_A_DURATION;
         }
@@ -124,7 +124,7 @@ public final class Durations {
         if (p == lo) {
             return NOT_A_DURATION;
         }
-        int fractionStart = p;
+        final int fractionStart = p;
         if (p < hi && text.charAt(p) == '.') {
             int q = p + 1;
             while (q < hi && isDigit(text.charAt(q))) {
@@ -135,17 +135,17 @@ public final class Durations {
             }
             p = q;
         }
-        double value = number(text, lo, fractionStart, p);
+        final double value = number(text, lo, fractionStart, p);
         while (p < hi && isSpace(text.charAt(p))) {
             p++;
         }
         for (int i = p; i < hi; i++) {
-            char c = text.charAt(i);
+            final char c = text.charAt(i);
             if (!isAsciiLetter(c) && c != 'µ') {
                 return NOT_A_DURATION;
             }
         }
-        long unitNanos = unitNanos(text, p, hi);
+        final long unitNanos = unitNanos(text, p, hi);
         if (unitNanos < 0) {
             return UNKNOWN_UNIT;
         }
@@ -153,8 +153,8 @@ public final class Durations {
     }
 
     /** The decimal number in {@code [lo, hi)} whose fraction, if any, starts at {@code dot}. */
-    private static double number(CharSequence text, int lo, int dot, int hi) {
-        int digits = hi - lo - (dot < hi ? 1 : 0);
+    private static double number(final CharSequence text, final int lo, final int dot, final int hi) {
+        final int digits = hi - lo - (dot < hi ? 1 : 0);
         if (digits > EXACT_DIGITS) {
             return Double.parseDouble(text.subSequence(lo, hi).toString());
         }
@@ -172,12 +172,12 @@ public final class Durations {
     }
 
     /** Nanoseconds per unit, matched case-insensitively without allocating (G-2.2); -1 for an unknown unit. */
-    private static long unitNanos(CharSequence text, int lo, int hi) {
-        int n = hi - lo;
+    private static long unitNanos(final CharSequence text, final int lo, final int hi) {
+        final int n = hi - lo;
         if (n == 0) {
             return 1L;
         }
-        char c0 = fold(text.charAt(lo));
+        final char c0 = fold(text.charAt(lo));
         if (n == 1) {
             return switch (c0) {
                 case 's' -> 1_000_000_000L;
@@ -186,7 +186,7 @@ public final class Durations {
                 default -> -1;
             };
         }
-        char c1 = fold(text.charAt(lo + 1));
+        final char c1 = fold(text.charAt(lo + 1));
         if (n == 2 && c1 == 's') {
             return switch (c0) {
                 case 'n' -> 1L;
@@ -202,24 +202,24 @@ public final class Durations {
     }
 
     /** Lower-cases an ASCII letter; leaves {@code µ} and the rest alone. */
-    private static char fold(char c) {
+    private static char fold(final char c) {
         return c >= 'A' && c <= 'Z' ? (char) (c | 32) : c;
     }
 
-    private static boolean isAsciiLetter(char c) {
+    private static boolean isAsciiLetter(final char c) {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
     }
 
-    private static boolean isDigit(char c) {
+    private static boolean isDigit(final char c) {
         return c >= '0' && c <= '9';
     }
 
     /** The regex {@code \s} class: space, tab, newline, vertical tab, form feed, return. */
-    private static boolean isSpace(char c) {
+    private static boolean isSpace(final char c) {
         return c == ' ' || c == '\t' || c == '\n' || c == 0x0B || c == '\f' || c == '\r';
     }
 
-    private static String trim(double v) {
+    private static String trim(final double v) {
         if (v >= 100) {
             return String.format(Locale.ROOT, "%.0f", v);
         }

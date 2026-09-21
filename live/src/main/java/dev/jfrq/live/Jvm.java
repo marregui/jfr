@@ -35,7 +35,7 @@ public final class Jvm implements AutoCloseable {
     private final String pid;
     private final RuntimeMXBean runtime;
 
-    private Jvm(String pid, JMXConnector connector, FlightRecorderMXBean flightRecorder, RuntimeMXBean runtime) {
+    private Jvm(final String pid, final JMXConnector connector, final FlightRecorderMXBean flightRecorder, final RuntimeMXBean runtime) {
         this.pid = pid;
         this.connector = connector;
         this.flightRecorder = flightRecorder;
@@ -43,7 +43,7 @@ public final class Jvm implements AutoCloseable {
     }
 
     /** @throws IOException when the process does not exist, is not a JVM, or refuses attachment */
-    public static Jvm attach(String pid) throws IOException {
+    public static Jvm attach(final String pid) throws IOException {
         // RMI names this side's endpoint by resolving the machine's own hostname, which on a Mac
         // whose name does not resolve costs five seconds per connection. The local connector
         // only ever talks over loopback, so the name is irrelevant; say so before RMI asks.
@@ -53,7 +53,7 @@ public final class Jvm implements AutoCloseable {
         VirtualMachine vm;
         try {
             vm = VirtualMachine.attach(pid);
-        } catch (AttachNotSupportedException | IOException e) {
+        } catch (final AttachNotSupportedException | IOException e) {
             throw new IOException("cannot attach to " + pid + ": " + e.getMessage(), e);
         }
         String address;
@@ -63,15 +63,15 @@ public final class Jvm implements AutoCloseable {
         } finally {
             vm.detach();
         }
-        JMXConnector connector = JMXConnectorFactory.connect(new JMXServiceURL(address));
+        final JMXConnector connector = JMXConnectorFactory.connect(new JMXServiceURL(address));
         try {
-            MBeanServerConnection mbsc = connector.getMBeanServerConnection();
-            FlightRecorderMXBean fr = ManagementFactory.newPlatformMXBeanProxy(mbsc, FLIGHT_RECORDER,
+            final MBeanServerConnection mbsc = connector.getMBeanServerConnection();
+            final FlightRecorderMXBean fr = ManagementFactory.newPlatformMXBeanProxy(mbsc, FLIGHT_RECORDER,
                     FlightRecorderMXBean.class);
-            RuntimeMXBean runtime = ManagementFactory.newPlatformMXBeanProxy(mbsc,
+            final RuntimeMXBean runtime = ManagementFactory.newPlatformMXBeanProxy(mbsc,
                     ManagementFactory.RUNTIME_MXBEAN_NAME, RuntimeMXBean.class);
             return new Jvm(pid, connector, fr, runtime);
-        } catch (IOException | RuntimeException e) {
+        } catch (final IOException | RuntimeException e) {
             connector.close();
             throw e;
         }

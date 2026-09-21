@@ -69,13 +69,13 @@ public final class ContentionReport {
         final ObjList<Wait> list = new ObjList<>(8);
         long longest;
 
-        void add(Wait w) {
+        void add(final Wait w) {
             list.add(w);
             longest = Math.max(longest, w.duration());
         }
     }
 
-    public ContentionReport(RecordingInfo info, List<Wait> waits) {
+    public ContentionReport(final RecordingInfo info, final List<Wait> waits) {
         this(info, waits, 0, _ -> true);
     }
 
@@ -84,26 +84,26 @@ public final class ContentionReport {
      * @param minNanos     waits shorter than this are left out of the report
      * @param waiterFilter only waits by threads whose name passes are reported
      */
-    public ContentionReport(RecordingInfo info, List<Wait> waits, long minNanos, Predicate<String> waiterFilter) {
+    public ContentionReport(final RecordingInfo info, final List<Wait> waits, final long minNanos, final Predicate<String> waiterFilter) {
         this.info = info;
-        ObjList<Wait> sorted = new ObjList<>(waits.size());
+        final ObjList<Wait> sorted = new ObjList<>(waits.size());
         for (int i = 0, n = waits.size(); i < n; i++) {
             sorted.add(waits.get(i));
         }
         sorted.sort(BY_INTERVAL);
-        ObjObjHashMap<ThreadRef, Waits> raw = new ObjObjHashMap<>(256);
+        final ObjObjHashMap<ThreadRef, Waits> raw = new ObjObjHashMap<>(256);
         for (int i = 0, n = sorted.size(); i < n; i++) {
-            Wait w = sorted.getQuick(i);
+            final Wait w = sorted.getQuick(i);
             waitsOf(raw, w.waiter()).add(w);
         }
         // The filter runs once per thread, not once per wait (G-2.2).
-        ObjLongHashMap<ThreadRef> filterVerdict = new ObjLongHashMap<>(256);
-        ObjList<ThreadRef> via = new ObjList<>();
-        ObjHashSet<ThreadRef> seen = new ObjHashSet<>();
-        ObjList<Wait> reported = new ObjList<>(sorted.size());
+        final ObjLongHashMap<ThreadRef> filterVerdict = new ObjLongHashMap<>(256);
+        final ObjList<ThreadRef> via = new ObjList<>();
+        final ObjHashSet<ThreadRef> seen = new ObjHashSet<>();
+        final ObjList<Wait> reported = new ObjList<>(sorted.size());
         for (int i = 0, n = sorted.size(); i < n; i++) {
-            Wait w = sorted.getQuick(i);
-            Wait resolved = resolveHolder(w, raw, via, seen);
+            final Wait w = sorted.getQuick(i);
+            final Wait resolved = resolveHolder(w, raw, via, seen);
             // Every thread's waits stay reachable for convoy following; the report lists the filtered ones.
             waitsOf(byWaiter, w.waiter()).add(resolved);
             if (w.duration() >= minNanos && passes(filterVerdict, waiterFilter, w.waiter())) {
@@ -114,17 +114,17 @@ public final class ContentionReport {
         this.unfilteredCount = sorted.size();
     }
 
-    private static Waits waitsOf(ObjObjHashMap<ThreadRef, Waits> map, ThreadRef thread) {
-        int index = map.keyIndex(thread);
+    private static Waits waitsOf(final ObjObjHashMap<ThreadRef, Waits> map, final ThreadRef thread) {
+        final int index = map.keyIndex(thread);
         return index < 0 ? map.valueAtQuick(index) : map.putAt(index, thread, new Waits());
     }
 
-    private static boolean passes(ObjLongHashMap<ThreadRef> verdicts, Predicate<String> filter, ThreadRef thread) {
-        int index = verdicts.keyIndex(thread);
+    private static boolean passes(final ObjLongHashMap<ThreadRef> verdicts, final Predicate<String> filter, final ThreadRef thread) {
+        final int index = verdicts.keyIndex(thread);
         if (index < 0) {
             return verdicts.valueAtQuick(index) == PASSES;
         }
-        boolean passes = filter.test(thread.name());
+        final boolean passes = filter.test(thread.name());
         verdicts.putAt(index, thread, passes ? PASSES : FAILS);
         return passes;
     }
@@ -144,8 +144,8 @@ public final class ContentionReport {
      * back: while the recorded owner was itself waiting for the same lock during this wait,
      * take its owner instead and remember the intermediary.
      */
-    private static Wait resolveHolder(Wait wait, ObjObjHashMap<ThreadRef, Waits> byWaiter, ObjList<ThreadRef> via,
-                                      ObjHashSet<ThreadRef> seen) {
+    private static Wait resolveHolder(final Wait wait, final ObjObjHashMap<ThreadRef, Waits> byWaiter, final ObjList<ThreadRef> via,
+                                      final ObjHashSet<ThreadRef> seen) {
         ThreadRef owner = wait.owner();
         if (owner == null) {
             return wait;
@@ -156,12 +156,12 @@ public final class ContentionReport {
         seen.add(owner);
         while (true) {
             Wait ownersWait = null;
-            Waits theirs = byWaiter.get(owner);
+            final Waits theirs = byWaiter.get(owner);
             if (theirs != null) {
-                ObjList<Wait> list = theirs.list;
-                int from = Sorted.lowerBound(list, Wait::start, wait.start() - theirs.longest);
+                final ObjList<Wait> list = theirs.list;
+                final int from = Sorted.lowerBound(list, Wait::start, wait.start() - theirs.longest);
                 for (int i = from, n = list.size(); i < n; i++) {
-                    Wait w = list.getQuick(i);
+                    final Wait w = list.getQuick(i);
                     if (w.start() >= wait.end()) {
                         break;
                     }
@@ -199,19 +199,19 @@ public final class ContentionReport {
 
     public long totalNanos() {
         long total = 0;
-        for (Wait w : waits) {
+        for (final Wait w : waits) {
             total += w.duration();
         }
         return total;
     }
 
     /** Locks ranked by total time threads spent waiting for them. */
-    public List<LockStats> locks(int top) {
-        Map<Wait.LockKey, long[]> totals = new LinkedHashMap<>();
-        Map<Wait.LockKey, Set<ThreadRef>> waiters = new HashMap<>();
-        Map<Wait.LockKey, Set<ThreadRef>> owners = new HashMap<>();
-        for (Wait w : waits) {
-            long[] t = totals.computeIfAbsent(w.lock(), _ -> new long[3]);
+    public List<LockStats> locks(final int top) {
+        final Map<Wait.LockKey, long[]> totals = new LinkedHashMap<>();
+        final Map<Wait.LockKey, Set<ThreadRef>> waiters = new HashMap<>();
+        final Map<Wait.LockKey, Set<ThreadRef>> owners = new HashMap<>();
+        for (final Wait w : waits) {
+            final long[] t = totals.computeIfAbsent(w.lock(), _ -> new long[3]);
             t[0] += w.duration();
             t[1]++;
             t[2] = Math.max(t[2], w.duration());
@@ -220,7 +220,7 @@ public final class ContentionReport {
                 owners.computeIfAbsent(w.lock(), _ -> new LinkedHashSet<>()).add(w.owner());
             }
         }
-        List<LockStats> stats = new ArrayList<>();
+        final List<LockStats> stats = new ArrayList<>();
         totals.forEach((lock, t) -> stats.add(new LockStats(lock, t[0], (int) t[1], t[2],
                 waiters.getOrDefault(lock, Set.of()), owners.getOrDefault(lock, Set.of()))));
         stats.sort(Comparator.comparingLong(LockStats::totalNanos).reversed());
@@ -228,23 +228,23 @@ public final class ContentionReport {
     }
 
     /** Threads ranked by total time blocked. */
-    public List<ThreadStats> waiters(int top) {
-        Map<ThreadRef, long[]> totals = new LinkedHashMap<>();
-        for (Wait w : waits) {
-            long[] t = totals.computeIfAbsent(w.waiter(), _ -> new long[3]);
+    public List<ThreadStats> waiters(final int top) {
+        final Map<ThreadRef, long[]> totals = new LinkedHashMap<>();
+        for (final Wait w : waits) {
+            final long[] t = totals.computeIfAbsent(w.waiter(), _ -> new long[3]);
             t[0] += w.duration();
             t[1]++;
             t[2] = Math.max(t[2], w.duration());
         }
-        List<ThreadStats> stats = new ArrayList<>();
+        final List<ThreadStats> stats = new ArrayList<>();
         totals.forEach((thread, t) -> stats.add(new ThreadStats(thread, t[0], (int) t[1], t[2])));
         stats.sort(Comparator.comparingLong(ThreadStats::totalNanos).reversed());
         return limit(stats, top);
     }
 
     /** The longest individual waits. */
-    public List<Wait> longest(int top) {
-        List<Wait> sorted = new ArrayList<>(waits);
+    public List<Wait> longest(final int top) {
+        final List<Wait> sorted = new ArrayList<>(waits);
         sorted.sort(Comparator.comparingLong(Wait::duration).reversed());
         return limit(sorted, top);
     }
@@ -256,20 +256,20 @@ public final class ContentionReport {
      * {@link Wait#via()}). Only chains of two or more links are returned, longest head
      * wait first.
      */
-    public List<Convoy> convoys(int maxDepth, int top) {
-        List<Convoy> found = new ArrayList<>();
+    public List<Convoy> convoys(final int maxDepth, final int top) {
+        final List<Convoy> found = new ArrayList<>();
         // Heads in descending duration: once `top` convoys exist, no later head can outrank them.
-        for (Wait head : longest(waits.size())) {
+        for (final Wait head : longest(waits.size())) {
             if (found.size() >= top) {
                 break;
             }
-            List<Wait> links = new ArrayList<>();
+            final List<Wait> links = new ArrayList<>();
             links.add(head);
-            Set<ThreadRef> seen = new LinkedHashSet<>();
+            final Set<ThreadRef> seen = new LinkedHashSet<>();
             seen.add(head.waiter());
             Wait current = head;
             while (links.size() < maxDepth && current.owner() != null && seen.add(current.owner())) {
-                Wait next = longestOverlapping(current.owner(), current.interval(), current.lock());
+                final Wait next = longestOverlapping(current.owner(), current.interval(), current.lock());
                 if (next == null) {
                     break;
                 }
@@ -283,24 +283,24 @@ public final class ContentionReport {
         return List.copyOf(found);
     }
 
-    private Wait longestOverlapping(ThreadRef thread, Interval during, Wait.LockKey notThisLock) {
+    private Wait longestOverlapping(final ThreadRef thread, final Interval during, final Wait.LockKey notThisLock) {
         Wait best = null;
         long bestOverlap = 0;
-        Waits theirs = byWaiter.get(thread);
+        final Waits theirs = byWaiter.get(thread);
         if (theirs == null) {
             return null;
         }
-        ObjList<Wait> list = theirs.list;
-        int from = Sorted.lowerBound(list, Wait::start, during.start() - theirs.longest);
+        final ObjList<Wait> list = theirs.list;
+        final int from = Sorted.lowerBound(list, Wait::start, during.start() - theirs.longest);
         for (int i = from, n = list.size(); i < n; i++) {
-            Wait w = list.getQuick(i);
+            final Wait w = list.getQuick(i);
             if (w.start() >= during.end()) {
                 break;
             }
             if (w.lock().equals(notThisLock)) {
                 continue;
             }
-            long overlap = w.interval().overlap(during);
+            final long overlap = w.interval().overlap(during);
             if (overlap > bestOverlap) {
                 best = w;
                 bestOverlap = overlap;
@@ -309,7 +309,7 @@ public final class ContentionReport {
         return best;
     }
 
-    private static <T> List<T> limit(List<T> list, int top) {
+    private static <T> List<T> limit(final List<T> list, final int top) {
         return list.size() > top ? List.copyOf(list.subList(0, top)) : List.copyOf(list);
     }
 }

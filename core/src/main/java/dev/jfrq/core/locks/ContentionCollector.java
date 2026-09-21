@@ -53,7 +53,7 @@ public final class ContentionCollector implements JfrReader.Sink {
      * @param minNanos     waits shorter than this are left out of the report
      * @param waiterFilter only waits by threads whose name passes are reported
      */
-    public ContentionCollector(long minNanos, Predicate<String> waiterFilter) {
+    public ContentionCollector(final long minNanos, final Predicate<String> waiterFilter) {
         this.minNanos = minNanos;
         this.waiterFilter = waiterFilter;
     }
@@ -63,7 +63,7 @@ public final class ContentionCollector implements JfrReader.Sink {
     }
 
     @Override
-    public void begin(Interner interner) {
+    public void begin(final Interner interner) {
         this.interner = interner;
     }
 
@@ -73,7 +73,7 @@ public final class ContentionCollector implements JfrReader.Sink {
     }
 
     @Override
-    public void accept(RecordedEvent e) {
+    public void accept(final RecordedEvent e) {
         accept(e, EventKinds.kindOf(e.getEventType().getName()));
     }
 
@@ -83,32 +83,32 @@ public final class ContentionCollector implements JfrReader.Sink {
      * the one that says who really held it. The filters apply in the report.
      */
     @Override
-    public void accept(RecordedEvent e, int kind) {
-        Interval interval = Events.interval(e);
-        ThreadRef waiter = interner.thread(e);
+    public void accept(final RecordedEvent e, final int kind) {
+        final Interval interval = Events.interval(e);
+        final ThreadRef waiter = interner.thread(e);
         if (waiter == null) {
             return;
         }
-        boolean monitor = kind == EventKinds.JAVA_MONITOR_ENTER;
-        String cls = Events.className(e, monitor ? "monitorClass" : "parkedClass", interner);
+        final boolean monitor = kind == EventKinds.JAVA_MONITOR_ENTER;
+        final String cls = Events.className(e, monitor ? "monitorClass" : "parkedClass", interner);
         if (!monitor && cls == null) {
             return;
         }
-        Wait.Kind waitKind = monitor ? Wait.Kind.MONITOR_ENTER : Wait.Kind.PARK;
-        Wait.LockKey lock = lock(cls, Events.longOr(e, "address", 0), waitKind);
-        ThreadRef owner = monitor ? Events.thread(e, "previousOwner", interner) : null;
+        final Wait.Kind waitKind = monitor ? Wait.Kind.MONITOR_ENTER : Wait.Kind.PARK;
+        final Wait.LockKey lock = lock(cls, Events.longOr(e, "address", 0), waitKind);
+        final ThreadRef owner = monitor ? Events.thread(e, "previousOwner", interner) : null;
         waits.add(new Wait(interval, waiter, lock, owner, Events.stack(e, interner)));
     }
 
-    private Wait.LockKey lock(String cls, long address, Wait.Kind kind) {
-        int index = locks.keyIndex(address);
+    private Wait.LockKey lock(final String cls, final long address, final Wait.Kind kind) {
+        final int index = locks.keyIndex(address);
         if (index < 0) {
-            Wait.LockKey known = locks.valueAtQuick(index);
+            final Wait.LockKey known = locks.valueAtQuick(index);
             if (known.kind() == kind && Objects.equals(known.className(), cls)) {
                 return known;
             }
         }
-        Wait.LockKey created = new Wait.LockKey(cls, address, kind);
+        final Wait.LockKey created = new Wait.LockKey(cls, address, kind);
         if (index < 0) {
             locks.put(address, created);
         } else {
@@ -118,7 +118,7 @@ public final class ContentionCollector implements JfrReader.Sink {
     }
 
     @Override
-    public void finish(RecordingInfo info) {
+    public void finish(final RecordingInfo info) {
         report = new ContentionReport(info, waits.toList(), minNanos, waiterFilter);
     }
 

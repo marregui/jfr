@@ -41,7 +41,7 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
     }
 
     public StallReport {
-        List<Stall> sorted = new ArrayList<>(stalls);
+        final List<Stall> sorted = new ArrayList<>(stalls);
         sorted.sort(Comparator.comparingLong(Stall::duration).reversed()
                 .thenComparingLong(Stall::start));
         stalls = List.copyOf(sorted);
@@ -50,7 +50,7 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
         warnings = List.copyOf(warnings);
     }
 
-    public List<Stall> top(int n) {
+    public List<Stall> top(final int n) {
         return stalls.size() > n ? stalls.subList(0, n) : stalls;
     }
 
@@ -65,17 +65,17 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
     private static final int WORST = 2;
 
     public List<VerdictSummary> byVerdict() {
-        Stall.Verdict[] verdicts = Stall.Verdict.values();
-        long[] totals = new long[verdicts.length * TOTALS_STRIDE];
-        for (Stall s : stalls) {
-            int base = s.verdict().ordinal() * TOTALS_STRIDE;
+        final Stall.Verdict[] verdicts = Stall.Verdict.values();
+        final long[] totals = new long[verdicts.length * TOTALS_STRIDE];
+        for (final Stall s : stalls) {
+            final int base = s.verdict().ordinal() * TOTALS_STRIDE;
             totals[base + COUNT]++;
             totals[base + TOTAL] += s.duration();
             totals[base + WORST] = Math.max(totals[base + WORST], s.duration());
         }
-        List<VerdictSummary> out = new ArrayList<>();
-        for (Stall.Verdict v : verdicts) {
-            int base = v.ordinal() * TOTALS_STRIDE;
+        final List<VerdictSummary> out = new ArrayList<>();
+        for (final Stall.Verdict v : verdicts) {
+            final int base = v.ordinal() * TOTALS_STRIDE;
             if (totals[base + COUNT] > 0) {
                 out.add(new VerdictSummary(v, (int) totals[base + COUNT], totals[base + TOTAL], totals[base + WORST]));
             }
@@ -84,9 +84,9 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
         return out;
     }
 
-    public List<Stall> stallsOf(ThreadRef thread) {
-        List<Stall> out = new ArrayList<>();
-        for (Stall s : stalls) {
+    public List<Stall> stallsOf(final ThreadRef thread) {
+        final List<Stall> out = new ArrayList<>();
+        for (final Stall s : stalls) {
             if (s.thread().equals(thread)) {
                 out.add(s);
             }

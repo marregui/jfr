@@ -28,14 +28,14 @@ public final class LongObjHashMap<V> implements Mutable {
         this(Hashing.MIN_CAPACITY);
     }
 
-    public LongObjHashMap(int initialCapacity) {
+    public LongObjHashMap(final int initialCapacity) {
         this(initialCapacity, DEFAULT_NO_ENTRY_KEY);
     }
 
     /** @param noEntryKey the key value that marks a free slot; a key equal to it cannot be stored */
-    public LongObjHashMap(int initialCapacity, long noEntryKey) {
+    public LongObjHashMap(final int initialCapacity, final long noEntryKey) {
         this.noEntryKey = noEntryKey;
-        int capacity = Hashing.capacityFor(initialCapacity);
+        final int capacity = Hashing.capacityFor(initialCapacity);
         this.keys = new long[capacity];
         this.values = new Object[capacity];
         this.mask = capacity - 1;
@@ -51,22 +51,22 @@ public final class LongObjHashMap<V> implements Mutable {
         size = 0;
     }
 
-    public boolean contains(long key) {
+    public boolean contains(final long key) {
         return keyIndex(key) < 0;
     }
 
-    public boolean excludes(long key) {
+    public boolean excludes(final long key) {
         return keyIndex(key) > -1;
     }
 
     /** The value for {@code key}, or {@code null} when absent. */
-    public V get(long key) {
-        int index = keyIndex(key);
+    public V get(final long key) {
+        final int index = keyIndex(key);
         return index < 0 ? valueAtQuick(index) : null;
     }
 
     /** Whether {@code slot} (see {@link #slots()}) holds an entry. */
-    public boolean hasKeyAtSlot(int slot) {
+    public boolean hasKeyAtSlot(final int slot) {
         return keys[slot] != noEntryKey;
     }
 
@@ -75,15 +75,15 @@ public final class LongObjHashMap<V> implements Mutable {
     }
 
     /** The key at {@code slot}, or the no-entry key for a free slot. */
-    public long keyAtSlot(int slot) {
+    public long keyAtSlot(final int slot) {
         return keys[slot];
     }
 
     /** See {@link ObjObjHashMap#keyIndex}: negative means present at {@code -index - 1}. */
-    public int keyIndex(long key) {
+    public int keyIndex(final long key) {
         assert key != noEntryKey;
-        int index = Hashing.spread(key) & mask;
-        long k = keys[index];
+        final int index = Hashing.spread(key) & mask;
+        final long k = keys[index];
         if (k == noEntryKey) {
             return index;
         }
@@ -98,10 +98,10 @@ public final class LongObjHashMap<V> implements Mutable {
     }
 
     /** Inserts or replaces; returns the previous value or {@code null}. */
-    public V put(long key, V value) {
-        int index = keyIndex(key);
+    public V put(final long key, final V value) {
+        final int index = keyIndex(key);
         if (index < 0) {
-            V previous = valueAtQuick(index);
+            final V previous = valueAtQuick(index);
             values[-index - 1] = value;
             return previous;
         }
@@ -114,7 +114,7 @@ public final class LongObjHashMap<V> implements Mutable {
      *
      * @return {@code value}, so the get-or-insert idiom is one expression
      */
-    public V putAt(int index, long key, V value) {
+    public V putAt(final int index, final long key, final V value) {
         assert index >= 0 && keys[index] == noEntryKey;
         keys[index] = key;
         values[index] = value;
@@ -135,7 +135,7 @@ public final class LongObjHashMap<V> implements Mutable {
     }
 
     /** The value a negative {@link #keyIndex} result denotes; throws on a non-negative one. */
-    public V valueAt(int index) {
+    public V valueAt(final int index) {
         if (index >= 0) {
             throw new IllegalArgumentException("key is absent: keyIndex " + index);
         }
@@ -144,21 +144,21 @@ public final class LongObjHashMap<V> implements Mutable {
 
     /** {@link #valueAt} without the sign check (G-1.6). */
     @SuppressWarnings("unchecked")
-    public V valueAtQuick(int index) {
+    public V valueAtQuick(final int index) {
         assert index < 0;
         return (V) values[-index - 1];
     }
 
     /** The value at {@code slot} (see {@link #slots()}); {@code null} for a free slot. */
     @SuppressWarnings("unchecked")
-    public V valueAtSlot(int slot) {
+    public V valueAtSlot(final int slot) {
         return (V) values[slot];
     }
 
-    private int probe(long key, int index) {
+    private int probe(final long key, int index) {
         do {
             index = (index + 1) & mask;
-            long k = keys[index];
+            final long k = keys[index];
             if (k == noEntryKey) {
                 return index;
             }
@@ -169,18 +169,18 @@ public final class LongObjHashMap<V> implements Mutable {
     }
 
     private void rehash() {
-        long[] oldKeys = keys;
-        Object[] oldValues = values;
-        int capacity = oldKeys.length << 1;
+        final long[] oldKeys = keys;
+        final Object[] oldValues = values;
+        final int capacity = oldKeys.length << 1;
         keys = new long[capacity];
         values = new Object[capacity];
         Arrays.fill(keys, noEntryKey);
         mask = capacity - 1;
         free = Hashing.freeFor(capacity) - size;
         for (int i = 0; i < oldKeys.length; i++) {
-            long k = oldKeys[i];
+            final long k = oldKeys[i];
             if (k != noEntryKey) {
-                int index = keyIndex(k);
+                final int index = keyIndex(k);
                 assert index >= 0;
                 keys[index] = k;
                 values[index] = oldValues[i];

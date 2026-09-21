@@ -95,7 +95,7 @@ public final class StallAnalysis {
     private final ObjList<Culprit> culprits = new ObjList<>();
     private final ObjObjHashMap<String, Culprit> culpritByName = new ObjObjHashMap<>(64);
 
-    public StallAnalysis(long gapNanos) {
+    public StallAnalysis(final long gapNanos) {
         if (gapNanos <= 0) {
             throw new IllegalArgumentException("gap must be positive");
         }
@@ -106,48 +106,48 @@ public final class StallAnalysis {
         return gap;
     }
 
-    public StallReport analyse(RecordingInfo info, List<ThreadTimeline> timelines, List<Pause> pauses) {
-        List<String> warnings = new ArrayList<>();
+    public StallReport analyse(final RecordingInfo info, final List<ThreadTimeline> timelines, final List<Pause> pauses) {
+        final List<String> warnings = new ArrayList<>();
         warnRecording(info, warnings);
-        long period = samplerPeriod(info);
+        final long period = samplerPeriod(info);
 
-        ObjList<Pause> sortedPauses = new ObjList<>(pauses.size());
+        final ObjList<Pause> sortedPauses = new ObjList<>(pauses.size());
         for (int i = 0, n = pauses.size(); i < n; i++) {
             sortedPauses.add(pauses.get(i));
         }
         sortedPauses.sort(PAUSE_BY_INTERVAL);
-        ObjList<Pause> longPauses = new ObjList<>();
+        final ObjList<Pause> longPauses = new ObjList<>();
         for (int i = 0, n = sortedPauses.size(); i < n; i++) {
-            Pause p = sortedPauses.getQuick(i);
+            final Pause p = sortedPauses.getQuick(i);
             if (p.length() >= gap) {
                 longPauses.add(p);
             }
         }
 
-        ObjList<ThreadTimeline> ordered = new ObjList<>(timelines.size());
+        final ObjList<ThreadTimeline> ordered = new ObjList<>(timelines.size());
         for (int i = 0, n = timelines.size(); i < n; i++) {
             ordered.add(timelines.get(i));
         }
         ordered.sort(BY_THREAD_NAME);
-        ObjList<Stall> stalls = new ObjList<>();
-        ObjList<ThreadSummary> summaries = new ObjList<>(ordered.size());
-        ObjList<String> cadenceWarnings = new ObjList<>();
-        Windows windows = new Windows(sortedPauses);
+        final ObjList<Stall> stalls = new ObjList<>();
+        final ObjList<ThreadSummary> summaries = new ObjList<>(ordered.size());
+        final ObjList<String> cadenceWarnings = new ObjList<>();
+        final Windows windows = new Windows(sortedPauses);
         for (int i = 0, n = ordered.size(); i < n; i++) {
-            ThreadTimeline tl = ordered.getQuick(i);
-            Cadence cadence = Cadence.of(tl.samples(), period);
-            int before = stalls.size();
+            final ThreadTimeline tl = ordered.getQuick(i);
+            final Cadence cadence = Cadence.of(tl.samples(), period);
+            final int before = stalls.size();
             analyseThread(tl, cadence, windows, stalls);
             long stalled = 0;
             long worst = 0;
             for (int s = before, m = stalls.size(); s < m; s++) {
-                long duration = stalls.getQuick(s).duration();
+                final long duration = stalls.getQuick(s).duration();
                 stalled += duration;
                 worst = Math.max(worst, duration);
             }
             summaries.add(new ThreadSummary(tl.thread(), tl.samples().size(), cadence.java, cadence.inNative,
                     stalls.size() - before, stalled, worst));
-            long absence = cadence.routineAbsence();
+            final long absence = cadence.routineAbsence();
             if (absence > 0 && absence * CADENCE_FACTOR > gap) {
                 cadenceWarnings.add(String.format(Locale.ROOT,
                         "%s: samples routinely up to %s apart; unexplained silences shorter than ~%s "
@@ -156,7 +156,7 @@ public final class StallAnalysis {
                         Durations.format(absence * CADENCE_FACTOR)));
             }
         }
-        int shown = Math.min(cadenceWarnings.size(), CADENCE_WARNINGS_SHOWN);
+        final int shown = Math.min(cadenceWarnings.size(), CADENCE_WARNINGS_SHOWN);
         for (int i = 0; i < shown; i++) {
             warnings.add(cadenceWarnings.getQuick(i));
         }
@@ -172,10 +172,10 @@ public final class StallAnalysis {
      * far more likely to be the sampler not running, or a pause the recording did not
      * capture, than each thread independently blocking; say so in the detail.
      */
-    static List<Stall> markSimultaneous(List<Stall> stalls) {
-        ObjList<Stall> unexplained = new ObjList<>();
+    static List<Stall> markSimultaneous(final List<Stall> stalls) {
+        final ObjList<Stall> unexplained = new ObjList<>();
         for (int i = 0, n = stalls.size(); i < n; i++) {
-            Stall s = stalls.get(i);
+            final Stall s = stalls.get(i);
             if (s.verdict() == Verdict.UNEXPLAINED) {
                 unexplained.add(s);
             }
@@ -184,14 +184,14 @@ public final class StallAnalysis {
             return stalls;
         }
         unexplained.sort(BY_START);
-        long longest = Sorted.maxLength(unexplained, Stall::duration);
-        IdentityObjObjHashMap<Stall, Stall> marked = new IdentityObjObjHashMap<>(unexplained.size());
+        final long longest = Sorted.maxLength(unexplained, Stall::duration);
+        final IdentityObjObjHashMap<Stall, Stall> marked = new IdentityObjObjHashMap<>(unexplained.size());
         for (int u = 0, n = unexplained.size(); u < n; u++) {
-            Stall s = unexplained.getQuick(u);
+            final Stall s = unexplained.getQuick(u);
             int count = 0;
-            int from = Sorted.lowerBound(unexplained, Stall::start, s.start() - longest);
+            final int from = Sorted.lowerBound(unexplained, Stall::start, s.start() - longest);
             for (int i = from; i < n; i++) {
-                Stall o = unexplained.getQuick(i);
+                final Stall o = unexplained.getQuick(i);
                 if (o.start() >= s.interval().end()) {
                     break;
                 }
@@ -210,20 +210,20 @@ public final class StallAnalysis {
         if (marked.isEmpty()) {
             return stalls;
         }
-        ObjList<Stall> out = new ObjList<>(stalls.size());
+        final ObjList<Stall> out = new ObjList<>(stalls.size());
         for (int i = 0, n = stalls.size(); i < n; i++) {
-            Stall s = stalls.get(i);
-            Stall replacement = marked.get(s);
+            final Stall s = stalls.get(i);
+            final Stall replacement = marked.get(s);
             out.add(replacement == null ? s : replacement);
         }
         return out.toList();
     }
 
     /** The finer of the two sampler periods in the recording's settings, or 0 if unknown. */
-    static long samplerPeriod(RecordingInfo info) {
+    static long samplerPeriod(final RecordingInfo info) {
         long period = 0;
-        for (int kind : SAMPLER_EVENTS) {
-            long p = info.periodNanos(EventKinds.nameOf(kind));
+        for (final int kind : SAMPLER_EVENTS) {
+            final long p = info.periodNanos(EventKinds.nameOf(kind));
             if (p != Nulls.LONG_NULL && p > 0 && (period == 0 || p < period)) {
                 period = p;
             }
@@ -231,23 +231,23 @@ public final class StallAnalysis {
         return period;
     }
 
-    private void warnRecording(RecordingInfo info, List<String> warnings) {
+    private void warnRecording(final RecordingInfo info, final List<String> warnings) {
         if (!info.has(EventKinds.nameOf(EventKinds.EXECUTION_SAMPLE))
                 && !info.has(EventKinds.nameOf(EventKinds.NATIVE_METHOD_SAMPLE))) {
             warnings.add("no sampler events in the recording: only event-based stalls can be found");
         }
-        StringBuilder throttled = new StringBuilder();
-        for (int kind : THRESHOLDED_BLOCK_EVENTS) {
-            String type = EventKinds.nameOf(kind);
+        final StringBuilder throttled = new StringBuilder();
+        for (final int kind : THRESHOLDED_BLOCK_EVENTS) {
+            final String type = EventKinds.nameOf(kind);
             if (!info.enabled(type)) {
                 continue;
             }
-            long threshold = info.thresholdNanos(type);
+            final long threshold = info.thresholdNanos(type);
             if (threshold != Nulls.LONG_NULL && threshold > gap) {
                 warnings.add(type + " threshold " + Durations.format(threshold) + " exceeds gap "
                         + Durations.format(gap) + ": shorter blocks of this kind are not in the file");
             }
-            String throttle = info.throttle(type).orElse(null);
+            final String throttle = info.throttle(type).orElse(null);
             if (throttle != null) {
                 throttled.append(throttled.isEmpty() ? "" : ", ").append(type).append(' ').append(throttle);
             }
@@ -272,15 +272,15 @@ public final class StallAnalysis {
      * @param period     the configured sampler period, or the Java median if unknown
      */
     record Cadence(long java, long inNative, long javaP90, long nativeP90, long period) {
-        static Cadence of(List<Sample> samples, long configuredPeriod) {
-            int n = samples.size();
-            LongList javaDiffs = new LongList(n);
-            LongList nativeDiffs = new LongList(n);
-            LongList allDiffs = new LongList(n);
+        static Cadence of(final List<Sample> samples, final long configuredPeriod) {
+            final int n = samples.size();
+            final LongList javaDiffs = new LongList(n);
+            final LongList nativeDiffs = new LongList(n);
+            final LongList allDiffs = new LongList(n);
             for (int i = 1; i < n; i++) {
-                Sample a = samples.get(i - 1);
-                Sample b = samples.get(i);
-                long d = b.time() - a.time();
+                final Sample a = samples.get(i - 1);
+                final Sample b = samples.get(i);
+                final long d = b.time() - a.time();
                 allDiffs.add(d);
                 if (!a.inNative() && !b.inNative()) {
                     javaDiffs.add(d);
@@ -288,13 +288,13 @@ public final class StallAnalysis {
                     nativeDiffs.add(d);
                 }
             }
-            LongList javaSpacing = javaDiffs.isEmpty() ? allDiffs : javaDiffs;
-            LongList nativeSpacing = nativeDiffs.isEmpty() ? allDiffs : nativeDiffs;
+            final LongList javaSpacing = javaDiffs.isEmpty() ? allDiffs : javaDiffs;
+            final LongList nativeSpacing = nativeDiffs.isEmpty() ? allDiffs : nativeDiffs;
             // Sorting in place is fine: only the order statistics are read from here on.
             javaSpacing.sort();
             nativeSpacing.sort();
-            long java = percentile(javaSpacing, 0.5);
-            long period = configuredPeriod > 0 ? configuredPeriod : java;
+            final long java = percentile(javaSpacing, 0.5);
+            final long period = configuredPeriod > 0 ? configuredPeriod : java;
             return new Cadence(java, percentile(nativeSpacing, 0.5), percentile(javaSpacing, 0.9),
                     percentile(nativeSpacing, 0.9), period);
         }
@@ -310,21 +310,21 @@ public final class StallAnalysis {
         }
 
         /** The {@code p}-th order statistic of a <em>sorted</em> list; 0 when empty. */
-        static long percentile(LongList sorted, double p) {
+        static long percentile(final LongList sorted, final double p) {
             if (sorted.isEmpty()) {
                 return 0;
             }
-            int index = (int) Math.min(sorted.size() - 1, Math.floor(p * sorted.size()));
+            final int index = (int) Math.min(sorted.size() - 1, Math.floor(p * sorted.size()));
             return sorted.getQuick(index);
         }
     }
 
-    private void analyseThread(ThreadTimeline tl, Cadence cadence, Windows windows, ObjList<Stall> stalls) {
+    private void analyseThread(final ThreadTimeline tl, final Cadence cadence, final Windows windows, final ObjList<Stall> stalls) {
         // 1. Event-based stalls: precise, independent of sampling.
-        List<Block> blocks = tl.blocks();
-        ObjList<Stall> eventStalls = new ObjList<>();
+        final List<Block> blocks = tl.blocks();
+        final ObjList<Stall> eventStalls = new ObjList<>();
         for (int i = 0, n = blocks.size(); i < n; i++) {
-            Block b = blocks.get(i);
+            final Block b = blocks.get(i);
             if (b.length() >= gap) {
                 eventStalls.add(new Stall(tl.thread(), b.interval(), verdictOf(b.kind()), describe(b), b.stack(),
                         Evidence.EVENT, 0));
@@ -334,22 +334,22 @@ public final class StallAnalysis {
         windows.of(blocks, eventStalls);
 
         // 2. Sample-based candidates.
-        List<Sample> samples = tl.samples();
+        final List<Sample> samples = tl.samples();
         long runLimit = Math.min(gap, RUN_FACTOR * Math.max(cadence.period, cadence.java));
         if (runLimit <= 0) {
             runLimit = gap;
         }
-        ObjList<Candidate> runs = new ObjList<>();
-        ObjList<Interval> silences = new ObjList<>();
+        final ObjList<Candidate> runs = new ObjList<>();
+        final ObjList<Interval> silences = new ObjList<>();
         int i = 0;
-        int n = samples.size();
+        final int n = samples.size();
         while (i < n) {
-            Sample first = samples.get(i);
+            final Sample first = samples.get(i);
             if (i > 0) {
                 // Every gap of at least the stall length is a candidate; whether an unexplained
                 // one is evidence of anything is decided against the cadence below.
-                Sample prev = samples.get(i - 1);
-                long d = first.time() - prev.time();
+                final Sample prev = samples.get(i - 1);
+                final long d = first.time() - prev.time();
                 if (d >= gap) {
                     silences.add(new Interval(prev.time(), first.time()));
                 }
@@ -360,20 +360,20 @@ public final class StallAnalysis {
             }
             int j = i;
             while (j + 1 < n) {
-                Sample cur = samples.get(j);
-                Sample next = samples.get(j + 1);
+                final Sample cur = samples.get(j);
+                final Sample next = samples.get(j + 1);
                 if (next.idle() || next.time() - cur.time() > runLimit) {
                     break;
                 }
                 j++;
             }
-            Sample last = samples.get(j);
+            final Sample last = samples.get(j);
             long end = last.time() + cadence.period;
             if (j + 1 < n) {
                 end = Math.min(end, samples.get(j + 1).time());
             }
             end = Math.max(end, last.time());
-            Interval run = new Interval(first.time(), end);
+            final Interval run = new Interval(first.time(), end);
             if (run.length() >= gap && j + 1 - i >= RUN_MIN_SAMPLES) {
                 runs.add(new Candidate(run, samples.subList(i, j + 1)));
             }
@@ -381,16 +381,16 @@ public final class StallAnalysis {
             i = j + 1;
         }
 
-        long unexplainedThreshold = silentThreshold(cadence);
+        final long unexplainedThreshold = silentThreshold(cadence);
         for (int s = 0, m = silences.size(); s < m; s++) {
-            Interval silence = silences.getQuick(s);
+            final Interval silence = silences.getQuick(s);
             if (windows.coveredByEvent(silence)) {
                 continue;
             }
             // A silence shorter than the routine absence is not evidence by itself, so what
             // explains it must cover a whole gap on its own; a longer one is, and half is enough.
-            long minCover = silence.length() < unexplainedThreshold ? Math.max(gap, cover(silence)) : cover(silence);
-            Explanation ex = windows.explain(silence, true, minCover);
+            final long minCover = silence.length() < unexplainedThreshold ? Math.max(gap, cover(silence)) : cover(silence);
+            final Explanation ex = windows.explain(silence, true, minCover);
             if (ex != null) {
                 stalls.add(new Stall(tl.thread(), silence, ex.verdict, ex.detail, ex.stack, Evidence.SILENCE, 0));
             } else if (silence.length() >= unexplainedThreshold) {
@@ -402,16 +402,16 @@ public final class StallAnalysis {
         }
 
         for (int r = 0, m = runs.size(); r < m; r++) {
-            Candidate run = runs.getQuick(r);
+            final Candidate run = runs.getQuick(r);
             if (windows.coveredByEvent(run.interval)) {
                 continue;
             }
-            Explanation ex = windows.explain(run.interval, false, cover(run.interval));
+            final Explanation ex = windows.explain(run.interval, false, cover(run.interval));
             if (ex != null) {
                 stalls.add(new Stall(tl.thread(), run.interval, ex.verdict, ex.detail, ex.stack,
                         Evidence.SAMPLES, run.samples.size()));
             } else {
-                Stall b = busy(tl, run);
+                final Stall b = busy(tl, run);
                 if (b != null) {
                     stalls.add(b);
                 }
@@ -423,12 +423,12 @@ public final class StallAnalysis {
     }
 
     /** The coverage an explanation needs for an interval that is evidence in its own right. */
-    private static long cover(Interval interval) {
+    private static long cover(final Interval interval) {
         return (long) Math.ceil(COVER * interval.length());
     }
 
     /** The shortest silence that means anything on its own: above the gap and above the routine absence. */
-    private long silentThreshold(Cadence cadence) {
+    private long silentThreshold(final Cadence cadence) {
         return Math.max(gap, CADENCE_FACTOR * cadence.routineAbsence());
     }
 
@@ -445,7 +445,7 @@ public final class StallAnalysis {
         /** The longest block in the group: its stack stands for the group. */
         Block representative;
 
-        Group of(BlockKind kind, String detail) {
+        Group of(final BlockKind kind, final String detail) {
             this.kind = kind;
             this.detail = detail;
             this.overlap = 0;
@@ -475,27 +475,27 @@ public final class StallAnalysis {
         private final ObjObjHashMap<String, Group>[] groupByDetail;
 
         @SuppressWarnings({"unchecked", "rawtypes"}) // an array of a generic type has no other spelling
-        Windows(ObjList<Pause> pauses) {
+        Windows(final ObjList<Pause> pauses) {
             this.pauses = pauses;
             this.longestPause = Sorted.maxLength(pauses, Pause::length);
-            BlockKind[] kinds = BlockKind.values();
+            final BlockKind[] kinds = BlockKind.values();
             this.groupByDetail = new ObjObjHashMap[kinds.length];
             for (int i = 0; i < kinds.length; i++) {
                 groupByDetail[i] = new ObjObjHashMap<>(16);
             }
         }
 
-        void of(List<Block> blocks, ObjList<Stall> eventStalls) {
+        void of(final List<Block> blocks, final ObjList<Stall> eventStalls) {
             this.blocks = blocks;
             this.longestBlock = Sorted.maxLength(blocks, Block::length);
             this.eventStalls = eventStalls;
             this.longestEventStall = Sorted.maxLength(eventStalls, Stall::duration);
         }
 
-        boolean coveredByEvent(Interval candidate) {
-            int from = Sorted.lowerBound(eventStalls, Stall::start, candidate.start() - longestEventStall);
+        boolean coveredByEvent(final Interval candidate) {
+            final int from = Sorted.lowerBound(eventStalls, Stall::start, candidate.start() - longestEventStall);
             for (int i = from, n = eventStalls.size(); i < n; i++) {
-                Stall s = eventStalls.getQuick(i);
+                final Stall s = eventStalls.getQuick(i);
                 if (s.start() >= candidate.end()) {
                     break;
                 }
@@ -511,8 +511,8 @@ public final class StallAnalysis {
          * the most coverage wins if it covers at least {@code minCover} nanoseconds. Failing
          * that, and only when {@code tryPauses}, JVM pauses are tried the same way.
          */
-        Explanation explain(Interval interval, boolean tryPauses, long minCover) {
-            Explanation byBlock = explainByBlocks(interval, minCover);
+        Explanation explain(final Interval interval, final boolean tryPauses, final long minCover) {
+            final Explanation byBlock = explainByBlocks(interval, minCover);
             if (byBlock != null || !tryPauses) {
                 return byBlock;
             }
@@ -523,19 +523,19 @@ public final class StallAnalysis {
          * Blocks are grouped by kind and detail, which for I/O is the peer or the path and
          * not the byte count, so that many short reads from one peer add up to one answer.
          */
-        private Explanation explainByBlocks(Interval interval, long minCover) {
+        private Explanation explainByBlocks(final Interval interval, final long minCover) {
             clearGroups();
-            int from = Sorted.lowerBound(blocks, Block::start, interval.start() - longestBlock);
+            final int from = Sorted.lowerBound(blocks, Block::start, interval.start() - longestBlock);
             for (int i = from, n = blocks.size(); i < n; i++) {
-                Block b = blocks.get(i);
+                final Block b = blocks.get(i);
                 if (b.start() >= interval.end()) {
                     break;
                 }
-                long overlap = b.interval().overlap(interval);
+                final long overlap = b.interval().overlap(interval);
                 if (overlap == 0) {
                     continue;
                 }
-                Group g = group(b.kind(), b.detail());
+                final Group g = group(b.kind(), b.detail());
                 g.overlap += overlap;
                 g.count++;
                 g.bytes += b.bytes();
@@ -545,59 +545,59 @@ public final class StallAnalysis {
             }
             Group best = null;
             for (int i = 0, n = groups.size(); i < n; i++) {
-                Group g = groups.getQuick(i);
+                final Group g = groups.getQuick(i);
                 if (best == null || g.overlap > best.overlap) {
                     best = g;
                 }
             }
             if (best != null && best.overlap >= minCover) {
-                Block rep = best.representative;
-                String detail = best.count > 1 ? best.count + " × " + describe(rep, best.bytes) : describe(rep);
+                final Block rep = best.representative;
+                final String detail = best.count > 1 ? best.count + " × " + describe(rep, best.bytes) : describe(rep);
                 return new Explanation(verdictOf(rep.kind()), detail, rep.stack());
             }
             return null;
         }
 
-        private Group group(BlockKind kind, String detail) {
+        private Group group(final BlockKind kind, final String detail) {
             // A block without a detail groups under the literal "null", as the old string key did.
-            String key = detail == null ? "null" : detail;
-            ObjObjHashMap<String, Group> byDetail = groupByDetail[kind.ordinal()];
-            int index = byDetail.keyIndex(key);
+            final String key = detail == null ? "null" : detail;
+            final ObjObjHashMap<String, Group> byDetail = groupByDetail[kind.ordinal()];
+            final int index = byDetail.keyIndex(key);
             if (index < 0) {
                 return byDetail.valueAtQuick(index);
             }
-            Group g = groups.size() < pool.size() ? pool.getQuick(groups.size()) : allocate();
+            final Group g = groups.size() < pool.size() ? pool.getQuick(groups.size()) : allocate();
             groups.add(g.of(kind, key));
             return byDetail.putAt(index, key, g);
         }
 
         private Group allocate() {
-            Group g = new Group();
+            final Group g = new Group();
             pool.add(g);
             return g;
         }
 
         private void clearGroups() {
             for (int i = 0, n = groups.size(); i < n; i++) {
-                Group g = groups.getQuick(i);
+                final Group g = groups.getQuick(i);
                 groupByDetail[g.kind.ordinal()].remove(g.detail);
                 g.representative = null;
             }
             groups.clear();
         }
 
-        private Explanation explainByPauses(Interval interval, long minCover) {
+        private Explanation explainByPauses(final Interval interval, final long minCover) {
             long gc = 0;
             long safepoint = 0;
             Pause gcRep = null;
             Pause spRep = null;
-            int from = Sorted.lowerBound(pauses, Pause::start, interval.start() - longestPause);
+            final int from = Sorted.lowerBound(pauses, Pause::start, interval.start() - longestPause);
             for (int i = from, n = pauses.size(); i < n; i++) {
-                Pause p = pauses.getQuick(i);
+                final Pause p = pauses.getQuick(i);
                 if (p.start() >= interval.end()) {
                     break;
                 }
-                long overlap = p.interval().overlap(interval);
+                final long overlap = p.interval().overlap(interval);
                 if (overlap == 0) {
                     continue;
                 }
@@ -629,7 +629,7 @@ public final class StallAnalysis {
         Stack stack;
         int count;
 
-        Culprit of(String name, Stack stack) {
+        Culprit of(final String name, final Stack stack) {
             this.name = name;
             this.stack = stack;
             this.count = 0;
@@ -637,16 +637,16 @@ public final class StallAnalysis {
         }
     }
 
-    private Stall busy(ThreadTimeline tl, Candidate run) {
+    private Stall busy(final ThreadTimeline tl, final Candidate run) {
         culprits.clear();
         culpritByName.clear();
         int nativeTop = 0;
-        List<Sample> samples = run.samples;
-        int n = samples.size();
+        final List<Sample> samples = run.samples;
+        final int n = samples.size();
         for (int i = 0; i < n; i++) {
-            Sample s = samples.get(i);
-            String name = culpritName(s.stack());
-            int index = culpritByName.keyIndex(name);
+            final Sample s = samples.get(i);
+            final String name = culpritName(s.stack());
+            final int index = culpritByName.keyIndex(name);
             Culprit c;
             if (index < 0) {
                 c = culpritByName.valueAtQuick(index);
@@ -661,14 +661,14 @@ public final class StallAnalysis {
         }
         Culprit top = null;
         for (int i = 0, m = culprits.size(); i < m; i++) {
-            Culprit c = culprits.getQuick(i);
+            final Culprit c = culprits.getQuick(i);
             if (top == null || c.count > top.count) {
                 top = c;
             }
         }
-        double share = top == null ? 0 : (double) top.count / n;
-        String pct = String.format(Locale.ROOT, "%.0f%%", share * 100);
-        String nativeNote = nativeTop * 2 >= n && n > 0 ? " [mostly in native code]" : "";
+        final double share = top == null ? 0 : (double) top.count / n;
+        final String pct = String.format(Locale.ROOT, "%.0f%%", share * 100);
+        final String nativeNote = nativeTop * 2 >= n && n > 0 ? " [mostly in native code]" : "";
         if (share >= DOMINANT) {
             return new Stall(tl.thread(), run.interval, Verdict.BUSY,
                     "busy in " + top.name + " (" + pct + " of " + n + " samples)" + nativeNote,
@@ -685,17 +685,17 @@ public final class StallAnalysis {
     }
 
     /** The culprit frame's {@code type.method}, or {@code <no stack>}; the name is built once per frame. */
-    private String culpritName(Stack stack) {
-        Frame culprit = stack.culpritOrNull();
+    private String culpritName(final Stack stack) {
+        final Frame culprit = stack.culpritOrNull();
         if (culprit == null) {
             return "<no stack>";
         }
-        int index = culpritNames.keyIndex(culprit);
+        final int index = culpritNames.keyIndex(culprit);
         return index < 0 ? culpritNames.valueAtQuick(index)
                 : culpritNames.putAt(index, culprit, culprit.qualifiedName());
     }
 
-    static Verdict verdictOf(BlockKind kind) {
+    static Verdict verdictOf(final BlockKind kind) {
         return switch (kind) {
             case MONITOR -> Verdict.BLOCKED_MONITOR;
             case PARK -> Verdict.PARKED;
@@ -705,13 +705,13 @@ public final class StallAnalysis {
         };
     }
 
-    static String describe(Block b) {
+    static String describe(final Block b) {
         return describe(b, b.bytes());
     }
 
     /** {@link #describe(Block)} with the byte count of a whole group of I/O blocks. */
-    static String describe(Block b, long bytes) {
-        StringBuilder sb = new StringBuilder(b.kind().label());
+    static String describe(final Block b, final long bytes) {
+        final StringBuilder sb = new StringBuilder(b.kind().label());
         if (b.detail() != null && !b.detail().isEmpty()) {
             sb.append(' ').append(b.detail());
         }

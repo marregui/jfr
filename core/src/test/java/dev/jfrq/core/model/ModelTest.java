@@ -16,11 +16,11 @@ import org.junit.jupiter.api.Test;
 
 class ModelTest {
 
-    static Frame jdk(String type, String method, int line) {
+    static Frame jdk(final String type, final String method, final int line) {
         return new Frame(type, method, line, "JIT compiled");
     }
 
-    static Frame app(String method, int line) {
+    static Frame app(final String method, final int line) {
         return new Frame("dev.app.Handler", method, line, "Interpreted");
     }
 
@@ -28,8 +28,8 @@ class ModelTest {
     class IntervalTest {
         @Test
         void overlapAndContainment() {
-            Interval a = new Interval(10, 20);
-            Interval b = new Interval(15, 30);
+            final Interval a = new Interval(10, 20);
+            final Interval b = new Interval(15, 30);
             assertEquals(5, a.overlap(b));
             assertEquals(5, b.overlap(a));
             assertTrue(a.overlaps(b));
@@ -68,10 +68,10 @@ class ModelTest {
 
         @Test
         void hiddenLambdaClassesAreShortened() {
-            Frame f = new Frame("dev.app.Background$$Lambda.0x00003800010a1e10", "run", 0, "JIT compiled");
+            final Frame f = new Frame("dev.app.Background$$Lambda.0x00003800010a1e10", "run", 0, "JIT compiled");
             assertTrue(f.isHidden());
             assertEquals("dev.app.Background$$Lambda.run(lambda)", f.pretty());
-            Frame g = new Frame("dev.app.Hidden/0x1234", "run", 0, "JIT compiled");
+            final Frame g = new Frame("dev.app.Hidden/0x1234", "run", 0, "JIT compiled");
             assertEquals("dev.app.Hidden/0x1234.run(lambda)", g.pretty());
             assertFalse(app("x", 1).isHidden());
         }
@@ -101,7 +101,7 @@ class ModelTest {
         void culpritIsTheInnermostNonJdkFrame() {
             assertEquals(app("lookup", 80), stack.culprit().orElseThrow());
             assertEquals("sun.nio.ch.SocketDispatcher.read0", stack.top().orElseThrow().qualifiedName());
-            Stack allJdk = new Stack(List.of(jdk("java.lang.Thread", "sleep", 1)), false);
+            final Stack allJdk = new Stack(List.of(jdk("java.lang.Thread", "sleep", 1)), false);
             assertEquals(jdk("java.lang.Thread", "sleep", 1), allJdk.culprit().orElseThrow());
             assertTrue(Stack.EMPTY.culprit().isEmpty());
             assertTrue(Stack.EMPTY.top().isEmpty());
@@ -117,7 +117,7 @@ class ModelTest {
 
         @Test
         void prettyShowsTheCulpritEvenWhenItLiesBeyondTheLimit() {
-            String out = stack.pretty("  ", 1);
+            final String out = stack.pretty("  ", 1);
             assertEquals("""
                       at sun.nio.ch.SocketDispatcher.read0(Native Method)
                       ... 1 more
@@ -128,16 +128,16 @@ class ModelTest {
 
         @Test
         void prettyWithoutElisionWhenEverythingFits() {
-            String out = stack.pretty("", 10);
+            final String out = stack.pretty("", 10);
             assertEquals(5, out.lines().count());
             assertFalse(out.contains("more"));
-            Stack truncated = new Stack(stack.frames(), true);
+            final Stack truncated = new Stack(stack.frames(), true);
             assertTrue(truncated.pretty("", 10).endsWith("... 0 more\n"));
         }
 
         @Test
         void prettyWhenCulpritIsAlreadyVisible() {
-            String out = stack.pretty("", 3);
+            final String out = stack.pretty("", 3);
             assertTrue(out.contains("Handler.lookup"));
             assertTrue(out.endsWith("... 2 more\n"));
             assertEquals(4, out.lines().count());
@@ -146,7 +146,7 @@ class ModelTest {
 
     @Test
     void threadRefUsesNameForDisplay() {
-        ThreadRef t = new ThreadRef(7, "event-loop-1");
+        final ThreadRef t = new ThreadRef(7, "event-loop-1");
         assertEquals("event-loop-1", t.toString());
         assertEquals(new ThreadRef(7, "event-loop-1"), t);
         assertNull(ThreadRef.of(null));

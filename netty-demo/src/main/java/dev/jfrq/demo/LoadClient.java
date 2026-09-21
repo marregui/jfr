@@ -30,15 +30,15 @@ final class LoadClient {
     private final long intervalNanos;
     private volatile boolean running = true;
 
-    LoadClient(int port, int connections, int requestsPerSecondPerConnection, int maxSamplesPerConnection) {
+    LoadClient(final int port, final int connections, final int requestsPerSecondPerConnection, final int maxSamplesPerConnection) {
         this.intervalNanos = requestsPerSecondPerConnection <= 0 ? 0
                 : 1_000_000_000L / requestsPerSecondPerConnection;
         for (int c = 1; c <= connections; c++) {
-            long[] samples = new long[maxSamplesPerConnection];
-            int[] count = new int[1];
+            final long[] samples = new long[maxSamplesPerConnection];
+            final int[] count = new int[1];
             latencies.add(samples);
             counts.add(count);
-            Thread t = new Thread(() -> drive(port, samples, count), "load-client-" + c);
+            final Thread t = new Thread(() -> drive(port, samples, count), "load-client-" + c);
             t.setDaemon(true);
             threads.add(t);
         }
@@ -48,16 +48,16 @@ final class LoadClient {
         threads.forEach(Thread::start);
     }
 
-    private void drive(int port, long[] samples, int[] count) {
-        try (Socket s = new Socket(InetAddress.getLoopbackAddress(), port)) {
+    private void drive(final int port, final long[] samples, final int[] count) {
+        try (final Socket s = new Socket(InetAddress.getLoopbackAddress(), port)) {
             s.setTcpNoDelay(true);
-            OutputStream out = s.getOutputStream();
-            BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
+            final OutputStream out = s.getOutputStream();
+            final BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
             long n = 0;
             long next = System.nanoTime();
             while (running) {
                 if (intervalNanos > 0) {
-                    long wait = next - System.nanoTime();
+                    final long wait = next - System.nanoTime();
                     if (wait > 0) {
                         java.util.concurrent.locks.LockSupport.parkNanos(wait);
                     } else if (wait < -intervalNanos) {
@@ -67,11 +67,11 @@ final class LoadClient {
                     }
                     next += intervalNanos;
                 }
-                long t0 = System.nanoTime();
+                final long t0 = System.nanoTime();
                 out.write(("REQ " + n + "\n").getBytes(StandardCharsets.UTF_8));
                 out.flush();
-                String reply = in.readLine();
-                long latency = System.nanoTime() - t0;
+                final String reply = in.readLine();
+                final long latency = System.nanoTime() - t0;
                 if (reply == null) {
                     break;
                 }
@@ -80,7 +80,7 @@ final class LoadClient {
                 }
                 n++;
             }
-        } catch (IOException e) {
+        } catch (final IOException e) {
             if (running) {
                 System.err.println(Thread.currentThread().getName() + " stopped: " + e);
             }
@@ -90,13 +90,13 @@ final class LoadClient {
     /** Percentiles over every connection's samples. */
     String summary() {
         int total = 0;
-        for (int[] c : counts) {
+        for (final int[] c : counts) {
             total += c[0];
         }
         if (total == 0) {
             return "no completed requests";
         }
-        long[] all = new long[total];
+        final long[] all = new long[total];
         int i = 0;
         for (int k = 0; k < latencies.size(); k++) {
             System.arraycopy(latencies.get(k), 0, all, i, counts.get(k)[0]);
@@ -110,23 +110,23 @@ final class LoadClient {
 
     int completed() {
         int total = 0;
-        for (int[] c : counts) {
+        for (final int[] c : counts) {
             total += c[0];
         }
         return total;
     }
 
-    private static String ms(long nanos) {
+    private static String ms(final long nanos) {
         return String.format(Locale.ROOT, "%.1f ms", nanos / 1e6);
     }
 
     /** Stops sending; waits briefly for in-flight requests so the summary is complete. */
     void stop() {
         running = false;
-        for (Thread t : threads) {
+        for (final Thread t : threads) {
             try {
                 t.join(2_000);
-            } catch (InterruptedException e) {
+            } catch (final InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
             }

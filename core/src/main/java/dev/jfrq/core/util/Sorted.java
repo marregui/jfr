@@ -20,11 +20,11 @@ public final class Sorted {
     }
 
     /** Index of the first element whose key is at least {@code value}; {@code list.size()} if none. */
-    public static <T> int lowerBound(List<T> list, ToLongFunction<T> key, long value) {
+    public static <T> int lowerBound(final List<T> list, final ToLongFunction<T> key, final long value) {
         int lo = 0;
         int hi = list.size();
         while (lo < hi) {
-            int mid = (lo + hi) >>> 1;
+            final int mid = (lo + hi) >>> 1;
             if (key.applyAsLong(list.get(mid)) < value) {
                 lo = mid + 1;
             } else {
@@ -35,11 +35,11 @@ public final class Sorted {
     }
 
     /** {@link #lowerBound(List, ToLongFunction, long)} over an {@link ObjList}. */
-    public static <T> int lowerBound(ObjList<T> list, ToLongFunction<T> key, long value) {
+    public static <T> int lowerBound(final ObjList<T> list, final ToLongFunction<T> key, final long value) {
         int lo = 0;
         int hi = list.size();
         while (lo < hi) {
-            int mid = (lo + hi) >>> 1;
+            final int mid = (lo + hi) >>> 1;
             if (key.applyAsLong(list.getQuick(mid)) < value) {
                 lo = mid + 1;
             } else {
@@ -50,7 +50,7 @@ public final class Sorted {
     }
 
     /** The longest {@code length} over the list, or 0 when empty. */
-    public static <T> long maxLength(List<T> list, ToLongFunction<T> length) {
+    public static <T> long maxLength(final List<T> list, final ToLongFunction<T> length) {
         long max = 0;
         for (int i = 0, n = list.size(); i < n; i++) {
             max = Math.max(max, length.applyAsLong(list.get(i)));
@@ -59,7 +59,7 @@ public final class Sorted {
     }
 
     /** {@link #maxLength(List, ToLongFunction)} over an {@link ObjList}. */
-    public static <T> long maxLength(ObjList<T> list, ToLongFunction<T> length) {
+    public static <T> long maxLength(final ObjList<T> list, final ToLongFunction<T> length) {
         long max = 0;
         for (int i = 0, n = list.size(); i < n; i++) {
             max = Math.max(max, length.applyAsLong(list.getQuick(i)));

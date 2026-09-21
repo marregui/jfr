@@ -45,10 +45,10 @@ class LiveTest {
     record Run(int status, String out, String err) {
     }
 
-    static Run run(String... argv) {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ByteArrayOutputStream err = new ByteArrayOutputStream();
-        int status = new Live(new PrintStream(out, true, StandardCharsets.UTF_8),
+    static Run run(final String... argv) {
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        final ByteArrayOutputStream err = new ByteArrayOutputStream();
+        final int status = new Live(new PrintStream(out, true, StandardCharsets.UTF_8),
                 new PrintStream(err, true, StandardCharsets.UTF_8)).run(argv);
         return new Run(status, out.toString(StandardCharsets.UTF_8), err.toString(StandardCharsets.UTF_8));
     }
@@ -67,11 +67,11 @@ class LiveTest {
 
     @Test
     void usageErrorsExitWithTwoBeforeAttaching() {
-        Run pid = run("not-a-pid", "status");
+        final Run pid = run("not-a-pid", "status");
         assertEquals(2, pid.status());
         assertTrue(pid.err().contains("pid"));
         assertEquals(2, run(PID).status());
-        Run unknown = run(PID, "frobnicate");
+        final Run unknown = run(PID, "frobnicate");
         assertEquals(2, unknown.status());
         assertTrue(unknown.err().contains("unknown command 'frobnicate'"));
         assertEquals(2, run(PID, "status", "--out", "x.jfr").status());
@@ -86,7 +86,7 @@ class LiveTest {
     @Test
     void attachFailureExitsWithOne() {
         // No process has this pid: ProcessHandle.of is the check the JDK's attach makes first.
-        Run r = run("999999999", "status");
+        final Run r = run("999999999", "status");
         assertEquals(1, r.status());
         assertTrue(r.err().contains("cannot attach to 999999999"), r.err());
     }
@@ -108,22 +108,22 @@ class LiveTest {
 
     @Test
     void cursorIsPerJvmIncarnation() throws Exception {
-        Cursor fresh = Cursor.load(dir, "1", 100);
+        final Cursor fresh = Cursor.load(dir, "1", 100);
         assertNull(fresh.next());
         assertNull(fresh.lastWindow());
-        Instant stop = Instant.parse("2026-09-21T14:05:12.004Z");
+        final Instant stop = Instant.parse("2026-09-21T14:05:12.004Z");
         fresh.advance(new Window(Instant.parse("2026-09-21T14:03:07.121Z"), null), stop);
 
-        Cursor same = Cursor.load(dir, "1", 100);
+        final Cursor same = Cursor.load(dir, "1", 100);
         assertEquals(stop.plusMillis(1), same.next());
         assertEquals(new Window(Instant.parse("2026-09-21T14:03:07.121Z"), stop), same.lastWindow());
 
-        Cursor restarted = Cursor.load(dir, "1", 101);
+        final Cursor restarted = Cursor.load(dir, "1", 101);
         assertNull(restarted.next());
         assertNull(restarted.lastWindow());
 
         fresh.advance(Window.EVERYTHING, stop.plusSeconds(60));
-        Cursor afterFull = Cursor.load(dir, "1", 100);
+        final Cursor afterFull = Cursor.load(dir, "1", 100);
         assertEquals(new Window(null, stop.plusSeconds(60)), afterFull.lastWindow());
 
         Files.writeString(dir.resolve("2.properties"), "jvm=100\ncursor=yesterday\n");
@@ -132,33 +132,33 @@ class LiveTest {
 
     @Test
     void theLoop() throws Exception {
-        String name = "live-test-" + System.nanoTime();
-        String[] pick = {"--recording", name, "--state", dir.toString()};
+        final String name = "live-test-" + System.nanoTime();
+        final String[] pick = {"--recording", name, "--state", dir.toString()};
 
-        Run status = run(PID, "status", "--state", dir.toString());
+        final Run status = run(PID, "status", "--state", dir.toString());
         assertEquals(0, status.status(), status.err());
         assertTrue(status.out().contains("JVM        " + PID + "@"), status.out());
         assertTrue(status.out().contains("Cursor     none"), status.out());
 
-        Run missing = run(concat(new String[] {PID, "full"}, pick));
+        final Run missing = run(concat(new String[] {PID, "full"}, pick));
         assertEquals(1, missing.status());
         assertTrue(missing.err().contains("has no recording '" + name + "'"), missing.err());
 
-        Run start = run(PID, "start", "--name", name, "--max-age", "5m", "--state", dir.toString());
+        final Run start = run(PID, "start", "--name", name, "--max-age", "5m", "--state", dir.toString());
         assertEquals(0, start.status(), start.err());
         assertTrue(start.out().contains(name + " "), start.out());
         assertTrue(start.out().contains("RUNNING"), start.out());
         assertTrue(start.out().contains("max-age 5m00s"), start.out());
         assertFalse(start.out().contains("WARNING"), start.out());
 
-        Run early = run(concat(new String[] {PID, "delta"}, pick));
+        final Run early = run(concat(new String[] {PID, "delta"}, pick));
         assertEquals(2, early.status());
         assertTrue(early.err().contains("run 'full' first"), early.err());
         assertEquals(2, run(concat(new String[] {PID, "again"}, pick)).status());
 
         work();
-        Path t0 = dir.resolve("t0.jfr");
-        Run full = run(concat(new String[] {PID, "full", "--out", t0.toString()}, pick, "--", "info"));
+        final Path t0 = dir.resolve("t0.jfr");
+        final Run full = run(concat(new String[] {PID, "full", "--out", t0.toString()}, pick, "--", "info"));
         assertEquals(0, full.status(), full.err());
         assertTrue(Files.size(t0) > 0);
         assertTrue(full.out().contains("Dumped     " + t0), full.out());
@@ -167,55 +167,55 @@ class LiveTest {
         assertTrue(full.out().contains("Recording  t0.jfr"), full.out());
         assertFalse(full.out().contains("WARNING"), full.out());
 
-        long jvmStart = ManagementFactory.getRuntimeMXBean().getStartTime();
-        Cursor cursor = Cursor.load(dir, PID, jvmStart);
+        final long jvmStart = ManagementFactory.getRuntimeMXBean().getStartTime();
+        final Cursor cursor = Cursor.load(dir, PID, jvmStart);
         assertNotNull(cursor.next());
-        RecordingInfo i0 = JfrReader.read(t0);
+        final RecordingInfo i0 = JfrReader.read(t0);
 
         work();
-        Path t1 = dir.resolve("t1.jfr");
-        Run delta = run(concat(new String[] {PID, "delta", "--out", t1.toString()}, pick, "--", "info"));
+        final Path t1 = dir.resolve("t1.jfr");
+        final Run delta = run(concat(new String[] {PID, "delta", "--out", t1.toString()}, pick, "--", "info"));
         assertEquals(0, delta.status(), delta.err());
         assertTrue(delta.out().contains("Window     " + TIME.format(cursor.next()) + " .. now (since the previous dump)"),
                 delta.out());
         assertFalse(delta.out().contains("Note"), delta.out());
         assertFalse(delta.out().contains("WARNING"), delta.out());
-        RecordingInfo i1 = JfrReader.read(t1);
+        final RecordingInfo i1 = JfrReader.read(t1);
         // The delta starts where the previous dump stopped: the chunk the full dump sealed is not in it.
         assertTrue(i1.startNanos() >= i0.endNanos() - 5_000_000L,
                 "delta starts " + i1.startNanos() + ", full ended " + i0.endNanos());
         assertTrue(i1.endNanos() > i0.endNanos());
 
-        Instant afterDelta = Cursor.load(dir, PID, jvmStart).next();
-        Path t1b = dir.resolve("t1b.jfr");
-        Run again = run(concat(new String[] {PID, "again", "--out", t1b.toString()}, pick));
+        final Instant afterDelta = Cursor.load(dir, PID, jvmStart).next();
+        final Path t1b = dir.resolve("t1b.jfr");
+        final Run again = run(concat(new String[] {PID, "again", "--out", t1b.toString()}, pick));
         assertEquals(0, again.status(), again.err());
         assertTrue(again.out().contains("(the previous window again)"), again.out());
-        RecordingInfo i1b = JfrReader.read(t1b);
+        final RecordingInfo i1b = JfrReader.read(t1b);
         assertEquals(i1.startNanos(), i1b.startNanos());
         assertEquals(i1.endNanos(), i1b.endNanos());
         assertEquals(afterDelta, Cursor.load(dir, PID, jvmStart).next(), "again must not move the cursor");
 
-        Run bound = run(concat(new String[] {PID, "bound", "--max-age", "0", "--max-size", "64MB"}, pick));
+        final Run bound = run(concat(new String[] {PID, "bound", "--max-age", "0", "--max-size", "64MB"}, pick));
         assertEquals(0, bound.status(), bound.err());
         assertTrue(bound.out().contains("max-size 64.0 MB"), bound.out());
         assertFalse(bound.out().contains("max-age"), bound.out());
 
-        Run after = run(PID, "status", "--state", dir.toString());
+        final Run after = run(PID, "status", "--state", dir.toString());
         assertTrue(after.out().contains("Cursor     next delta from"), after.out());
         assertTrue(after.out().contains(name), after.out());
 
-        Run stop = run(concat(new String[] {PID, "stop"}, pick));
+        final Run stop = run(concat(new String[] {PID, "stop"}, pick));
         assertEquals(0, stop.status(), stop.err());
         assertTrue(stop.out().contains("Stopped"), stop.out());
-        Run gone = run(concat(new String[] {PID, "stop"}, pick));
+        final Run gone = run(concat(new String[] {PID, "stop"}, pick));
         assertEquals(1, gone.status());
     }
 
     @Test
     void startWithAJfcFileAndAnUnboundedWarning() throws Exception {
-        String name = "live-jfc-" + System.nanoTime();
-        Path jfc = dir.resolve("tiny.jfc");
+        final String name = "live-jfc-" + System.nanoTime();
+        final Path jfc = dir.resolve("tiny.jfc");
         Files.writeString(jfc, """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <configuration version="2.0" label="tiny">
@@ -225,16 +225,16 @@ class LiveTest {
                   </event>
                 </configuration>
                 """);
-        Run start = run(PID, "start", "--name", name, "--settings", jfc.toString(), "--state", dir.toString());
+        final Run start = run(PID, "start", "--name", name, "--settings", jfc.toString(), "--state", dir.toString());
         assertEquals(0, start.status(), start.err());
         assertTrue(start.out().contains("WARNING    the recording has no bound"), start.out());
         assertTrue(start.out().contains("no bound"), start.out());
 
-        Run full = run(PID, "full", "--recording", name, "--state", dir.toString(), "--out", dir.resolve("f.jfr").toString());
+        final Run full = run(PID, "full", "--recording", name, "--state", dir.toString(), "--out", dir.resolve("f.jfr").toString());
         assertEquals(0, full.status(), full.err());
         assertTrue(full.out().contains("WARNING    the recording has no bound"), full.out());
 
-        Run unknownProfile = run(PID, "start", "--name", name + "-x", "--settings", "no-such-profile");
+        final Run unknownProfile = run(PID, "start", "--name", name + "-x", "--settings", "no-such-profile");
         assertEquals(1, unknownProfile.status());
         assertTrue(unknownProfile.err().contains("the JVM refused"), unknownProfile.err());
 
@@ -243,12 +243,12 @@ class LiveTest {
 
     @Test
     void severalRunningRecordingsNeedAChoice() throws Exception {
-        String a = "live-a-" + System.nanoTime();
-        String b = "live-b-" + System.nanoTime();
+        final String a = "live-a-" + System.nanoTime();
+        final String b = "live-b-" + System.nanoTime();
         assertEquals(0, run(PID, "start", "--name", a, "--max-size", "1MB", "--state", dir.toString()).status());
         assertEquals(0, run(PID, "start", "--name", b, "--max-size", "1MB", "--state", dir.toString()).status());
         try {
-            Run ambiguous = run(PID, "full", "--state", dir.toString(), "--out", dir.resolve("x.jfr").toString());
+            final Run ambiguous = run(PID, "full", "--state", dir.toString(), "--out", dir.resolve("x.jfr").toString());
             assertEquals(1, ambiguous.status());
             assertTrue(ambiguous.err().contains("running recordings; pick one with --recording"), ambiguous.err());
             assertTrue(ambiguous.err().contains(a) && ambiguous.err().contains(b), ambiguous.err());
@@ -260,14 +260,14 @@ class LiveTest {
 
     @Test
     void inMemoryRecordingsHaveNoChunksToDump() throws Exception {
-        String name = "live-mem-" + System.nanoTime();
-        try (jdk.jfr.Recording r = new jdk.jfr.Recording()) {
+        final String name = "live-mem-" + System.nanoTime();
+        try (final jdk.jfr.Recording r = new jdk.jfr.Recording()) {
             r.setName(name);
             r.setToDisk(false);
             r.enable("jdk.ThreadSleep").withThreshold(java.time.Duration.ZERO);
             r.start();
             Thread.sleep(50);
-            Run full = run(PID, "full", "--recording", name, "--state", dir.toString(), "--out",
+            final Run full = run(PID, "full", "--recording", name, "--state", dir.toString(), "--out",
                     dir.resolve("mem.jfr").toString());
             assertEquals(1, full.status(), full.out());
             assertTrue(full.err().contains("holds no data in the window"), full.err());
@@ -277,7 +277,7 @@ class LiveTest {
     }
 
     private static void work() throws InterruptedException {
-        byte[][] keep = new byte[16][];
+        final byte[][] keep = new byte[16][];
         for (int i = 0; i < 400; i++) {
             keep[i % keep.length] = new byte[64 * 1024];
         }
@@ -287,8 +287,8 @@ class LiveTest {
         Thread.sleep(250);
     }
 
-    private static String[] concat(String[] a, String[] b, String... c) {
-        String[] r = new String[a.length + b.length + c.length];
+    private static String[] concat(final String[] a, final String[] b, final String... c) {
+        final String[] r = new String[a.length + b.length + c.length];
         System.arraycopy(a, 0, r, 0, a.length);
         System.arraycopy(b, 0, r, a.length, b.length);
         System.arraycopy(c, 0, r, a.length + b.length, c.length);

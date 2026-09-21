@@ -85,14 +85,14 @@ public final class StallCollector implements JfrReader.Sink {
     private Interner interner = new Interner();
     private StallReport report;
 
-    public StallCollector(Predicate<String> threadFilter, IdleMatcher idle, long gapNanos) {
+    public StallCollector(final Predicate<String> threadFilter, final IdleMatcher idle, final long gapNanos) {
         this.threadFilter = threadFilter;
         this.idle = idle;
         this.analysis = new StallAnalysis(gapNanos);
     }
 
     @Override
-    public void begin(Interner interner) {
+    public void begin(final Interner interner) {
         this.interner = interner;
     }
 
@@ -102,15 +102,15 @@ public final class StallCollector implements JfrReader.Sink {
     }
 
     @Override
-    public void accept(RecordedEvent e) {
+    public void accept(final RecordedEvent e) {
         accept(e, EventKinds.kindOf(e.getEventType().getName()));
     }
 
     @Override
-    public void accept(RecordedEvent e, int kind) {
+    public void accept(final RecordedEvent e, final int kind) {
         switch (kind) {
             case EventKinds.GC_PHASE_PAUSE -> {
-                Interval interval = Events.interval(e);
+                final Interval interval = Events.interval(e);
                 gcPauses.add(interval.start());
                 gcPauses.add(interval.end());
                 gcPauses.add(Events.longOr(e, "gcId", -1));
@@ -129,23 +129,23 @@ public final class StallCollector implements JfrReader.Sink {
         }
     }
 
-    private Safepoint safepoint(RecordedEvent e) {
-        long id = Events.longOr(e, "safepointId", -1);
-        int index = safepoints.keyIndex(id);
+    private Safepoint safepoint(final RecordedEvent e) {
+        final long id = Events.longOr(e, "safepointId", -1);
+        final int index = safepoints.keyIndex(id);
         return index < 0 ? safepoints.valueAtQuick(index) : safepoints.putAt(index, id, new Safepoint(id));
     }
 
-    private void acceptThreadEvent(RecordedEvent e, int kind) {
-        ThreadRef thread = interner.thread(e);
+    private void acceptThreadEvent(final RecordedEvent e, final int kind) {
+        final ThreadRef thread = interner.thread(e);
         if (thread == null) {
             return;
         }
-        int index = threads.keyIndex(thread);
-        ThreadEvents t = index < 0 ? threads.valueAtQuick(index)
+        final int index = threads.keyIndex(thread);
+        final ThreadEvents t = index < 0 ? threads.valueAtQuick(index)
                 : threads.putAt(index, thread, new ThreadEvents(threadFilter.test(thread.name())));
         if (kind == EventKinds.JAVA_MONITOR_ENTER) {
             // Kept for every thread; a watched thread's own wait carries the stack and is the same object.
-            Block wait = new Block(Events.interval(e), BlockKind.MONITOR, lockName(e, "monitorClass"),
+            final Block wait = new Block(Events.interval(e), BlockKind.MONITOR, lockName(e, "monitorClass"),
                     t.watched ? Events.stack(e, interner) : Stack.EMPTY, Events.thread(e, "previousOwner", interner));
             t.monitorWaits.add(wait);
             if (t.watched) {
@@ -158,8 +158,8 @@ public final class StallCollector implements JfrReader.Sink {
         }
         switch (kind) {
             case EventKinds.EXECUTION_SAMPLE, EventKinds.NATIVE_METHOD_SAMPLE -> {
-                Stack stack = Events.stack(e, interner);
-                boolean inNative = kind == EventKinds.NATIVE_METHOD_SAMPLE;
+                final Stack stack = Events.stack(e, interner);
+                final boolean inNative = kind == EventKinds.NATIVE_METHOD_SAMPLE;
                 t.samples.add(new Sample(Events.startNanos(e), stack, idle.isIdle(stack), inNative));
             }
             case EventKinds.THREAD_PARK -> block(t, e, BlockKind.PARK, parkName(e), 0);
@@ -180,33 +180,33 @@ public final class StallCollector implements JfrReader.Sink {
         }
     }
 
-    private void block(ThreadEvents t, RecordedEvent e, BlockKind kind, String detail, long bytes) {
+    private void block(final ThreadEvents t, final RecordedEvent e, final BlockKind kind, final String detail, final long bytes) {
         t.blocks.add(new Block(Events.interval(e), kind, detail, Events.stack(e, interner), bytes));
     }
 
     /** {@code dev.app.Registry@1f2e}: one string per (class, address), reused across events. */
-    private String lockName(RecordedEvent e, String field) {
+    private String lockName(final RecordedEvent e, final String field) {
         return lockNames.name(Events.className(e, field, interner), Events.longOr(e, "address", 0));
     }
 
-    private String parkName(RecordedEvent e) {
-        String cls = Events.className(e, "parkedClass", interner);
+    private String parkName(final RecordedEvent e) {
+        final String cls = Events.className(e, "parkedClass", interner);
         return cls == null ? "(no blocker object)" : lockNames.on(lockName(e, "parkedClass"));
     }
 
     /** {@code host:port}, or {@code address:port} when the host is unknown; one string per peer. */
-    private String peer(RecordedEvent e) {
-        String host = Events.stringOr(e, "host", "");
-        String where = host.isEmpty() ? Events.stringOr(e, "address", "?") : host;
+    private String peer(final RecordedEvent e) {
+        final String host = Events.stringOr(e, "host", "");
+        final String where = host.isEmpty() ? Events.stringOr(e, "address", "?") : host;
         return peerNames.peer(where, Events.longOr(e, "port", 0));
     }
 
     @Override
-    public void finish(RecordingInfo info) {
-        ObjList<ThreadTimeline> timelines = new ObjList<>();
+    public void finish(final RecordingInfo info) {
+        final ObjList<ThreadTimeline> timelines = new ObjList<>();
         for (int s = 0, n = threads.slots(); s < n; s++) {
             if (threads.hasKeyAtSlot(s)) {
-                ThreadEvents t = threads.valueAtSlot(s);
+                final ThreadEvents t = threads.valueAtSlot(s);
                 t.monitorWaits.sort(BY_INTERVAL);
                 t.longestMonitorWait = Sorted.maxLength(t.monitorWaits, Block::length);
             }
@@ -215,15 +215,15 @@ public final class StallCollector implements JfrReader.Sink {
             if (!threads.hasKeyAtSlot(s)) {
                 continue;
             }
-            ThreadEvents t = threads.valueAtSlot(s);
+            final ThreadEvents t = threads.valueAtSlot(s);
             if (!t.watched || (t.samples.isEmpty() && t.blocks.isEmpty())) {
                 continue;
             }
-            ThreadRef thread = threads.keyAtSlot(s);
+            final ThreadRef thread = threads.keyAtSlot(s);
             t.samples.sort(BY_TIME);
-            ObjList<Block> blocks = new ObjList<>(t.blocks.size());
+            final ObjList<Block> blocks = new ObjList<>(t.blocks.size());
             for (int i = 0, m = t.blocks.size(); i < m; i++) {
-                Block block = t.blocks.getQuick(i);
+                final Block block = t.blocks.getQuick(i);
                 blocks.add(block.kind() == BlockKind.MONITOR ? resolveHolder(thread, block) : block);
             }
             blocks.sort(BY_INTERVAL);
@@ -239,29 +239,29 @@ public final class StallCollector implements JfrReader.Sink {
      * A safepoint that overlaps a GC pause is the GC's own and is dropped as a duplicate.
      */
     private List<Pause> pauses() {
-        ObjList<Pause> gcs = new ObjList<>(gcNames.size());
+        final ObjList<Pause> gcs = new ObjList<>(gcNames.size());
         for (int i = 0, n = gcNames.size(); i < n; i++) {
-            int slot = i * GC_SLOT;
+            final int slot = i * GC_SLOT;
             gcs.add(new Pause(new Interval(gcPauses.getQuick(slot + GC_START), gcPauses.getQuick(slot + GC_END)),
                     PauseKind.GC, gcNames.getQuick(i) + " (gcId " + gcPauses.getQuick(slot + GC_ID) + ")"));
         }
         gcs.sort(PAUSE_BY_INTERVAL);
-        long longestGc = Sorted.maxLength(gcs, Pause::length);
+        final long longestGc = Sorted.maxLength(gcs, Pause::length);
 
-        ObjList<Pause> pauses = new ObjList<>(gcs.size() + safepoints.size());
+        final ObjList<Pause> pauses = new ObjList<>(gcs.size() + safepoints.size());
         pauses.addAll(gcs);
         for (int s = 0, n = safepoints.slots(); s < n; s++) {
             if (!safepoints.hasKeyAtSlot(s)) {
                 continue;
             }
-            Pause sp = safepoints.valueAtSlot(s).pause();
+            final Pause sp = safepoints.valueAtSlot(s).pause();
             if (sp == null) {
                 continue;
             }
             boolean isGc = false;
-            int from = Sorted.lowerBound(gcs, Pause::start, sp.start() - longestGc);
+            final int from = Sorted.lowerBound(gcs, Pause::start, sp.start() - longestGc);
             for (int i = from, m = gcs.size(); i < m; i++) {
-                Pause gc = gcs.getQuick(i);
+                final Pause gc = gcs.getQuick(i);
                 if (gc.start() >= sp.interval().end()) {
                     break;
                 }
@@ -283,7 +283,7 @@ public final class StallCollector implements JfrReader.Sink {
      * back: while the recorded owner was itself waiting for the same lock during this wait,
      * take its owner instead, and remember the intermediaries.
      */
-    private Block resolveHolder(ThreadRef waiter, Block block) {
+    private Block resolveHolder(final ThreadRef waiter, final Block block) {
         ThreadRef owner = block.owner();
         if (owner == null) {
             return block;
@@ -294,12 +294,12 @@ public final class StallCollector implements JfrReader.Sink {
         seen.add(owner);
         while (true) {
             Block ownersWait = null;
-            ThreadEvents theirs = threads.get(owner);
+            final ThreadEvents theirs = threads.get(owner);
             if (theirs != null) {
-                ObjList<Block> waits = theirs.monitorWaits;
-                int from = Sorted.lowerBound(waits, Block::start, block.start() - theirs.longestMonitorWait);
+                final ObjList<Block> waits = theirs.monitorWaits;
+                final int from = Sorted.lowerBound(waits, Block::start, block.start() - theirs.longestMonitorWait);
                 for (int i = from, n = waits.size(); i < n; i++) {
-                    Block w = waits.getQuick(i);
+                    final Block w = waits.getQuick(i);
                     if (w.start() >= block.interval().end()) {
                         break;
                     }
@@ -341,7 +341,7 @@ public final class StallCollector implements JfrReader.Sink {
         /** The longest monitor wait: bounds the window a holder lookup scans. */
         long longestMonitorWait;
 
-        ThreadEvents(boolean watched) {
+        ThreadEvents(final boolean watched) {
             this.watched = watched;
         }
     }
@@ -356,20 +356,20 @@ public final class StallCollector implements JfrReader.Sink {
         long operationEnd;
         String operation;
 
-        Safepoint(long id) {
+        Safepoint(final long id) {
             this.id = id;
         }
 
-        void begin(Interval interval) {
+        void begin(final Interval interval) {
             beginStart = interval.start();
             beginEnd = interval.end();
         }
 
-        void end(long endNanos) {
+        void end(final long endNanos) {
             recordedEnd = endNanos;
         }
 
-        void operation(Interval interval, String name) {
+        void operation(final Interval interval, final String name) {
             operationStart = interval.start();
             operationEnd = interval.end();
             operation = name;
@@ -385,7 +385,7 @@ public final class StallCollector implements JfrReader.Sink {
                 if (operationStart != Nulls.LONG_NULL) {
                     end = Math.max(end, operationEnd);
                 }
-                String what = operation == null ? "safepoint " + id : "VM operation " + operation;
+                final String what = operation == null ? "safepoint " + id : "VM operation " + operation;
                 return new Pause(new Interval(beginStart, Math.max(beginStart, end)), PauseKind.SAFEPOINT, what);
             }
             if (operationStart != Nulls.LONG_NULL) {
@@ -410,22 +410,22 @@ public final class StallCollector implements JfrReader.Sink {
             final String cls;
             final String name;
 
-            Entry(String cls, String name) {
+            Entry(final String cls, final String name) {
                 this.cls = cls;
                 this.name = name;
             }
         }
 
-        String name(String cls, long address) {
-            int index = byAddress.keyIndex(address);
+        String name(final String cls, final long address) {
+            final int index = byAddress.keyIndex(address);
             if (index < 0) {
-                Entry e = byAddress.valueAtQuick(index);
+                final Entry e = byAddress.valueAtQuick(index);
                 if (e.cls == cls || (cls != null && cls.equals(e.cls))) {
                     return e.name;
                 }
             }
-            String name = (cls == null ? "?" : ClassNames.pretty(cls)) + "@" + Long.toHexString(address);
-            Entry created = new Entry(cls, name);
+            final String name = (cls == null ? "?" : ClassNames.pretty(cls)) + "@" + Long.toHexString(address);
+            final Entry created = new Entry(cls, name);
             if (index < 0) {
                 byAddress.put(address, created);
             } else {
@@ -435,8 +435,8 @@ public final class StallCollector implements JfrReader.Sink {
         }
 
         /** {@code "on " + name}, one per name. */
-        String on(String name) {
-            int index = prefixed.keyIndex(name);
+        String on(final String name) {
+            final int index = prefixed.keyIndex(name);
             return index < 0 ? prefixed.valueAtQuick(index) : prefixed.putAt(index, name, "on " + name);
         }
     }
@@ -447,21 +447,21 @@ public final class StallCollector implements JfrReader.Sink {
         private final ObjObjHashMap<String, String> from = new ObjObjHashMap<>(16);
         private final ObjObjHashMap<String, String> to = new ObjObjHashMap<>(16);
 
-        String peer(String where, long port) {
-            int index = byHost.keyIndex(where);
-            LongObjHashMap<String> ports = index < 0 ? byHost.valueAtQuick(index)
+        String peer(final String where, final long port) {
+            final int index = byHost.keyIndex(where);
+            final LongObjHashMap<String> ports = index < 0 ? byHost.valueAtQuick(index)
                     : byHost.putAt(index, where, new LongObjHashMap<>(4, Long.MIN_VALUE));
-            int p = ports.keyIndex(port);
+            final int p = ports.keyIndex(port);
             return p < 0 ? ports.valueAtQuick(p) : ports.putAt(p, port, where + ":" + port);
         }
 
-        String from(String peer) {
-            int index = from.keyIndex(peer);
+        String from(final String peer) {
+            final int index = from.keyIndex(peer);
             return index < 0 ? from.valueAtQuick(index) : from.putAt(index, peer, "from " + peer);
         }
 
-        String to(String peer) {
-            int index = to.keyIndex(peer);
+        String to(final String peer) {
+            final int index = to.keyIndex(peer);
             return index < 0 ? to.valueAtQuick(index) : to.putAt(index, peer, "to " + peer);
         }
     }

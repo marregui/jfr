@@ -25,11 +25,11 @@ final class SlowBackend implements AutoCloseable {
     private final long maxDelayMillis;
     private volatile boolean running = true;
 
-    SlowBackend(long minDelayMillis, long maxDelayMillis) throws IOException {
+    SlowBackend(final long minDelayMillis, final long maxDelayMillis) throws IOException {
         this.minDelayMillis = minDelayMillis;
         this.maxDelayMillis = maxDelayMillis;
         this.server = new ServerSocket(0, 64, InetAddress.getLoopbackAddress());
-        Thread acceptor = new Thread(this::acceptLoop, "slow-backend-acceptor");
+        final Thread acceptor = new Thread(this::acceptLoop, "slow-backend-acceptor");
         acceptor.setDaemon(true);
         acceptor.start();
     }
@@ -42,11 +42,11 @@ final class SlowBackend implements AutoCloseable {
         int n = 0;
         while (running) {
             try {
-                Socket s = server.accept();
-                Thread t = new Thread(() -> serve(s), "slow-backend-" + (++n));
+                final Socket s = server.accept();
+                final Thread t = new Thread(() -> serve(s), "slow-backend-" + (++n));
                 t.setDaemon(true);
                 t.start();
-            } catch (IOException e) {
+            } catch (final IOException e) {
                 if (running) {
                     System.err.println("slow-backend accept failed: " + e);
                 }
@@ -54,19 +54,19 @@ final class SlowBackend implements AutoCloseable {
         }
     }
 
-    private void serve(Socket s) {
-        try (s; BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
-             OutputStream out = s.getOutputStream()) {
+    private void serve(final Socket s) {
+        try (s; final BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
+             final OutputStream out = s.getOutputStream()) {
             String line;
             while ((line = in.readLine()) != null) {
-                long delay = ThreadLocalRandom.current().nextLong(minDelayMillis, maxDelayMillis + 1);
+                final long delay = ThreadLocalRandom.current().nextLong(minDelayMillis, maxDelayMillis + 1);
                 // The delay is the service; this is a slow backend, not a busy-wait.
                 //noinspection BusyWait
                 Thread.sleep(delay);
                 out.write(("LOOKUP " + line + " after " + delay + "ms\n").getBytes(StandardCharsets.UTF_8));
                 out.flush();
             }
-        } catch (IOException | InterruptedException ignored) {
+        } catch (final IOException | InterruptedException ignored) {
             // The client went away or the demo is shutting down; either way this connection is done.
         }
     }

@@ -67,7 +67,7 @@ public record AllocationReport(
     /** The JVM's counters summed over the threads that have one. */
     public long countedBytes() {
         long total = 0;
-        for (long b : countedByThread.values()) {
+        for (final long b : countedByThread.values()) {
             total += b;
         }
         return total;
@@ -76,7 +76,7 @@ public record AllocationReport(
     /** The estimate restricted to the threads that have a counter, so the two compare like for like. */
     public long estimatedOnCountedThreads() {
         long total = 0;
-        for (String thread : countedByThread.keySet()) {
+        for (final String thread : countedByThread.keySet()) {
             total += byThread.getOrDefault(thread, 0L);
         }
         return total;
@@ -88,7 +88,7 @@ public record AllocationReport(
      * nothing was counted.
      */
     public double estimateError() {
-        long counted = countedBytes();
+        final long counted = countedBytes();
         return counted > 0 ? (double) (estimatedOnCountedThreads() - counted) / counted : 0;
     }
 
@@ -99,44 +99,44 @@ public record AllocationReport(
      * only alarm.
      */
     public boolean estimateErrorMaterial() {
-        long counted = countedBytes();
+        final long counted = countedBytes();
         return counted > 0 && counted >= totalBytes / 100;
     }
 
     /** The JVM's counter for a thread, when it was seen at least twice. */
-    public Optional<Long> counted(String thread) {
+    public Optional<Long> counted(final String thread) {
         return Optional.ofNullable(countedByThread.get(thread));
     }
 
-    public double rate(long bytes) {
+    public double rate(final long bytes) {
         return bytes / seconds();
     }
 
-    public List<Row<String>> threads(int top) {
+    public List<Row<String>> threads(final int top) {
         return rank(byThread, top);
     }
 
-    public List<Row<String>> classes(int top) {
+    public List<Row<String>> classes(final int top) {
         return rank(byClass, top);
     }
 
-    public List<Row<Stack>> sites(int top) {
+    public List<Row<Stack>> sites(final int top) {
         return rank(bySite, top);
     }
 
-    public List<Row<String>> classesOf(String thread, int top) {
+    public List<Row<String>> classesOf(final String thread, final int top) {
         return rank(classByThread.getOrDefault(thread, Map.of()), top);
     }
 
-    public List<Row<Stack>> sitesOf(String thread, int top) {
+    public List<Row<Stack>> sitesOf(final String thread, final int top) {
         return rank(siteByThread.getOrDefault(thread, Map.of()), top);
     }
 
     /** Ranks a map by value; shares are relative to the report's total, not the map's. */
-    <K> List<Row<K>> rank(Map<K, Long> map, int top) {
-        List<Row<K>> rows = new ArrayList<>(map.size());
-        double total = Math.max(totalBytes, 1);
-        for (Map.Entry<K, Long> e : map.entrySet()) {
+    <K> List<Row<K>> rank(final Map<K, Long> map, final int top) {
+        final List<Row<K>> rows = new ArrayList<>(map.size());
+        final double total = Math.max(totalBytes, 1);
+        for (final Map.Entry<K, Long> e : map.entrySet()) {
             rows.add(new Row<>(e.getKey(), e.getValue(), e.getValue() / total));
         }
         rows.sort(Comparator.<Row<K>>comparingLong(Row::bytes).reversed());

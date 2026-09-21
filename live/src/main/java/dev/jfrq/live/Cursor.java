@@ -39,19 +39,19 @@ public final class Cursor {
     private Window lastWindow;
     private Instant next;
 
-    private Cursor(Path file, long jvmStart) {
+    private Cursor(final Path file, final long jvmStart) {
         this.file = file;
         this.jvmStart = jvmStart;
     }
 
     /** The cursor for this JVM incarnation; empty when there is none or it belongs to a previous one. */
-    public static Cursor load(Path dir, String pid, long jvmStart) throws IOException {
-        Cursor c = new Cursor(dir.resolve(pid + ".properties"), jvmStart);
+    public static Cursor load(final Path dir, final String pid, final long jvmStart) throws IOException {
+        final Cursor c = new Cursor(dir.resolve(pid + ".properties"), jvmStart);
         if (!Files.isRegularFile(c.file)) {
             return c;
         }
-        Properties p = new Properties();
-        try (Reader in = Files.newBufferedReader(c.file, StandardCharsets.UTF_8)) {
+        final Properties p = new Properties();
+        try (final Reader in = Files.newBufferedReader(c.file, StandardCharsets.UTF_8)) {
             p.load(in);
         }
         if (!Long.toString(jvmStart).equals(p.getProperty(KEY_JVM))) {
@@ -59,9 +59,9 @@ public final class Cursor {
         }
         try {
             c.next = instant(p.getProperty(KEY_CURSOR));
-            Instant end = instant(p.getProperty(KEY_END));
+            final Instant end = instant(p.getProperty(KEY_END));
             c.lastWindow = end == null ? null : new Window(instant(p.getProperty(KEY_BEGIN)), end);
-        } catch (DateTimeParseException e) {
+        } catch (final DateTimeParseException e) {
             throw new IOException("cursor file " + c.file + " is damaged: " + e.getMessage(), e);
         }
         return c;
@@ -82,25 +82,25 @@ public final class Cursor {
     }
 
     /** Records a full or delta dump that stopped at {@code stop} over {@code window}, and saves. */
-    public void advance(Window window, Instant stop) throws IOException {
+    public void advance(final Window window, final Instant stop) throws IOException {
         next = stop.plusMillis(1);
         lastWindow = new Window(window.begin(), stop);
         save();
     }
 
     private void save() throws IOException {
-        Properties p = new Properties();
+        final Properties p = new Properties();
         p.setProperty(KEY_JVM, Long.toString(jvmStart));
         p.setProperty(KEY_CURSOR, next.toString());
         p.setProperty(KEY_BEGIN, lastWindow.begin() == null ? "" : lastWindow.begin().toString());
         p.setProperty(KEY_END, lastWindow.end().toString());
         Files.createDirectories(file.getParent());
-        try (Writer out = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) {
+        try (final Writer out = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) {
             p.store(out, "jfrq-live cursor: cursor is where the next delta begins; begin/end is the last window");
         }
     }
 
-    private static Instant instant(String s) {
+    private static Instant instant(final String s) {
         return s == null || s.isEmpty() ? null : Instant.parse(s);
     }
 }

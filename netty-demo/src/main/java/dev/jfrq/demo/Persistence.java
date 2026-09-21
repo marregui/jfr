@@ -11,7 +11,7 @@ final class Persistence {
 
     private long flushed;
 
-    synchronized void flush(int records) {
+    synchronized void flush(final int records) {
         flushed += records;
         if (flushed < 0) {
             throw new IllegalStateException("record count overflowed");

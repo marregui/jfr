@@ -18,7 +18,7 @@ public final class Nulls {
     }
 
     /** Widening that preserves nullness. */
-    public static long intToLong(int v) {
+    public static long intToLong(final int v) {
         return v == INT_NULL ? LONG_NULL : v;
     }
 }
