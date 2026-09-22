@@ -6,6 +6,7 @@ package dev.jfrq.core.alloc;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -169,43 +170,41 @@ public record AllocationReport(
         return rank(byClass, top);
     }
 
-    public List<Row<Stack>> sites(final int top) {
+    /** Sites ranked one stack at a time, which is what {@link AllocationDiff} matches on. */
+    public List<Row<Stack>> sitesByStack(final int top) {
         return rank(bySite, top);
     }
 
     /**
      * Allocation sites ranked by bytes, every stack that {@code key} names the same summed
      * into one row. A logical site reaches the sampler down many paths, and one row per path
-     * turns a fifth of the heap into a dozen rows of two percent; the raw map keeps them
-     * apart, because {@link AllocationDiff#sites(int)} compares them one stack at a time.
+     * turns a fifth of the heap into a dozen rows of two percent.
      *
      * <p>The samples are summed with the bytes. A row whose bytes are the sum of ten stacks
      * and whose support is one of them says the most important row in the report rests on
      * three samples when it rests on thousands.
      */
     public List<SiteRow> sites(final SiteKey key, final int top) {
-        final Map<String, long[]> totals = new HashMap<>();
-        final Map<String, Stack> shown = new HashMap<>();
-        final Map<String, Long> largest = new HashMap<>();
-        for (final Map.Entry<Stack, Long> e : bySite.entrySet()) {
-            final String label = key.of(e.getKey());
-            final long[] t = totals.computeIfAbsent(label, _ -> new long[3]);
-            t[0] += e.getValue();
-            t[1] += support.site(e.getKey());
-            t[2]++;
-            // The stack that stands for the row is its biggest contributor, so the lines
-            // printed under a row are the ones most of its bytes came through.
-            final Long best = largest.get(label);
-            if (best == null || e.getValue() > best) {
-                largest.put(label, e.getValue());
-                shown.put(label, e.getKey());
-            }
-        }
-        final double total = Math.max(totalBytes, 1);
-        final List<SiteRow> rows = new ArrayList<>(totals.size());
-        totals.forEach((label, t) -> rows.add(new SiteRow(label, shown.get(label), t[0], t[0] / total, t[1], (int) t[2])));
+        final List<SiteRow> rows = new ArrayList<>(fold(key).values());
         rows.sort(Comparator.comparingLong(SiteRow::bytes).reversed().thenComparing(SiteRow::label));
         return rows.size() > top ? List.copyOf(rows.subList(0, top)) : List.copyOf(rows);
+    }
+
+    /**
+     * The same fold unranked, by label, so {@link AllocationDiff} can compare two reports
+     * row for row without either of them being ranked first.
+     */
+    Map<String, SiteRow> fold(final SiteKey key) {
+        final Map<String, Fold> folds = new HashMap<>();
+        for (final Map.Entry<Stack, Long> e : bySite.entrySet()) {
+            folds.computeIfAbsent(key.of(e.getKey()), _ -> new Fold())
+                    .add(e.getKey(), e.getValue(), support.site(e.getKey()));
+        }
+        final double total = Math.max(totalBytes, 1);
+        final Map<String, SiteRow> rows = new LinkedHashMap<>(folds.size());
+        folds.forEach((label, f) -> rows.put(label,
+                new SiteRow(label, f.best, f.bytes, f.bytes / total, f.samples, f.stacks)));
+        return rows;
     }
 
     /**
@@ -250,5 +249,27 @@ public record AllocationReport(
         }
         rows.sort(Comparator.<Row<K>>comparingLong(Row::bytes).reversed());
         return rows.size() > top ? List.copyOf(rows.subList(0, top)) : List.copyOf(rows);
+    }
+
+    /** One row while the sites are being folded: its totals and its biggest single stack. */
+    private static final class Fold {
+
+        private Stack best;
+        private long bestBytes = -1;
+        private long bytes;
+        private long samples;
+        private int stacks;
+
+        void add(final Stack stack, final long stackBytes, final long stackSamples) {
+            bytes += stackBytes;
+            samples += stackSamples;
+            stacks++;
+            // The stack printed under a row is its biggest contributor, so the lines a reader
+            // sees are the ones most of the row's bytes came through.
+            if (stackBytes > bestBytes) {
+                bestBytes = stackBytes;
+                best = stack;
+            }
+        }
     }
 }

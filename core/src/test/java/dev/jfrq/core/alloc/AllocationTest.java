@@ -98,7 +98,7 @@ class AllocationTest {
         // The stack printed under the row is the biggest contributor, not an arbitrary one.
         assertEquals(300, r.bySite().get(row.stack()));
         // The raw map still keeps them apart, which is what --baseline matches on.
-        assertEquals(3, r.sites(10).size());
+        assertEquals(3, r.sitesByStack(10).size());
     }
 
     @Test
@@ -162,7 +162,7 @@ class AllocationTest {
         assertEquals(800, threads.getFirst().bytes());
         assertEquals(1, r.threads(1).size());
         assertEquals("[B", r.classes(10).getFirst().key());
-        assertEquals(SITE_A, r.sites(10).getFirst().key());
+        assertEquals(SITE_A, r.sitesByStack(10).getFirst().key());
         assertEquals(SITE_A, r.sitesOf("worker", 1).getFirst().key());
         assertEquals("[B", r.classesOf("worker", 1).getFirst().key());
         assertTrue(r.classesOf("nobody", 5).isEmpty());
@@ -207,7 +207,7 @@ class AllocationTest {
         assertEquals(2, diff.threads(2).size());
 
         assertEquals("[B", diff.classes(10).getFirst().key());
-        assertEquals(SITE_A, diff.sites(10).getFirst().key());
+        assertEquals(SITE_A, diff.sitesByStack(10).getFirst().key());
         assertEquals(0.0, new AllocationDiff.Delta<>("x", 0.0, 0.0).ratio());
         assertEquals(before, diff.baseline());
         assertEquals(after, diff.current());
@@ -224,7 +224,7 @@ class AllocationTest {
         final AllocationReport after = report("after.jfr", 1, Map.of("worker", 0L), Map.of(), Map.of());
         final AllocationDiff diff = new AllocationDiff(before, after);
 
-        assertEquals(2, diff.sites(10).size());
+        assertEquals(2, diff.sitesByStack(10).size());
         final List<AllocationDiff.Delta<AllocationDiff.Site>> folded = diff.sites(SiteKey.culpritMethod(), 10);
         assertEquals(1, folded.size());
         final AllocationDiff.Delta<AllocationDiff.Site> row = folded.getFirst();

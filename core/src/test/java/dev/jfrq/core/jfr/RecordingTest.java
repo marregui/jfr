@@ -183,7 +183,7 @@ class RecordingTest {
         assertTrue(top.stream().anyMatch(r -> r.key().equals("alloc-thread")), top.toString());
         assertTrue(top.stream().anyMatch(r -> r.key().equals(self)), top.toString());
         assertEquals("[B", report.classes(1).getFirst().key());
-        assertFalse(report.sites(1).getFirst().key().isEmpty());
+        assertFalse(report.sitesByStack(1).getFirst().key().isEmpty());
         assertTrue(report.totalBytes() > 200L * 1024 * 1024, "estimated " + report.totalBytes());
         // The JVM's own counter for this thread, seen at both chunk boundaries, brackets the estimate:
         // 4000 × 64 KiB were allocated on it. The short-lived alloc-thread was seen at most once.

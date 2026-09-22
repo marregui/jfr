@@ -20,7 +20,6 @@ import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
-import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
@@ -53,11 +52,14 @@ public final class Html {
     /** Rows listed in the stalls table; the timeline always shows every stall. */
     static final int MIN_LISTED = 100;
 
-    /** Frames a stack row shows, and therefore the depth allocation sites are folded at. */
+    /** Frames a stack row shows. */
     static final int STACK_FRAMES = 12;
 
     /** Names listed in a cell before the rest become a count. */
     private static final int NAMES_SHOWN = 4;
+
+    /** Package roots named on the line that explains {@code --app}. */
+    private static final int PACKAGES_SHOWN = 4;
 
     public static String stalls(final StallReport report, final int top) {
         final Page p = new Page("jfrq stalls", report.info());
@@ -336,7 +338,7 @@ public final class Html {
 
         p.h2("By site: " + key.description());
         final StringBuilder packages = new StringBuilder();
-        for (final AllocationReport.Row<String> root : report.packageRoots(4)) {
+        for (final AllocationReport.Row<String> root : report.packageRoots(PACKAGES_SHOWN)) {
             packages.append(packages.isEmpty() ? "" : ", ").append(root.key()).append(' ').append(pct(root.share()));
         }
         if (!packages.isEmpty()) {

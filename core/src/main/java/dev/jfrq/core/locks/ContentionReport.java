@@ -409,21 +409,18 @@ public final class ContentionReport {
      *               there are two a reader can tell apart
      */
     public List<StackGroup> lockStacks(final int top, final int frames) {
-        final Map<String, List<Wait.LockKey>> byStack = new LinkedHashMap<>();
-        final Map<String, Wait> longest = new HashMap<>();
-        for (final LockStats l : locks(top)) {
-            if (l.longest() == null) {
-                continue;
+        final List<StackGroup> out = new ArrayList<>();
+        byStack(locks(top), frames).forEach((_, group) -> {
+            final List<Wait.LockKey> locks = new ArrayList<>(group.size());
+            Wait longest = null;
+            for (final LockStats l : group) {
+                locks.add(l.lock());
+                if (longest == null || l.longest().duration() > longest.duration()) {
+                    longest = l.longest();
+                }
             }
-            final String rendering = l.longest().stack().pretty("", frames);
-            byStack.computeIfAbsent(rendering, _ -> new ArrayList<>()).add(l.lock());
-            final Wait best = longest.get(rendering);
-            if (best == null || l.longest().duration() > best.duration()) {
-                longest.put(rendering, l.longest());
-            }
-        }
-        final List<StackGroup> out = new ArrayList<>(byStack.size());
-        byStack.forEach((rendering, locks) -> out.add(new StackGroup(List.copyOf(locks), longest.get(rendering))));
+            out.add(new StackGroup(List.copyOf(locks), longest));
+        });
         return List.copyOf(out);
     }
 
@@ -438,14 +435,8 @@ public final class ContentionReport {
      * @param frames how many frames the caller will print, as in {@link #lockStacks(int, int)}
      */
     public List<SiteStats> lockSites(final int top, final int frames) {
-        final Map<String, List<LockStats>> byStack = new LinkedHashMap<>();
-        for (final LockStats l : locksOf(waits, Integer.MAX_VALUE)) {
-            if (l.longest() != null) {
-                byStack.computeIfAbsent(l.longest().stack().pretty("", frames), _ -> new ArrayList<>()).add(l);
-            }
-        }
-        final List<SiteStats> sites = new ArrayList<>(byStack.size());
-        byStack.forEach((_, group) -> {
+        final List<SiteStats> sites = new ArrayList<>();
+        byStack(locksOf(waits, Integer.MAX_VALUE), frames).forEach((_, group) -> {
             final List<Wait.LockKey> locks = new ArrayList<>(group.size());
             final Set<ThreadRef> waiters = new LinkedHashSet<>();
             final Set<ThreadRef> owners = new LinkedHashSet<>();
@@ -469,6 +460,22 @@ public final class ContentionReport {
         });
         sites.sort(Comparator.comparingLong(SiteStats::totalNanos).reversed());
         return limit(sites, top);
+    }
+
+    /**
+     * The given locks grouped by the rendering of their longest wait's stack, keeping the
+     * order they came in. A lock whose longest wait carries no stack renders as the empty
+     * string and groups with the others that carry none, which is all a reader can tell
+     * about them too.
+     */
+    private static Map<String, List<LockStats>> byStack(final List<LockStats> locks, final int frames) {
+        final Map<String, List<LockStats>> groups = new LinkedHashMap<>();
+        for (final LockStats l : locks) {
+            if (l.longest() != null) {
+                groups.computeIfAbsent(l.longest().stack().pretty("", frames), _ -> new ArrayList<>()).add(l);
+            }
+        }
+        return groups;
     }
 
     private List<LockStats> locksOf(final List<Wait> from, final int top) {

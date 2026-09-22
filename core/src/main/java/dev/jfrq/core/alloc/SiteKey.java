@@ -34,6 +34,12 @@ public interface SiteKey {
     /** What a stack with no frames at all is called. */
     String NO_STACK = "(no stack)";
 
+    /** The default key, held once: a strategy object belongs to the run, not to the call site. */
+    SiteKey CULPRIT_METHOD = stack -> {
+        final Frame culprit = stack.culpritOrNull();
+        return culprit == null ? NO_STACK : method(culprit);
+    };
+
     /** The name this stack is ranked under; stacks with the same name are one row. */
     String of(Stack stack);
 
@@ -44,10 +50,7 @@ public interface SiteKey {
 
     /** The innermost non-JDK frame, without its line: {@code com.example.Parser.parse}. */
     static SiteKey culpritMethod() {
-        return stack -> {
-            final Frame culprit = stack.culpritOrNull();
-            return culprit == null ? NO_STACK : method(culprit);
-        };
+        return CULPRIT_METHOD;
     }
 
     /**
@@ -55,7 +58,6 @@ public interface SiteKey {
      * {@link #culpritMethod()} for a stack that never enters them.
      */
     static SiteKey inPackages(final List<String> prefixes) {
-        final SiteKey fallback = culpritMethod();
         return new SiteKey() {
 
             @Override
@@ -68,7 +70,7 @@ public interface SiteKey {
                         }
                     }
                 }
-                return fallback.of(stack);
+                return CULPRIT_METHOD.of(stack);
             }
 
             @Override

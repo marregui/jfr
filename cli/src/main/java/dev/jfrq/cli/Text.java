@@ -17,7 +17,6 @@ import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
-import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.stalls.Stall;
 import dev.jfrq.core.stalls.StallReport;
@@ -241,7 +240,7 @@ final class Text {
         sb.append(classes.render("  "));
 
         if (sites) {
-            sb.append("\nBY SITE (" + key.description() + "; every path through it is one row)\n");
+            sb.append("\nBY SITE (").append(key.description()).append("; every path through it is one row)\n");
             sb.append(packages(r));
             int n = 1;
             for (final AllocationReport.SiteRow row : r.sites(key, top)) {
@@ -264,11 +263,14 @@ final class Text {
         if (roots.isEmpty()) {
             return "";
         }
-        final StringBuilder sb = new StringBuilder("  Packages ");
-        for (int i = 0; i < roots.size(); i++) {
-            sb.append(i == 0 ? "" : ", ").append(roots.get(i).key()).append(' ').append(pct(roots.get(i).share()));
+        final StringBuilder sb = new StringBuilder();
+        for (final AllocationReport.Row<String> root : roots) {
+            if (!sb.isEmpty()) {
+                sb.append(", ");
+            }
+            sb.append(root.key()).append(' ').append(pct(root.share()));
         }
-        return sb.append("  (--app PREFIX ranks by the innermost frame in one of them instead)\n").toString();
+        return "  Packages " + sb + "  (--app PREFIX ranks by the innermost frame in one of them instead)\n";
     }
 
     static String allocDiff(final AllocationDiff d, final int top, final boolean sites, final SiteKey key) {

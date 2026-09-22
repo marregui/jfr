@@ -46,8 +46,8 @@ jfrq stalls demo-lock.jfr --thread 'event-loop-*' --timing
 
 | Command | Sink | Report / analysis |
 |---|---|---|
-| `alloc` | `alloc/AllocationCollector` | `AllocationReport`, `AllocationDiff` (`--baseline`, compares rates; both files parsed concurrently on virtual threads) |
-| `locks` | `locks/ContentionCollector` | `ContentionReport` (holder walk-back through `previousOwner`, convoy search) |
+| `alloc` | `alloc/AllocationCollector` | `AllocationReport`, `AllocationDiff` (`--baseline`, compares rates; both files parsed concurrently on virtual threads). Sites are ranked by a `SiteKey` — the culprit method, or the innermost frame in the packages `--app` names — and the diff folds both sides by the same key |
+| `locks` | `locks/ContentionCollector` | `ContentionReport` (holder walk-back through `previousOwner`, convoy search; `--by-site` ranks one row per stack instead of per lock instance) |
 | `stalls` | `stalls/StallCollector` | `StallAnalysis` + `IdleMatcher` + `Timeline` → `StallReport` |
 | `info` | everything | `RecordingInfo` |
 | `jfrq-live` (`live` module) | none: dumps a window from a running JVM over JMX, then delegates to `Main.run` | `Snapshot`, `Cursor`, the span check in `Live.check` |

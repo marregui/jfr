@@ -6,7 +6,6 @@ package dev.jfrq.core.alloc;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -67,7 +66,8 @@ public record AllocationDiff(AllocationReport baseline, AllocationReport current
         return compare(baseline.byClass(), current.byClass(), top);
     }
 
-    public List<Delta<Stack>> sites(final int top) {
+    /** Sites compared one stack at a time; {@link #sites(SiteKey, int)} is what a reader is shown. */
+    public List<Delta<Stack>> sitesByStack(final int top) {
         return compare(baseline.bySite(), current.bySite(), top);
     }
 
@@ -77,12 +77,10 @@ public record AllocationDiff(AllocationReport baseline, AllocationReport current
      * a diff of two loaded windows opened with the same six frames twice, at 302 MB/s and
      * 216 MB/s, and neither number was the change. Folded, the row is the site and its rate
      * is the site's.
-     *
-     * <p>{@link #sites(int)} keeps the per-stack comparison underneath.
      */
     public List<Delta<Site>> sites(final SiteKey key, final int top) {
-        final Map<String, AllocationReport.SiteRow> before = byLabel(baseline.sites(key, Integer.MAX_VALUE));
-        final Map<String, AllocationReport.SiteRow> after = byLabel(current.sites(key, Integer.MAX_VALUE));
+        final Map<String, AllocationReport.SiteRow> before = baseline.fold(key);
+        final Map<String, AllocationReport.SiteRow> after = current.fold(key);
         final Set<String> labels = new LinkedHashSet<>(after.keySet());
         labels.addAll(before.keySet());
         final List<Delta<Site>> deltas = new ArrayList<>(labels.size());
@@ -97,15 +95,12 @@ public record AllocationDiff(AllocationReport baseline, AllocationReport current
         }
         deltas.sort(Comparator.<Delta<Site>>comparingDouble(d -> Math.abs(d.delta())).reversed()
                 .thenComparing(d -> d.key().label()));
-        return deltas.size() > top ? List.copyOf(deltas.subList(0, top)) : List.copyOf(deltas);
+        return limit(deltas, top);
     }
 
-    private static Map<String, AllocationReport.SiteRow> byLabel(final List<AllocationReport.SiteRow> rows) {
-        final Map<String, AllocationReport.SiteRow> byLabel = new LinkedHashMap<>();
-        for (final AllocationReport.SiteRow row : rows) {
-            byLabel.put(row.label(), row);
-        }
-        return byLabel;
+    /** The first {@code top} of an already ordered list, copied so the result is immutable. */
+    private static <K> List<Delta<K>> limit(final List<Delta<K>> deltas, final int top) {
+        return deltas.size() > top ? List.copyOf(deltas.subList(0, top)) : List.copyOf(deltas);
     }
 
     /** Sorted by absolute rate change, largest first. */
@@ -119,6 +114,6 @@ public record AllocationDiff(AllocationReport baseline, AllocationReport current
             deltas.add(new Delta<>(k, b, a));
         }
         deltas.sort(Comparator.<Delta<K>>comparingDouble(d -> Math.abs(d.delta())).reversed());
-        return deltas.size() > top ? List.copyOf(deltas.subList(0, top)) : List.copyOf(deltas);
+        return limit(deltas, top);
     }
 }
