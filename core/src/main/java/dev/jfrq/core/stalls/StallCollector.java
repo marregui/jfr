@@ -86,9 +86,19 @@ public final class StallCollector implements JfrReader.Sink {
     private StallReport report;
 
     public StallCollector(final Predicate<String> threadFilter, final IdleMatcher idle, final long gapNanos) {
+        this(threadFilter, idle, IdleMatcher.forWorkWaits(), gapNanos);
+    }
+
+    /**
+     * @param idle      what an idle <em>sample</em> looks like: the wait is the top frame
+     * @param workWaits what a park that is only "no work to do" looks like: the frame that
+     *                  decides sits below the park, so the two lists are not the same list
+     */
+    public StallCollector(final Predicate<String> threadFilter, final IdleMatcher idle, final IdleMatcher workWaits,
+                          final long gapNanos) {
         this.threadFilter = threadFilter;
         this.idle = idle;
-        this.analysis = new StallAnalysis(gapNanos);
+        this.analysis = new StallAnalysis(gapNanos, workWaits);
     }
 
     @Override

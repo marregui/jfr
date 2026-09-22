@@ -16,6 +16,7 @@ import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Interner;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.ThreadRef;
+import dev.jfrq.core.stalls.IdleMatcher;
 import jdk.jfr.consumer.RecordedEvent;
 
 /**
@@ -38,6 +39,7 @@ public final class ContentionCollector implements JfrReader.Sink {
 
     private final long minNanos;
     private final Predicate<String> waiterFilter;
+    private final IdleMatcher workWaits;
     private final ObjList<Wait> waits = new ObjList<>(1024);
     /**
      * One {@link Wait.LockKey} per lock, keyed by address: a recording holds a few locks
@@ -54,8 +56,14 @@ public final class ContentionCollector implements JfrReader.Sink {
      * @param waiterFilter only waits by threads whose name passes are reported
      */
     public ContentionCollector(final long minNanos, final Predicate<String> waiterFilter) {
+        this(minNanos, waiterFilter, IdleMatcher.forWorkWaits());
+    }
+
+    /** @param workWaits which parks the report separates out as "no work to do" */
+    public ContentionCollector(final long minNanos, final Predicate<String> waiterFilter, final IdleMatcher workWaits) {
         this.minNanos = minNanos;
         this.waiterFilter = waiterFilter;
+        this.workWaits = workWaits;
     }
 
     public ContentionCollector() {
@@ -119,7 +127,7 @@ public final class ContentionCollector implements JfrReader.Sink {
 
     @Override
     public void finish(final RecordingInfo info) {
-        report = new ContentionReport(info, waits.toList(), minNanos, waiterFilter);
+        report = new ContentionReport(info, waits.toList(), minNanos, waiterFilter, workWaits);
     }
 
     public ContentionReport report() {

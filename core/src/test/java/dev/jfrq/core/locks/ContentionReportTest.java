@@ -13,9 +13,11 @@ import java.util.Map;
 import java.util.Set;
 
 import dev.jfrq.core.jfr.RecordingInfo;
+import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
+import dev.jfrq.core.stalls.IdleMatcher;
 import dev.jfrq.core.locks.Wait.Kind;
 import dev.jfrq.core.locks.Wait.LockKey;
 import org.junit.jupiter.api.Test;
@@ -35,6 +37,32 @@ class ContentionReportTest {
     static Wait wait(final long fromMs, final long toMs, final ThreadRef waiter, final LockKey lock, final ThreadRef owner) {
         return new Wait(new Interval(fromMs * MS, toMs * MS), waiter, lock, owner, Stack.EMPTY);
     }
+
+    /** A park on the queue lock, with the stack that decides whether it is contention. */
+    static Wait park(final long fromMs, final long toMs, final ThreadRef waiter, final Stack stack) {
+        return new Wait(new Interval(fromMs * MS, toMs * MS), waiter, QUEUE, null, stack);
+    }
+
+    static Stack stack(final Frame... frames) {
+        return new Stack(List.of(frames), false);
+    }
+
+    /** A pool worker with nothing to do: the frame that says so is below the park and the queue. */
+    static final Stack NO_WORK = stack(
+            new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
+            new Frame("java.util.concurrent.locks.LockSupport", "park", 341, "JIT compiled"),
+            new Frame("java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject", "await", 1761, "JIT compiled"),
+            new Frame("java.util.concurrent.LinkedBlockingQueue", "take", 435, "JIT compiled"),
+            new Frame("java.util.concurrent.ThreadPoolExecutor", "getTask", 1070, "JIT compiled"),
+            new Frame("java.util.concurrent.ThreadPoolExecutor", "runWorker", 1130, "JIT compiled"));
+
+    /** The same park, under an application call that is waiting for an answer. */
+    static final Stack AWAITING_RESULT = stack(
+            new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
+            new Frame("java.util.concurrent.locks.LockSupport", "park", 341, "JIT compiled"),
+            new Frame("java.util.concurrent.SynchronousQueue", "poll", 800, "JIT compiled"),
+            new Frame("dev.app.Rpc", "call", 44, "JIT compiled"),
+            new Frame("dev.app.Handler", "channelRead0", 59, "JIT compiled"));
 
     static RecordingInfo info() {
         return window(0, 10_000);
@@ -196,6 +224,54 @@ class ContentionReportTest {
         assertEquals(STORE, convoys.getFirst().links().get(1).lock());
         // The link is printed with its in-window duration: 1 000 ms .. 1 300 ms, not 900 ms .. 1 300 ms.
         assertEquals(300 * MS, convoys.getFirst().links().get(1).duration());
+    }
+
+    @Test
+    void parksWaitingForWorkAreReportedApartFromContention() {
+        // The shape of a real server: one 200 ms lock fight against two idle pool threads
+        // parked for the whole recording. Ranked together, the lock never reaches the top.
+        final ContentionReport r = new ContentionReport(info(), List.of(
+                wait(100, 300, LOOP1, REGISTRY, HOUSEKEEPER),
+                park(0, 9_000, FLUSHER, NO_WORK),
+                park(0, 9_500, HOUSEKEEPER, NO_WORK)));
+
+        assertEquals(1, r.waits().size());
+        assertEquals(200 * MS, r.totalNanos());
+        assertEquals(REGISTRY, r.locks(10).getFirst().lock());
+        assertEquals(1, r.locks(10).size());
+        assertEquals(1, r.waiters(10).size());
+
+        assertEquals(2, r.workWaits().size());
+        assertEquals(2, r.workWaitThreads());
+        assertEquals(18_500 * MS, r.workWaitNanos());
+        assertEquals(QUEUE, r.workWaitLocks(10).getFirst().lock());
+    }
+
+    @Test
+    void aParkWaitingForAResultIsStillContention() {
+        // Same queue class, but the frames below the park are an application call.
+        final ContentionReport r = new ContentionReport(info(), List.of(park(100, 5_000, LOOP1, AWAITING_RESULT)));
+        assertEquals(1, r.waits().size());
+        assertEquals(4_900 * MS, r.totalNanos());
+        assertTrue(r.workWaits().isEmpty());
+    }
+
+    @Test
+    void theSplitCanBeTurnedOff() {
+        final List<Wait> waits = List.of(park(0, 9_000, FLUSHER, NO_WORK));
+        final ContentionReport off = new ContentionReport(info(), waits, 0, _ -> true, IdleMatcher.none());
+        assertEquals(1, off.waits().size());
+        assertTrue(off.workWaits().isEmpty());
+    }
+
+    @Test
+    void anIdleWorkerIsNeverAConvoyLink() {
+        // The housekeeper holds the registry and is itself parked for work: that is not a convoy,
+        // it is a thread doing nothing. Only a real second lock makes a chain.
+        final ContentionReport r = new ContentionReport(info(), List.of(
+                wait(100, 300, LOOP1, REGISTRY, HOUSEKEEPER),
+                park(50, 400, HOUSEKEEPER, NO_WORK)));
+        assertTrue(r.convoys(5, 10).isEmpty(), r.convoys(5, 10).toString());
     }
 
     @Test

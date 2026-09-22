@@ -255,6 +255,18 @@ final class Text {
             }
         }
 
+        if (!r.workWaits().isEmpty()) {
+            sb.append(String.format(Locale.ROOT, "%nWAITING FOR WORK (not contention: %d thread%s parked on their own "
+                            + "queue, %s across %d parks)%n", r.workWaitThreads(), r.workWaitThreads() == 1 ? "" : "s",
+                    Durations.format(r.workWaitNanos()), r.workWaits().size()));
+            final TextTable idle = new TextTable("Queue", "Total", "Parks", "Max", "Threads").numeric(1, 2, 3);
+            for (final ContentionReport.LockStats l : r.workWaitLocks(top)) {
+                idle.row(l.lock().pretty(), Durations.format(l.totalNanos()), l.count(),
+                        Durations.format(l.maxNanos()), names(l.waiters()));
+            }
+            sb.append(idle.render("  "));
+        }
+
         sb.append("\nLONGEST WAITS\n");
         int n = 1;
         for (final Wait w : r.longest(top)) {

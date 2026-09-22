@@ -20,6 +20,7 @@ import dev.jfrq.core.coll.ObjObjHashMap;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.ThreadRef;
+import dev.jfrq.core.stalls.IdleMatcher;
 import dev.jfrq.core.util.Sorted;
 
 /**
@@ -59,6 +60,8 @@ public final class ContentionReport {
     private final RecordingInfo info;
     /** The reported waits, after the filters, in start order. */
     private final List<Wait> waits;
+    /** Reported parks that were workers waiting for their own queue, in start order. */
+    private final List<Wait> workWaits;
     /** How many waits the recording holds before the filters. */
     private final int unfilteredCount;
     /** How many reported waits were cut down to the recording's span. */
@@ -81,12 +84,20 @@ public final class ContentionReport {
         this(info, waits, 0, _ -> true);
     }
 
+    public ContentionReport(final RecordingInfo info, final List<Wait> waits, final long minNanos, final Predicate<String> waiterFilter) {
+        this(info, waits, minNanos, waiterFilter, IdleMatcher.forWorkWaits());
+    }
+
     /**
      * @param waits        every wait in the recording; holders are resolved across all of them
      * @param minNanos     waits shorter than this are left out of the report
      * @param waiterFilter only waits by threads whose name passes are reported
+     * @param workWaits    which parks are a worker waiting for its own queue rather than
+     *                     contention; those are reported apart, because on a server they
+     *                     outnumber and outrank every real lock
      */
-    public ContentionReport(final RecordingInfo info, final List<Wait> waits, final long minNanos, final Predicate<String> waiterFilter) {
+    public ContentionReport(final RecordingInfo info, final List<Wait> waits, final long minNanos,
+                            final Predicate<String> waiterFilter, final IdleMatcher workWaits) {
         this.info = info;
         final ObjList<Wait> sorted = new ObjList<>(waits.size());
         for (int i = 0, n = waits.size(); i < n; i++) {
@@ -103,6 +114,7 @@ public final class ContentionReport {
         final ObjList<ThreadRef> via = new ObjList<>();
         final ObjHashSet<ThreadRef> seen = new ObjHashSet<>();
         final ObjList<Wait> reported = new ObjList<>(sorted.size());
+        final ObjList<Wait> idling = new ObjList<>();
         final Interval window = info.span();
         int clipped = 0;
         for (int i = 0, n = sorted.size(); i < n; i++) {
@@ -112,17 +124,27 @@ public final class ContentionReport {
             // inside the window, so the totals and the shares cannot exceed it. Clipping
             // keeps the order: both ends move by a monotone function of themselves.
             final Wait inside = clip(resolved, window);
-            // Every thread's waits stay reachable for convoy following; the report lists the filtered ones.
-            waitsOf(byWaiter, w.waiter()).add(inside);
+            final boolean idle = w.kind() == Wait.Kind.PARK && workWaits.isIdle(w.stack());
+            // A worker parked on its own queue holds nothing and blocks nobody, so it is not a
+            // convoy link either; the rest stay reachable so a convoy can be followed into any
+            // thread. The report lists the filtered ones.
+            if (!idle) {
+                waitsOf(byWaiter, w.waiter()).add(inside);
+            }
             if (inside.duration() > 0 && inside.duration() >= minNanos
                     && passes(filterVerdict, waiterFilter, w.waiter())) {
-                reported.add(inside);
-                if (inside != resolved) {
-                    clipped++;
+                if (idle) {
+                    idling.add(inside);
+                } else {
+                    reported.add(inside);
+                    if (inside != resolved) {
+                        clipped++;
+                    }
                 }
             }
         }
         this.waits = reported.toList();
+        this.workWaits = idling.toList();
         this.unfilteredCount = sorted.size();
         this.clippedCount = clipped;
     }
@@ -223,13 +245,44 @@ public final class ContentionReport {
         return waits;
     }
 
+    /**
+     * Parks that were a worker waiting for its own queue: not contention, and on a server
+     * they are most of the blocking time in the file. Reported apart so that ranking by
+     * duration does not bury the one lock that matters under a dozen idle pools.
+     */
+    public List<Wait> workWaits() {
+        return workWaits;
+    }
+
+    public long workWaitNanos() {
+        return sum(workWaits);
+    }
+
+    /** {@link #locks(int)} over the waiting-for-work parks instead of the contended waits. */
+    public List<LockStats> workWaitLocks(final int top) {
+        return locksOf(workWaits, top);
+    }
+
+    /** How many distinct threads were waiting for work. */
+    public int workWaitThreads() {
+        final Set<ThreadRef> threads = new LinkedHashSet<>();
+        for (final Wait w : workWaits) {
+            threads.add(w.waiter());
+        }
+        return threads.size();
+    }
+
     public boolean isEmpty() {
         return waits.isEmpty();
     }
 
     public long totalNanos() {
+        return sum(waits);
+    }
+
+    private static long sum(final List<Wait> of) {
         long total = 0;
-        for (final Wait w : waits) {
+        for (final Wait w : of) {
             total += w.duration();
         }
         return total;
@@ -237,10 +290,14 @@ public final class ContentionReport {
 
     /** Locks ranked by total time threads spent waiting for them. */
     public List<LockStats> locks(final int top) {
+        return locksOf(waits, top);
+    }
+
+    private List<LockStats> locksOf(final List<Wait> from, final int top) {
         final Map<Wait.LockKey, long[]> totals = new LinkedHashMap<>();
         final Map<Wait.LockKey, Set<ThreadRef>> waiters = new HashMap<>();
         final Map<Wait.LockKey, Set<ThreadRef>> owners = new HashMap<>();
-        for (final Wait w : waits) {
+        for (final Wait w : from) {
             final long[] t = totals.computeIfAbsent(w.lock(), _ -> new long[3]);
             t[0] += w.duration();
             t[1]++;

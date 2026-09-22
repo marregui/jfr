@@ -95,6 +95,31 @@ class StallAnalysisTest {
         return new Block(new Interval(fromMs * MS, toMs * MS), kind, detail, Stack.EMPTY, owner);
     }
 
+    /** A block whose stack matters: the classifier reads it. */
+    static Block blockWith(final long fromMs, final long toMs, final BlockKind kind, final String detail, final Stack stack) {
+        return new Block(new Interval(fromMs * MS, toMs * MS), kind, detail, stack, null);
+    }
+
+    /** A fixed pool's worker with nothing to do: the frame that says so is five deep. */
+    static final Stack NO_WORK = stack(
+            new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
+            new Frame("java.util.concurrent.locks.LockSupport", "park", 341, "JIT compiled"),
+            new Frame("java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject", "await", 1761, "JIT compiled"),
+            new Frame("java.util.concurrent.LinkedBlockingQueue", "take", 435, "JIT compiled"),
+            new Frame("java.util.concurrent.ThreadPoolExecutor", "getTask", 1070, "JIT compiled"),
+            new Frame("java.util.concurrent.ThreadPoolExecutor", "runWorker", 1130, "JIT compiled"),
+            new Frame("java.lang.Thread", "run", 1583, "Interpreted"));
+
+    /** The same pool, running a task that waits for a result: the wait is real and costs a caller. */
+    static final Stack AWAITING_RESULT = stack(
+            new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
+            new Frame("java.util.concurrent.locks.LockSupport", "park", 341, "JIT compiled"),
+            new Frame("java.util.concurrent.CompletableFuture$Signaller", "block", 1864, "JIT compiled"),
+            new Frame("java.util.concurrent.CompletableFuture", "timedGet", 1960, "JIT compiled"),
+            new Frame("dev.app.Browser", "browse", 163, "JIT compiled"),
+            new Frame("java.util.concurrent.ThreadPoolExecutor", "runWorker", 1130, "JIT compiled"),
+            new Frame("java.lang.Thread", "run", 1583, "Interpreted"));
+
     static StallReport analyse(final List<Sample> samples, final List<Block> blocks, final List<Pause> pauses) {
         return analyse(sampledInfo(), samples, blocks, pauses);
     }
@@ -202,6 +227,45 @@ class StallAnalysisTest {
         assertEquals(Evidence.EVENT, s.evidence());
         assertEquals(monitor.interval(), s.interval());
         assertEquals("blocked on monitor dev.app.Registry@1 held by housekeeper", s.detail());
+    }
+
+    @Test
+    void aWorkerParkedOnItsOwnEmptyQueueIsNotAStall() {
+        // The exact shape that was reported as a 1m10s PARKED stall on an idle API pool.
+        final Block idlePool = blockWith(200, 70_200, BlockKind.PARK,
+                "on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@1", NO_WORK);
+        final StallReport r = analyse(info(80_000, Map.of("jdk.ExecutionSample",
+                Map.of("enabled", "true", "period", "10 ms")), "jdk.ExecutionSample"),
+                idle(0, 200, 10), List.of(idlePool), List.of());
+
+        assertTrue(r.stalls().isEmpty(), r.stalls().toString());
+        assertTrue(r.warnings().stream().anyMatch(w -> w.contains("1 park totalling 1m10s were workers waiting")),
+                r.warnings().toString());
+    }
+
+    @Test
+    void aPoolThreadWaitingForAResultIsStillAStall() {
+        // Same pool, same park, but the frame under it is an application call: someone is waiting.
+        final Block awaiting = blockWith(200, 13_000, BlockKind.PARK,
+                "on java.util.concurrent.CompletableFuture$Signaller@1", AWAITING_RESULT);
+        final StallReport r = analyse(info(20_000, Map.of("jdk.ExecutionSample",
+                Map.of("enabled", "true", "period", "10 ms")), "jdk.ExecutionSample"),
+                idle(0, 200, 10), List.of(awaiting), List.of());
+
+        assertEquals(1, r.stalls().size());
+        assertEquals(Verdict.PARKED, r.stalls().getFirst().verdict());
+        assertEquals(12_800 * MS, r.stalls().getFirst().duration());
+        assertTrue(r.warnings().stream().noneMatch(w -> w.contains("waiting for their own queue")), r.warnings().toString());
+    }
+
+    @Test
+    void anIdleWorkersSilenceDoesNotComeBackAsUnexplained() {
+        // No samples for the whole park: the silence must not be reported through the other door.
+        final Block idlePool = blockWith(100, 9_000, BlockKind.PARK, "on q@1", NO_WORK);
+        final List<Sample> samples = new ArrayList<>(idle(0, 100, 10));
+        samples.addAll(idle(9_000, 9_500, 10));
+        final StallReport r = analyse(samples, List.of(idlePool), List.of());
+        assertTrue(r.stalls().isEmpty(), r.stalls().toString());
     }
 
     @Test

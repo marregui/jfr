@@ -23,8 +23,31 @@ import dev.jfrq.core.model.Stack;
  */
 public final class IdleMatcher {
 
-    /** Innermost frames examined. */
+    /** Innermost frames examined for a sampled stack: the wait is at the top. */
     static final int DEPTH = 3;
+    /**
+     * Innermost frames examined for a blocking event. The pool's own idle frame sits under
+     * the park and the queue: {@code Unsafe.park}, {@code LockSupport.park},
+     * {@code ConditionObject.await}, {@code LinkedBlockingQueue.take},
+     * {@code ThreadPoolExecutor.getTask} is already five deep.
+     */
+    static final int BLOCK_DEPTH = 8;
+
+    /**
+     * Stacks that mean "this thread is parked because there is no work", as opposed to
+     * parked waiting for something a caller needs. Each names the <em>pool's own</em> idle
+     * frame, never the queue it parks on and never the worker loop: a thread running a task
+     * still has {@code ThreadPoolExecutor.runWorker} beneath it, and a request thread
+     * waiting for a reply on a {@code SynchronousQueue} is a real wait, so neither can be
+     * used to tell the two apart.
+     */
+    public static final List<String> WORK_WAIT_PATTERNS = List.of(
+            "java\\.util\\.concurrent\\.ThreadPoolExecutor\\.getTask",
+            "java\\.util\\.concurrent\\.ForkJoinPool\\.awaitWork",
+            "java\\.util\\.concurrent\\.ForkJoinPool\\.managedBlock\\w*",
+            "java\\.util\\.concurrent\\.ScheduledThreadPoolExecutor\\$DelayedWorkQueue\\.take",
+            "io\\.netty\\.util\\.concurrent\\.SingleThreadEventExecutor\\.takeTask",
+            "ch\\.qos\\.logback\\.core\\.AsyncAppenderBase\\$Worker\\.run");
 
     public static final List<String> DEFAULT_PATTERNS = List.of(
             "sun\\.nio\\.ch\\.(KQueue|EPoll|WEPoll|Poll|DevPoll)\\w*\\.(poll|wait|epollWait|kevent)\\w*",
@@ -42,20 +65,45 @@ public final class IdleMatcher {
 
     private final Pattern[] patterns;
     private final String source;
+    private final int depth;
     /** Frames recur across every sample; regex matching runs once per distinct frame (G-2.2). */
     private final ObjLongHashMap<Frame> decided = new ObjLongHashMap<>(1024);
 
-    private IdleMatcher(final String source, final Pattern[] patterns) {
+    private IdleMatcher(final String source, final Pattern[] patterns, final int depth) {
         this.source = source;
         this.patterns = patterns;
+        this.depth = depth;
     }
 
     public static IdleMatcher defaults() {
         return of(String.join(",", DEFAULT_PATTERNS));
     }
 
+    /**
+     * The matcher for blocking events rather than samples: whether a park or an
+     * {@code Object.wait} is a worker with nothing to do. Looks deeper than
+     * {@link #defaults()}, because the frame that decides is below the park.
+     */
+    public static IdleMatcher forWorkWaits() {
+        return workWaits(String.join(",", WORK_WAIT_PATTERNS));
+    }
+
+    /** {@link #forWorkWaits()} with the caller's patterns in place of the defaults. */
+    public static IdleMatcher workWaits(final String spec) {
+        return new IdleMatcher(spec, compile(spec), BLOCK_DEPTH);
+    }
+
     /** Compiles a comma-separated list of regular expressions; replaces the defaults. */
     public static IdleMatcher of(final String spec) {
+        return new IdleMatcher(spec, compile(spec), DEPTH);
+    }
+
+    /** Matches nothing: the escape hatch for a report that should classify no stack at all. */
+    public static IdleMatcher none() {
+        return new IdleMatcher("none", new Pattern[0], 0);
+    }
+
+    private static Pattern[] compile(final String spec) {
         final List<Pattern> compiled = new ArrayList<>();
         for (final String p : spec.split(",")) {
             final String t = p.trim();
@@ -66,11 +114,11 @@ public final class IdleMatcher {
         if (compiled.isEmpty()) {
             throw new IllegalArgumentException("idle pattern list is empty");
         }
-        return new IdleMatcher(spec, compiled.toArray(new Pattern[0]));
+        return compiled.toArray(new Pattern[0]);
     }
 
     public boolean isIdle(final Stack stack) {
-        final int depth = Math.min(DEPTH, stack.depth());
+        final int depth = Math.min(this.depth, stack.depth());
         for (int i = 0; i < depth; i++) {
             if (isIdle(stack.frameQuick(i))) {
                 return true;

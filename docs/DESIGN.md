@@ -112,9 +112,23 @@ know who owns a `ReentrantLock`).
 **What is deliberately excluded.** `jdk.JavaMonitorWait` (`Object.wait()`): a thread
 in `wait()` chose to wait for a notification; counting it would drown contention under
 idle worker pools. Parks with no blocker object: those are `LockSupport.parkNanos`
-sleeps and pacing loops. A park with a blocker of
-`AbstractQueuedSynchronizer$ConditionObject` is kept but is usually a worker waiting for
-work on a queue; the class is printed so a reader can tell.
+sleeps and pacing loops.
+
+**Waiting for work is not contention.** On a server most parks are workers sitting on
+their own empty queue. Ranked by duration they beat every real lock: in one 2m39s window
+of a loaded node, twelve idle pools filled both `LOCKS BY TOTAL WAIT` and `LONGEST
+WAITS`, and the monitor that mattered — 33.8 s across 1 028 waits — appeared in neither.
+So a park whose stack shows the *pool's own* idle frame goes to a `WAITING FOR WORK`
+section with its own total, and the contention sections are what is left.
+
+The patterns name that frame and nothing else: `ThreadPoolExecutor.getTask`,
+`ForkJoinPool.awaitWork`, `ForkJoinPool.managedBlock`, `DelayedWorkQueue.take`, Netty's
+`SingleThreadEventExecutor.takeTask`, logback's `AsyncAppenderBase$Worker.run`. Not the
+queue class: a request thread waiting for a reply on a `SynchronousQueue` is a real wait
+and looks identical one frame up. Not the worker loop either: `runWorker` is on the
+stack while a task is running too. The frame sits below the park and the queue, so the
+innermost eight frames are examined rather than the three a sampled stack needs.
+`--idle` replaces the list, `--idle none` turns the split off.
 
 **Holder resolution.** `previousOwner` is the thread that released the monitor to the
 waiter. Under contention that is frequently another waiter that got the lock a
@@ -264,6 +278,14 @@ covers by half; then runs, likewise. Stalls may therefore nest (a 500 ms busy ru
 a 100 ms socket read inside it is two stalls), and per-thread "stalled" totals can
 exceed wall time. The report sorts by duration, summarises by verdict and by thread,
 and lists the JVM-wide pauses.
+
+The same waiting-for-work rule as section 3 applies to blocking events: a park whose
+stack shows a pool's own idle frame is not a stall, however long it is, and a warning
+says how many were left out and what they totalled. The block stays in the timeline,
+because it is still what explains the silence in the samples — dropping it outright
+would turn a 1m10s idle worker into a 1m10s `UNEXPLAINED` stall, which is a worse answer
+than the one being rejected. The same check therefore runs on the explanation of a
+silence as well as on the event itself.
 
 Every stall is clipped to the recording's span, for the reason section 3 gives for
 waits: a blocking event that began before the file, or was still running at its end, is

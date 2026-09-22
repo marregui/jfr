@@ -95,7 +95,7 @@ and start-up is merely ordinary.
 ```
 jfrq info   recording.jfr
 jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--html out.html]
-jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--top N] [--html out.html]
+jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--idle REGEX,...] [--top N] [--html out.html]
 jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html]
 ```
 

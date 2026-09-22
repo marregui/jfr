@@ -89,6 +89,8 @@ public final class StallAnalysis {
     private static final Comparator<Stall> BY_START = Comparator.comparingLong(Stall::start);
 
     private final long gap;
+    /** Which parks are a worker with nothing to do rather than a wait someone is paying for. */
+    private final IdleMatcher workWaits;
     /** A culprit's qualified name, built once per distinct frame (G-2.3). */
     private final ObjObjHashMap<Frame, String> culpritNames = new ObjObjHashMap<>(1024);
     /** Scratch for {@link #busy}: culprit counts in first-seen order, and a stack per culprit. */
@@ -96,12 +98,30 @@ public final class StallAnalysis {
     private final ObjObjHashMap<String, Culprit> culpritByName = new ObjObjHashMap<>(64);
     /** Event stalls cut down to the recording's span in the current analysis; reset per {@link #analyse}. */
     private int clippedStalls;
+    /** Blocks left out as "waiting for work" in the current analysis, and their total. */
+    private int workWaitCount;
+    private long workWaitNanos;
+
+    /** Whether a block is a worker parked on its own empty queue rather than a wait that costs someone. */
+    private boolean isWaitingForWork(final Block b) {
+        return isWaitingForWork(verdictOf(b.kind()), b.stack());
+    }
+
+    /** The same question from a candidate's explanation, which carries the representative stack. */
+    private boolean isWaitingForWork(final Verdict verdict, final Stack stack) {
+        return (verdict == Verdict.PARKED || verdict == Verdict.OBJECT_WAIT) && workWaits.isIdle(stack);
+    }
 
     public StallAnalysis(final long gapNanos) {
+        this(gapNanos, IdleMatcher.forWorkWaits());
+    }
+
+    public StallAnalysis(final long gapNanos, final IdleMatcher workWaits) {
         if (gapNanos <= 0) {
             throw new IllegalArgumentException("gap must be positive");
         }
         this.gap = gapNanos;
+        this.workWaits = workWaits;
     }
 
     public long gap() {
@@ -113,6 +133,8 @@ public final class StallAnalysis {
         warnRecording(info, warnings);
         final long period = samplerPeriod(info);
         clippedStalls = 0;
+        workWaitCount = 0;
+        workWaitNanos = 0;
 
         final ObjList<Pause> sortedPauses = new ObjList<>(pauses.size());
         for (int i = 0, n = pauses.size(); i < n; i++) {
@@ -158,6 +180,11 @@ public final class StallAnalysis {
                         tl.thread().name(), Durations.format(absence),
                         Durations.format(absence * CADENCE_FACTOR)));
             }
+        }
+        if (workWaitCount > 0) {
+            warnings.add(workWaitCount + (workWaitCount == 1 ? " park totalling " : " parks totalling ")
+                    + Durations.format(workWaitNanos) + " were workers waiting for their own queue and are not "
+                    + "stalls; --idle replaces the patterns that decide this");
         }
         if (clippedStalls > 0) {
             warnings.add(clippedStalls == 1
@@ -340,6 +367,14 @@ public final class StallAnalysis {
             // is about, and the gap applies to that part.
             final Interval inside = b.interval().clampTo(span);
             if (inside.length() >= gap) {
+                // A worker parked on its own empty queue is not stalled, it is unemployed. The
+                // block stays in the timeline below, because it is still what explains the
+                // silence in the samples; it just does not become a stall of its own.
+                if (isWaitingForWork(b)) {
+                    workWaitNanos += inside.length();
+                    workWaitCount++;
+                    continue;
+                }
                 if (inside != b.interval()) {
                     clippedStalls++;
                 }
@@ -412,7 +447,12 @@ public final class StallAnalysis {
             final long minCover = silence.length() < unexplainedThreshold ? Math.max(gap, cover(silence)) : cover(silence);
             final Explanation ex = windows.explain(silence, true, minCover);
             if (ex != null) {
-                stalls.add(new Stall(tl.thread(), silence, ex.verdict, ex.detail, ex.stack, Evidence.SILENCE, 0));
+                // The same rule as above, at the other door: a silence whose explanation is a
+                // worker's own empty queue is not a stall either, and must not fall through to
+                // UNEXPLAINED, which would be a worse answer than the one just rejected.
+                if (!isWaitingForWork(ex.verdict, ex.stack)) {
+                    stalls.add(new Stall(tl.thread(), silence, ex.verdict, ex.detail, ex.stack, Evidence.SILENCE, 0));
+                }
             } else if (silence.length() >= unexplainedThreshold) {
                 // Longer than the thread's routine absence: the sampler would have seen it otherwise.
                 stalls.add(new Stall(tl.thread(), silence, Verdict.UNEXPLAINED,

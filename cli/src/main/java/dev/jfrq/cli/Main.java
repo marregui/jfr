@@ -37,7 +37,7 @@ import dev.jfrq.core.util.Glob;
  * <pre>
  *   jfrq info   recording.jfr
  *   jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--html out.html]
- *   jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--top N] [--html out.html]
+ *   jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--idle REGEX,...] [--top N] [--html out.html]
  *   jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html]
  * </pre>
  */
@@ -69,6 +69,9 @@ public final class Main {
             locks:
               --min D        ignore waits shorter than D (default 0; e.g. 10ms)
               --thread GLOB  only waits by threads matching GLOB (e.g. 'event-loop-*,worker-?')
+              --idle REGEX   comma-separated regexes naming the frame of a pool waiting for work;
+                             those parks are reported apart from contention. 'none' reports every
+                             park as contention (default: the JDK pools, Netty, logback)
 
             stalls:
               --thread GLOB  threads to watch (required; e.g. 'event-loop-*')
@@ -95,7 +98,7 @@ public final class Main {
                 valued.add("baseline");
                 flags.add("sites");
             }
-            case "locks" -> valued.addAll(Set.of("min", "thread"));
+            case "locks" -> valued.addAll(Set.of("min", "thread", "idle"));
             case "stalls" -> valued.addAll(Set.of("thread", "gap", "idle"));
             default -> throw new Args.UsageException("unknown command '" + command + "'");
         }
@@ -227,13 +230,33 @@ public final class Main {
         if (threads.isEmpty()) {
             throw new Args.UsageException("--thread must name at least one pattern");
         }
-        final ContentionCollector collector = new ContentionCollector(min, threads);
+        final ContentionCollector collector = new ContentionCollector(min, threads, workWaits(args));
         JfrReader.read(file, collector);
         phase("read");
         out.print(Text.locks(collector.report(), top));
         html(args, () -> Html.locks(collector.report(), top));
         phase("render");
         return 0;
+    }
+
+    /**
+     * The patterns that decide which parks are a worker waiting for its own queue:
+     * {@code --idle none} turns the split off and reports every park as contention, as
+     * before this option existed.
+     */
+    private static IdleMatcher workWaits(final Args args) {
+        final String spec = args.option("idle").orElse(null);
+        if (spec == null) {
+            return IdleMatcher.forWorkWaits();
+        }
+        if (spec.equals("none")) {
+            return IdleMatcher.none();
+        }
+        try {
+            return IdleMatcher.workWaits(spec);
+        } catch (final IllegalArgumentException e) {
+            throw new Args.UsageException("--idle: " + e.getMessage());
+        }
     }
 
     private int stalls(final Args args) throws IOException {
