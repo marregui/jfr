@@ -96,8 +96,8 @@ and start-up is merely ordinary.
 
 ```
 jfrq info   recording.jfr
-jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--html out.html]
-jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--top N] [--html out.html]
+jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html]
+jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html]
 jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html]
 ```
 
@@ -107,6 +107,14 @@ a unit (`50ms`, `1.5s`, `2m`); options belong to their command, so a `stalls` op
 `locks` is an error rather than silently ignored. A wait or a block that began before the
 recording, or outlived it, is counted only for the part inside it, and that is the part
 `--min` and `--gap` are measured against.
+
+`alloc --sites` ranks one row per allocating method — the innermost frame outside the JDK —
+so every path that reaches it is summed instead of ranked separately; the row says how many
+stacks it stands for and how many samples are behind all of them. When that method is in a
+library you cannot change, `--app com.example` moves the attribution to your own innermost
+frame; the report lists the packages it saw, so the value to pass is in front of you.
+`locks --by-site` does the same for lock instances: fifteen queues of the same kind become
+one row of fifteen instances, ranked across all of them.
 
 A thread parked on its own empty queue is not contention and is not a stall: `locks` lists
 those apart and `stalls` leaves them out. They are recognised by the frame of a pool

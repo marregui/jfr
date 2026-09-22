@@ -480,4 +480,41 @@ class ContentionReportTest {
         assertEquals(1, stackless.size());
         assertEquals(List.of(REGISTRY, STORE), stackless.getFirst().locks());
     }
+
+    @Test
+    void lockSitesRankTheStackAcrossEveryInstanceOfIt() {
+        // One queue per in-flight request: each instance waits far less than the registry, so
+        // every one of them ranks below it, and together they are the larger cost. Ranked per
+        // instance the site is invisible; ranked per stack it is the first row.
+        final Stack queue = stack(
+                new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
+                new Frame("dev.app.ChannelBrowseSink", "take", 154, "JIT compiled"));
+        final List<Wait> waits = new java.util.ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            waits.add(new Wait(new Interval(100 * MS, 200 * MS), new ThreadRef(10 + i, "browse-" + i),
+                    new LockKey("java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject",
+                            0x100 + i, Kind.PARK), null, queue));
+        }
+        waits.add(new Wait(new Interval(100 * MS, 400 * MS), HOUSEKEEPER, REGISTRY, FLUSHER, AWAITING_RESULT));
+        final ContentionReport r = new ContentionReport(window(0, 10_000), waits, 0, _ -> true, IdleMatcher.none());
+
+        // Per instance, the registry's single 300 ms wait outranks every 100 ms queue.
+        assertEquals(REGISTRY, r.locks(10).getFirst().lock());
+        final List<ContentionReport.SiteStats> sites = r.lockSites(10, 6);
+        assertEquals(2, sites.size());
+        final ContentionReport.SiteStats first = sites.getFirst();
+        assertEquals(6, first.locks().size());
+        assertEquals(600 * MS, first.totalNanos());
+        assertEquals(6, first.count());
+        assertEquals(100 * MS, first.maxNanos());
+        assertEquals(6, first.waiters().size());
+        assertTrue(first.owners().isEmpty());
+        assertEquals(Kind.PARK, first.kind());
+        // The registry is the second site, with its holder kept.
+        assertEquals(List.of(REGISTRY), sites.get(1).locks());
+        assertEquals(Set.of(FLUSHER), sites.get(1).owners());
+        // --top caps the sites, not the instances behind them.
+        assertEquals(1, r.lockSites(1, 6).size());
+        assertEquals(6, r.lockSites(1, 6).getFirst().locks().size());
+    }
 }

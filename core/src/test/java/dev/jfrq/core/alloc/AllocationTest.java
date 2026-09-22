@@ -76,31 +76,75 @@ class AllocationTest {
     }
 
     @Test
-    void sitesThatPrintTheSameAreOneRow() {
-        // Three stacks whose visible frames are identical and whose culprit is the same:
-        // the reader sees one site three times and has to add the shares by hand.
-        final Frame visible = new Frame("java.util.Arrays", "copyOf", 3720, "JIT compiled");
-        final Frame culprit = new Frame("dev.app.Browser", "handleBrowseResult", 282, "JIT compiled");
-        // Same depth, so even the "... 1 more" line matches: they differ only in the frame it hides.
-        final Stack a = new Stack(List.of(visible, culprit, new Frame("dev.app.X", "a", 1, "JIT compiled")), false);
-        final Stack b = new Stack(List.of(visible, culprit, new Frame("dev.app.Y", "b", 2, "JIT compiled")), false);
-        final Stack c = new Stack(List.of(visible, culprit, new Frame("dev.app.Z", "c", 3, "JIT compiled")), false);
+    void everyPathThroughOneMethodIsOneRow() {
+        // The same application method reached down three different library paths, and
+        // allocating on two of its own lines: one logical site, which ranked one row per
+        // path reads as three rows of a third the size.
         final AllocationReport r = report("a.jfr", 1, Map.of("worker", 600L), Map.of(),
-                Map.of(a, 300L, b, 200L, c, 100L));
+                Map.of(parsePath("java.lang.String", "substring", 453), 300L,
+                        parsePath("java.util.Arrays", "copyOfRange", 453), 200L,
+                        parsePath("java.lang.String", "substring", 454), 100L));
 
-        final Map<Stack, Integer> variants = new java.util.HashMap<>();
-        // Folded at two frames, all three render the same: one row carrying the whole 600.
-        final List<AllocationReport.Row<Stack>> folded = r.foldedSites(10, 2, variants);
+        final List<AllocationReport.SiteRow> folded = r.sites(SiteKey.culpritMethod(), 10);
         assertEquals(1, folded.size());
-        assertEquals(600, folded.getFirst().bytes());
-        assertEquals(1.0, folded.getFirst().share(), 1e-9);
-        assertEquals(3, variants.get(folded.getFirst().key()));
+        final AllocationReport.SiteRow row = folded.getFirst();
+        assertEquals("org.lib.NodeId.parse", row.label());
+        assertEquals(600, row.bytes());
+        assertEquals(1.0, row.share(), 1e-9);
+        assertEquals(3, row.stacks());
+        // The support is the whole row's, not the representative stack's: one sample each
+        // above, so a row that sums three stacks rests on three samples, not on one.
+        assertEquals(3, row.samples());
+        // The stack printed under the row is the biggest contributor, not an arbitrary one.
+        assertEquals(300, r.bySite().get(row.stack()));
         // The raw map still keeps them apart, which is what --baseline matches on.
         assertEquals(3, r.sites(10).size());
+    }
 
-        // Folded deep enough to show the frame that distinguishes them, they are three rows again.
-        final Map<Stack, Integer> deep = new java.util.HashMap<>();
-        assertEquals(3, r.foldedSites(10, 6, deep).size());
+    @Test
+    void appPrefixesAttributeToTheCallerThatOwnsThePath() {
+        // Two library methods on the same application call site. Ranked by what allocated,
+        // they are two rows in a library nobody here can change; ranked by --app they are
+        // one row naming the line that called it.
+        final Frame caller = new Frame("com.app.Node", "id", 99, "JIT compiled");
+        final Stack parse = new Stack(List.of(new Frame("java.lang.String", "substring", 2904, "JIT compiled"),
+                new Frame("org.lib.NodeId", "parse", 453, "JIT compiled"), caller), false);
+        final Stack uint = new Stack(List.of(new Frame("org.lib.UInteger", "valueOf", 131, "JIT compiled"),
+                new Frame("org.lib.NodeId", "parse", 459, "JIT compiled"), caller), false);
+        final AllocationReport r = report("a.jfr", 1, Map.of("worker", 300L), Map.of(),
+                Map.of(parse, 200L, uint, 100L));
+
+        assertEquals(2, r.sites(SiteKey.culpritMethod(), 10).size());
+        final List<AllocationReport.SiteRow> byApp = r.sites(SiteKey.inPackages(List.of("com.app")), 10);
+        assertEquals(1, byApp.size());
+        assertEquals("com.app.Node.id", byApp.getFirst().label());
+        assertEquals(300, byApp.getFirst().bytes());
+        assertEquals(2, byApp.getFirst().samples());
+        // A stack that never enters the named packages keeps its own name rather than vanishing.
+        final List<AllocationReport.SiteRow> noMatch = r.sites(SiteKey.inPackages(List.of("com.nothing")), 10);
+        assertEquals(2, noMatch.size());
+        assertEquals("org.lib.NodeId.parse", noMatch.getFirst().label());
+    }
+
+    @Test
+    void packageRootsNameWhatAppCanBePointedAt() {
+        final Stack app = new Stack(List.of(new Frame("com.app.Node", "id", 99, "JIT compiled")), false);
+        final Stack lib = new Stack(List.of(new Frame("org.lib.NodeId", "parse", 453, "JIT compiled")), false);
+        final Stack jdk = new Stack(List.of(new Frame("java.lang.String", "substring", 2904, "JIT compiled")), false);
+        final AllocationReport r = report("a.jfr", 1, Map.of("worker", 600L), Map.of(),
+                Map.of(app, 300L, lib, 200L, jdk, 100L));
+
+        final List<AllocationReport.Row<String>> roots = r.packageRoots(10);
+        // Ranked by bytes, and a stack that is JDK code all the way down names no package.
+        assertEquals(List.of("com.app", "org.lib"), roots.stream().map(AllocationReport.Row::key).toList());
+        assertEquals(300, roots.getFirst().bytes());
+    }
+
+    /** A stack allocating inside {@code org.lib.NodeId.parse}, reached through {@code through}. */
+    private static Stack parsePath(final String type, final String method, final int line) {
+        return new Stack(List.of(new Frame(type, method, 2904, "JIT compiled"),
+                new Frame("org.lib.NodeId", "parse", line, "JIT compiled"),
+                new Frame("com.app.Node", "id", 99, "JIT compiled")), false);
     }
 
     @Test

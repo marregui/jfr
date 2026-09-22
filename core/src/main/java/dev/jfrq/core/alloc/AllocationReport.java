@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import dev.jfrq.core.jfr.RecordingInfo;
+import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Stack;
 
 /**
@@ -73,6 +74,18 @@ public record AllocationReport(
 
     /** A ranked row: key, bytes and share of the report total. */
     public record Row<K>(K key, long bytes, double share) {
+    }
+
+    /**
+     * A ranked site: what the fold called it, the stack that stands for it, and the evidence
+     * behind the whole row.
+     *
+     * @param label   the name the stacks were summed under, e.g. {@code com.example.Parser.parse}
+     * @param stack   the biggest single stack in the row, printed under it
+     * @param samples the samples behind every stack in the row, not only {@code stack}
+     * @param stacks  how many distinct stacks were summed
+     */
+    public record SiteRow(String label, Stack stack, long bytes, double share, long samples, int stacks) {
     }
 
     public double seconds() {
@@ -161,35 +174,63 @@ public record AllocationReport(
     }
 
     /**
-     * Allocation sites ranked by bytes, with those that are indistinguishable in the first
-     * {@code frames} frames summed into one row. Three sites that print the same six frames
-     * and the same elision are one site to a reader, and their shares have to be added by
-     * hand to get the number that matters; the raw map keeps them apart, because
-     * {@link AllocationDiff} matches sites by their full stack.
+     * Allocation sites ranked by bytes, every stack that {@code key} names the same summed
+     * into one row. A logical site reaches the sampler down many paths, and one row per path
+     * turns a fifth of the heap into a dozen rows of two percent; the raw map keeps them
+     * apart, because {@link AllocationDiff} matches sites by their full stack.
      *
-     * @param variants filled with the number of distinct stacks behind each returned row
+     * <p>The samples are summed with the bytes. A row whose bytes are the sum of ten stacks
+     * and whose support is one of them says the most important row in the report rests on
+     * three samples when it rests on thousands.
      */
-    public List<Row<Stack>> foldedSites(final int top, final int frames, final Map<Stack, Integer> variants) {
-        // Keyed by the rendering itself, not by the first n frames: `pretty` also prints the
-        // culprit frame when it lies deeper than n, and two sites that differ there are two
-        // rows a reader can tell apart. Whatever prints the same is one row.
-        final Map<String, Long> bytes = new HashMap<>();
-        final Map<String, Integer> counts = new HashMap<>();
+    public List<SiteRow> sites(final SiteKey key, final int top) {
+        final Map<String, long[]> totals = new HashMap<>();
         final Map<String, Stack> shown = new HashMap<>();
+        final Map<String, Long> largest = new HashMap<>();
         for (final Map.Entry<Stack, Long> e : bySite.entrySet()) {
-            final String rendering = e.getKey().pretty("", frames);
-            bytes.merge(rendering, e.getValue(), Long::sum);
-            counts.merge(rendering, 1, Integer::sum);
-            shown.putIfAbsent(rendering, e.getKey());
+            final String label = key.of(e.getKey());
+            final long[] t = totals.computeIfAbsent(label, _ -> new long[3]);
+            t[0] += e.getValue();
+            t[1] += support.site(e.getKey());
+            t[2]++;
+            // The stack that stands for the row is its biggest contributor, so the lines
+            // printed under a row are the ones most of its bytes came through.
+            final Long best = largest.get(label);
+            if (best == null || e.getValue() > best) {
+                largest.put(label, e.getValue());
+                shown.put(label, e.getKey());
+            }
         }
-        final List<Row<String>> ranked = rank(bytes, top);
-        final List<Row<Stack>> rows = new ArrayList<>(ranked.size());
-        for (final Row<String> row : ranked) {
-            final Stack representative = shown.get(row.key());
-            rows.add(new Row<>(representative, row.bytes(), row.share()));
-            variants.put(representative, counts.get(row.key()));
+        final double total = Math.max(totalBytes, 1);
+        final List<SiteRow> rows = new ArrayList<>(totals.size());
+        totals.forEach((label, t) -> rows.add(new SiteRow(label, shown.get(label), t[0], t[0] / total, t[1], (int) t[2])));
+        rows.sort(Comparator.comparingLong(SiteRow::bytes).reversed().thenComparing(SiteRow::label));
+        return rows.size() > top ? List.copyOf(rows.subList(0, top)) : List.copyOf(rows);
+    }
+
+    /**
+     * The non-JDK package roots the allocation came from, by bytes: the first two segments of
+     * each culprit's class, which is the form {@code --app} takes. A reader who has never
+     * seen the application before learns from its own report what to point the option at.
+     */
+    public List<Row<String>> packageRoots(final int top) {
+        final Map<String, Long> bytes = new HashMap<>();
+        for (final Map.Entry<Stack, Long> e : bySite.entrySet()) {
+            final Frame culprit = e.getKey().culpritOrNull();
+            if (culprit != null && !culprit.isJdk()) {
+                bytes.merge(root(culprit.type()), e.getValue(), Long::sum);
+            }
         }
-        return List.copyOf(rows);
+        return rank(bytes, top);
+    }
+
+    private static String root(final String type) {
+        final int first = type.indexOf('.');
+        if (first < 0) {
+            return "(default package)";
+        }
+        final int second = type.indexOf('.', first + 1);
+        return second < 0 ? type.substring(0, first) : type.substring(0, second);
     }
 
     public List<Row<String>> classesOf(final String thread, final int top) {

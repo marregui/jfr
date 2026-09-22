@@ -143,6 +143,14 @@ class MainTest {
         assertEquals(2, run("alloc", recording.toString(), "--top", "-1").status());
         assertEquals(2, run("locks", recording.toString(), "--min", "abc").status());
         assertEquals(2, run("locks", recording.toString(), "--thread", "").status());
+        assertEquals(2, run("alloc", recording.toString(), "--sites", "--app", " ,").status());
+        final Run withBaseline = run("alloc", recording.toString(), "--baseline", recording.toString(),
+                "--app", "dev.jfrq");
+        assertEquals(2, withBaseline.status());
+        assertTrue(withBaseline.err().contains("--app does not apply to --baseline"), withBaseline.err());
+        // Each command's grouping option belongs to it alone.
+        assertEquals(2, run("locks", recording.toString(), "--app", "dev.jfrq").status());
+        assertEquals(2, run("alloc", recording.toString(), "--by-site").status());
         // Options belong to their command, and durations need a unit.
         final Run misplaced = run("locks", recording.toString(), "--gap", "1s");
         assertEquals(2, misplaced.status());
@@ -243,6 +251,20 @@ class MainTest {
 
         final Run plain = run("alloc", recording.toString());
         assertFalse(plain.out().contains("BY SITE"));
+
+        // --app attributes each stack to the test's own frames instead of to the JDK method
+        // that allocated, so the rows are named after this file rather than after the JDK.
+        final Run app = run("alloc", recording.toString(), "--sites", "--app", "dev.jfrq");
+        assertEquals(0, app.status(), app.err());
+        assertTrue(app.out().contains("dev.jfrq."), app.out());
+    }
+
+    @Test
+    void locksBySite() {
+        final Run r = run("locks", recording.toString(), "--by-site");
+        assertEquals(0, r.status(), r.err());
+        assertTrue(r.out().contains("LOCK SITES BY TOTAL WAIT") || r.out().contains("No contended"), r.out());
+        assertFalse(r.out().contains("\nLOCKS BY TOTAL WAIT\n"), r.out());
     }
 
     @Test

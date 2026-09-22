@@ -13,6 +13,7 @@ import java.util.TreeMap;
 
 import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
+import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
@@ -32,6 +33,8 @@ final class Text {
     private static final int STACK_FRAMES = 6;
     /** Names listed before the rest become a count. */
     private static final int NAMES_SHOWN = 4;
+    /** Package roots named on the line that explains {@code --app}. */
+    private static final int PACKAGES_SHOWN = 4;
 
     private Text() {
     }
@@ -177,7 +180,7 @@ final class Text {
         return types.toArray(new String[0]);
     }
 
-    static String alloc(final AllocationReport r, final int top, final boolean sites) {
+    static String alloc(final AllocationReport r, final int top, final boolean sites, final SiteKey key) {
         final StringBuilder sb = new StringBuilder(header(r.info()));
         sb.append(String.format(Locale.ROOT, "%-10s %s (%d samples)%n", "Source", r.source(), r.samples()));
         sb.append(String.format(Locale.ROOT, "%-10s %s over %s = %s%n", "Estimate", Bytes.format(r.totalBytes()),
@@ -238,19 +241,34 @@ final class Text {
         sb.append(classes.render("  "));
 
         if (sites) {
-            sb.append("\nBY SITE\n");
-            final Map<Stack, Integer> variants = new java.util.HashMap<>();
+            sb.append("\nBY SITE (" + key.description() + "; every path through it is one row)\n");
+            sb.append(packages(r));
             int n = 1;
-            for (final AllocationReport.Row<Stack> row : r.foldedSites(top, STACK_FRAMES, variants)) {
-                final int distinct = variants.getOrDefault(row.key(), 1);
-                sb.append(String.format(Locale.ROOT, "  %2d  %10s  %10s  %6s  %d samples%s%n", n++,
+            for (final AllocationReport.SiteRow row : r.sites(key, top)) {
+                sb.append(String.format(Locale.ROOT, "  %2d  %10s  %10s  %6s  %d sample%s  %s%s%n", n++,
                         Bytes.format(row.bytes()), Bytes.rate(r.rate(row.bytes())), pct(row.share()),
-                        r.support().site(row.key()),
-                        distinct > 1 ? "  (" + distinct + " stacks that differ only in elided frames)" : ""));
-                sb.append(row.key().pretty("        ", STACK_FRAMES));
+                        row.samples(), row.samples() == 1 ? "" : "s", row.label(),
+                        row.stacks() > 1 ? "  (" + row.stacks() + " stacks, the biggest below)" : ""));
+                sb.append(row.stack().pretty("        ", STACK_FRAMES));
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * The line that makes {@code --app} usable by a reader who has never seen the application:
+     * its own report names the packages it could be pointed at.
+     */
+    private static String packages(final AllocationReport r) {
+        final List<AllocationReport.Row<String>> roots = r.packageRoots(PACKAGES_SHOWN);
+        if (roots.isEmpty()) {
+            return "";
+        }
+        final StringBuilder sb = new StringBuilder("  Packages ");
+        for (int i = 0; i < roots.size(); i++) {
+            sb.append(i == 0 ? "" : ", ").append(roots.get(i).key()).append(' ').append(pct(roots.get(i).share()));
+        }
+        return sb.append("  (--app PREFIX ranks by the innermost frame in one of them instead)\n").toString();
     }
 
     static String allocDiff(final AllocationDiff d, final int top, final boolean sites) {
@@ -301,7 +319,7 @@ final class Text {
         return sb.toString();
     }
 
-    static String locks(final ContentionReport r, final int top) {
+    static String locks(final ContentionReport r, final int top, final boolean bySite) {
         final StringBuilder sb = new StringBuilder(header(r.info()));
         sb.append(settingsLine(r.info(), "Thresholds", "jdk.JavaMonitorEnter", "jdk.ThreadPark"));
         if (r.isEmpty()) {
@@ -319,36 +337,41 @@ final class Text {
                     r.clippedCount() == 1 ? "" : "s"));
         }
 
-        sb.append("\nLOCKS BY TOTAL WAIT\n");
-        final List<ContentionReport.LockStats> ranked = r.locks(top);
-        final TextTable locks = new TextTable("Lock", "Kind", "Total", "Waits", "Max", "Waiters", "Held by").numeric(2, 3, 4);
-        for (final ContentionReport.LockStats l : ranked) {
-            locks.row(l.lock().pretty(), l.lock().kind().label(), Durations.format(l.totalNanos()), l.count(),
-                    Durations.format(l.maxNanos()), names(l.waiters()), names(l.owners()));
-        }
-        sb.append(locks.render("  "));
+        if (bySite) {
+            sb.append(lockSites(r, top));
+        } else {
+            sb.append("\nLOCKS BY TOTAL WAIT\n");
+            final List<ContentionReport.LockStats> ranked = r.locks(top);
+            final TextTable locks = new TextTable("Lock", "Kind", "Total", "Waits", "Max", "Waiters", "Held by")
+                    .numeric(2, 3, 4);
+            for (final ContentionReport.LockStats l : ranked) {
+                locks.row(l.lock().pretty(), l.lock().kind().label(), Durations.format(l.totalNanos()), l.count(),
+                        Durations.format(l.maxNanos()), names(l.waiters()), names(l.owners()));
+            }
+            sb.append(locks.render("  "));
 
-        // Without this a row above is a name nobody can act on: a hot lock of many short waits
-        // never reaches LONGEST WAITS, which is where the only other stack is.
-        if (!ranked.isEmpty()) {
-            sb.append("\nWHERE THEY WAITED (the longest wait for each lock above)\n");
-            for (final ContentionReport.StackGroup g : r.lockStacks(top, STACK_FRAMES)) {
-                // Lock names are long (a fully qualified class and an address), so several of
-                // them go one per line under a count rather than end to end across the page.
-                if (g.locks().size() == 1) {
-                    sb.append(String.format(Locale.ROOT, "  %s  %s%n", g.locks().getFirst().pretty(),
-                            Durations.format(g.longest().duration())));
-                } else {
-                    sb.append(String.format(Locale.ROOT, "  %d locks with this stack, longest %s%n",
-                            g.locks().size(), Durations.format(g.longest().duration())));
-                    for (final Wait.LockKey lock : shown(g.locks())) {
-                        sb.append("    ").append(lock.pretty()).append('\n');
+            // Without this a row above is a name nobody can act on: a hot lock of many short waits
+            // never reaches LONGEST WAITS, which is where the only other stack is.
+            if (!ranked.isEmpty()) {
+                sb.append("\nWHERE THEY WAITED (the longest wait for each lock above)\n");
+                for (final ContentionReport.StackGroup g : r.lockStacks(top, STACK_FRAMES)) {
+                    // Lock names are long (a fully qualified class and an address), so several of
+                    // them go one per line under a count rather than end to end across the page.
+                    if (g.locks().size() == 1) {
+                        sb.append(String.format(Locale.ROOT, "  %s  %s%n", g.locks().getFirst().pretty(),
+                                Durations.format(g.longest().duration())));
+                    } else {
+                        sb.append(String.format(Locale.ROOT, "  %d locks with this stack, longest %s%n",
+                                g.locks().size(), Durations.format(g.longest().duration())));
+                        for (final Wait.LockKey lock : shown(g.locks())) {
+                            sb.append("    ").append(lock.pretty()).append('\n');
+                        }
+                        if (g.locks().size() > NAMES_SHOWN) {
+                            sb.append("    (+").append(g.locks().size() - NAMES_SHOWN).append(" more)\n");
+                        }
                     }
-                    if (g.locks().size() > NAMES_SHOWN) {
-                        sb.append("    (+").append(g.locks().size() - NAMES_SHOWN).append(" more)\n");
-                    }
+                    sb.append(g.longest().stack().pretty("        ", STACK_FRAMES));
                 }
-                sb.append(g.longest().stack().pretty("        ", STACK_FRAMES));
             }
         }
 
@@ -408,6 +431,29 @@ final class Text {
                     Durations.offset(w.start() - r.info().startNanos()), Durations.format(w.duration()),
                     w.waiter().name(), w.lock().pretty(), w.owner() == null ? "" : " " + w.heldBy()));
             sb.append(w.stack().pretty("        ", STACK_FRAMES));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * {@code --by-site}: one row per stack instead of one per lock instance. Fifteen queues
+     * of the same kind are one site with fifteen instances, not fifteen rows a reader has to
+     * recognise as one and add up.
+     */
+    private static String lockSites(final ContentionReport r, final int top) {
+        final StringBuilder sb = new StringBuilder(
+                "\nLOCK SITES BY TOTAL WAIT (one row per stack; without --by-site each instance has its own row)\n");
+        int n = 1;
+        for (final ContentionReport.SiteStats s : r.lockSites(top, STACK_FRAMES)) {
+            sb.append(String.format(Locale.ROOT, "  %2d  %-8s %10s across %d wait%s, %d lock instance%s, longest %s%n",
+                    n++, s.kind().label(), Durations.format(s.totalNanos()), s.count(), s.count() == 1 ? "" : "s",
+                    s.locks().size(), s.locks().size() == 1 ? "" : "s", Durations.format(s.maxNanos())));
+            sb.append(String.format(Locale.ROOT, "      waited by %s%s%n", names(s.waiters()),
+                    s.owners().isEmpty() ? "" : ", held by " + names(s.owners())));
+            if (s.locks().size() == 1) {
+                sb.append("      ").append(s.locks().getFirst().pretty()).append('\n');
+            }
+            sb.append(s.longest().stack().pretty("        ", STACK_FRAMES));
         }
         return sb.toString();
     }

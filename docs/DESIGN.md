@@ -88,22 +88,34 @@ that live and die inside the window, the counted threads can be a third of the e
 while the transient ones did the other two thirds; an unqualified "±2 %" reads as the
 error of the whole report, which it is not.
 
-**Sites are folded by what they print.** `BY SITE` once showed ranks 1, 2 and 3 at
-51.1 %, 10.9 % and 5.3 % with the same six frames, the same culprit line and the same
-`... 12 more`: one site to a reader, three rows to add up by hand, and the sum, 67.3 %,
-was the actual headline. Rows whose *rendering* is identical are now summed into one and
-marked with how many stacks are behind it. The key is the rendering, not the first n
-frames, because `pretty` also prints the culprit when it lies deeper, and two sites that
-differ there are two rows a reader can tell apart. The raw per-stack map is untouched:
-`--baseline` matches sites by full stack and must keep doing so.
+**A site is a method, not a path to it.** One logical allocation reaches the sampler down
+many paths: the same method allocating on two of its own lines, the same line under a
+different depth of library frames, a string built by `substring` here and `copyOfRange`
+there. Folded by what they print, `BY SITE` on a loaded node showed `NodeId.parse` as four
+rows of about 2 % each — noise to any reader — when the method was 20.8 % of everything
+the JVM allocated. The key is now the **culprit method**: the innermost frame outside the
+JDK, without its line number. Every path through it is one row, the row says how many
+stacks it summed, and the stack printed under it is the biggest of them. The raw per-stack
+map is untouched: `--baseline` matches sites by full stack and must keep doing so.
 
-**Support.** Every row also carries the number of samples behind it. The estimate weights
-each sample by the bytes it stands for, so two rows of equal size can rest on 2 000
-samples and on 3, and only the count says which; a `--baseline` between two quiet windows
-once reported `+397 %` and `+469 %` on a base of 143 samples, which reads as a finding and
-is noise. The counts cost three more table probes per allocation event: on a 1.3 MB
-recording of a loaded node the read went from 54.3 ms to 57.2 ms and the analysis from
-0.62 ms to 1.00 ms, measured with `--timing`.
+**`--app` when the culprit is a library.** The culprit rule stops at the innermost non-JDK
+frame, which for `NodeId.parse` is a third-party class the reader cannot change; what they
+want is their own line that called it. jfrq cannot infer which packages are theirs — a JVM
+started from a jar records `sun.java.command = app.jar` and no package name anywhere — so
+`--app com.example` says it, and the fold then keys on the innermost frame in those
+packages, falling back to the culprit for a stack that never enters them. So the option
+cannot be guessed at, `BY SITE` prints the non-JDK package roots it saw, by bytes; the
+report says what to pass it.
+
+**Support.** Every row also carries the number of samples behind it, **summed over every
+stack in the row** — a row whose bytes are ten stacks' and whose support is one of them
+said the report's most important row rested on 13 samples when it rested on 7 662. The
+estimate weights each sample by the bytes it stands for, so two rows of equal size can
+rest on 2 000 samples and on 3, and only the count says which; a `--baseline` between two
+quiet windows once reported `+397 %` and `+469 %` on a base of 143 samples, which reads as
+a finding and is noise. The counts cost three more table probes per allocation event: on a
+1.3 MB recording of a loaded node the read went from 54.3 ms to 57.2 ms and the analysis
+from 0.62 ms to 1.00 ms, measured with `--timing`.
 
 **Aggregation.** Bytes by thread name, by allocated class, and by full stack, plus the
 class and stack breakdown per thread. Rates divide by the recording span. Byte units are
@@ -171,6 +183,16 @@ by duration, so a lock made of thousands of short waits tops the first and never
 in the second: its row was a name and an address with no way to act on it. Each row now
 takes the stack of its own longest wait, listed under `WHERE THEY WAITED`, and `--lock`
 filters the whole report down to one lock by class or by `class@address`.
+
+**`--by-site` ranks the stack, not the instance.** One queue per in-flight request is as
+many locks as requests: on a loaded node, fifteen `ConditionObject` addresses held fifteen
+rows of `LOCKS BY TOTAL WAIT` and the section below them said "15 locks with this stack".
+With `--by-site` the ranking table is grouped the same way the stacks are — one row per
+stack, with the instance count, the summed wait and the longest of them — and the grouping
+runs over *every* lock rather than the top N, so a site spread across seventy-four
+instances outranks one big lock instead of being lost below it. It is an option rather
+than the default because the addresses are what `--lock` takes, and a report that never
+prints them cannot be narrowed to one.
 
 **A thread's own perch, measured rather than named.** The idle list above recognises a
 pool's own frame, which works only for the runtimes someone thought to add. A service with

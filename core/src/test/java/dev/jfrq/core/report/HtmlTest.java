@@ -14,6 +14,7 @@ import java.util.Set;
 
 import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
+import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
@@ -115,8 +116,8 @@ class HtmlTest {
                 List.of("the file is truncated: <cut>"));
         final AllocationReport a = new AllocationReport(damaged, "jdk.ObjectAllocationSample", 0, 0, 0, Map.of(),
                 Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), AllocationReport.Support.NONE);
-        assertTrue(Html.alloc(a, 5).contains("<li>the file is truncated: &lt;cut&gt;</li>"));
-        assertTrue(Html.locks(new ContentionReport(damaged, List.of()), 5).contains("class=\"warn\""));
+        assertTrue(Html.alloc(a, 5, SiteKey.culpritMethod()).contains("<li>the file is truncated: &lt;cut&gt;</li>"));
+        assertTrue(Html.locks(new ContentionReport(damaged, List.of()), 5, false).contains("class=\"warn\""));
         final StallReport r = new StallReport(damaged, MS, List.of(), List.of(), List.of(), List.of());
         assertTrue(Html.stalls(r, 5).contains("the file is truncated"));
     }
@@ -163,7 +164,7 @@ class HtmlTest {
         final ContentionReport r = new ContentionReport(info(), List.of(
                 new Wait(new Interval(100 * MS, 300 * MS), LOOP, key, HOLDER, STACK),
                 new Wait(new Interval(150 * MS, 200 * MS), HOLDER, store, flusher, Stack.EMPTY)));
-        final String html = Html.locks(r, 10);
+        final String html = Html.locks(r, 10, false);
         assertTrue(html.contains("Locks by total wait"));
         assertTrue(html.contains("Threads by time blocked"));
         assertTrue(html.contains("Convoys"));
@@ -180,7 +181,7 @@ class HtmlTest {
                 Map.of("worker", 1000L), Map.of("[B", 1000L), Map.of(STACK, 1000L),
                 Map.of("worker", Map.of("[B", 1000L)), Map.of("worker", Map.of(STACK, 1000L)),
                 new AllocationReport.Support(Map.of("worker", 7L), Map.of("[B", 7L), Map.of(STACK, 7L)));
-        final String html = Html.alloc(a, 10);
+        final String html = Html.alloc(a, 10, SiteKey.culpritMethod());
         assertTrue(html.contains("By thread"));
         assertTrue(html.contains("<dt>JVM counters</dt><dd>950 B on 1 threads seen at both ends of the file; "
                 + "the estimate for those is 1.00 KB (+5%), 100.0% of the estimate above</dd>"), html);

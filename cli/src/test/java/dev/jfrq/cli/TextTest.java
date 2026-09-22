@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Set;
 
 import dev.jfrq.core.alloc.AllocationReport;
+import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
@@ -45,7 +46,7 @@ class TextTest {
 
     @Test
     void locksSaysWhenAWaitWasCountedOnlyForThePartInsideTheWindow() {
-        final String text = Text.locks(new ContentionReport(window(), List.of(blocked(400, 1_900))), 15);
+        final String text = Text.locks(new ContentionReport(window(), List.of(blocked(400, 1_900))), 15, false);
         assertTrue(text.contains("Note       1 wait began before the recording or outlived it; "
                 + "only the part inside it is counted"), text);
         // The whole wait is 1.5 s; 900 ms of it is inside the window, and that is what is reported.
@@ -62,7 +63,7 @@ class TextTest {
                 "jdk.ObjectAllocationSample", 1570, 100, 100, Map.of("worker", 1000L),
                 Map.of("worker", 1070L, "short-lived", 500L), Map.of(), Map.of(), Map.of(), Map.of(),
                 AllocationReport.Support.NONE);
-        final String text = Text.alloc(r, 15, false);
+        final String text = Text.alloc(r, 15, false, SiteKey.culpritMethod());
         assertTrue(text.contains("the estimate for those is 1.07 KB (+7%), 68.2% of the estimate above"), text);
     }
 
@@ -73,7 +74,7 @@ class TextTest {
             many.add(new Wait(new Interval((1_000 + i) * MS, (1_010 + i) * MS), new ThreadRef(i, "worker-" + i),
                     REGISTRY, HOLDER, Stack.EMPTY));
         }
-        final String text = Text.locks(new ContentionReport(window(), many), 15);
+        final String text = Text.locks(new ContentionReport(window(), many), 15, false);
         // The lock's Waiters cell names four and counts the rest; the threads still have
         // their own rows in THREADS BY TIME BLOCKED, which --top governs.
         assertTrue(text.contains("worker-0, worker-1, worker-2, worker-3 (+16 more)"), text);
@@ -108,7 +109,7 @@ class TextTest {
 
     @Test
     void locksSaysNothingWhenEveryWaitIsInsideTheWindow() {
-        final String text = Text.locks(new ContentionReport(window(), List.of(blocked(1_100, 1_400))), 15);
+        final String text = Text.locks(new ContentionReport(window(), List.of(blocked(1_100, 1_400))), 15, false);
         assertFalse(text.contains("Note"), text);
         assertTrue(text.contains("Blocked    300 ms across 1 waits"), text);
     }
@@ -158,13 +159,54 @@ class TextTest {
             waits.add(new Wait(new Interval(1_100 * MS, (1_200 + i * 10) * MS), new ThreadRef(i, "dispatcher-" + i),
                     new Wait.LockKey("dev.app.DefaultMailbox", 0x10 + i, Wait.Kind.PARK), HOLDER, mailbox));
         }
-        final String where = section(Text.locks(new ContentionReport(window(), waits), 15), "WHERE THEY WAITED");
+        final String where = section(Text.locks(new ContentionReport(window(), waits), 15, false), "WHERE THEY WAITED");
         assertEquals(1, occurrences(where, "DefaultMailbox.awaitNextMessage"), where);
         assertTrue(where.contains("3 locks with this stack, longest 120 ms"), where);
         // The locks it stands for are named, one per line because a name is a class and an
         // address, so a --lock glob can still be aimed at one of them.
         assertTrue(where.contains("\n    dev.app.DefaultMailbox@10\n"), where);
         assertTrue(where.contains("\n    dev.app.DefaultMailbox@12\n"), where);
+    }
+
+    @Test
+    void locksBySiteRankOneRowPerStackWithItsInstanceCount() {
+        final Stack mailbox = new Stack(List.of(new Frame("dev.app.DefaultMailbox", "awaitNextMessage", 92, "JIT compiled"),
+                new Frame("dev.app.Dispatcher", "run", 31, "JIT compiled")), false);
+        final List<Wait> waits = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            waits.add(new Wait(new Interval(1_100 * MS, (1_200 + i * 10) * MS), new ThreadRef(i, "dispatcher-" + i),
+                    new Wait.LockKey("dev.app.DefaultMailbox", 0x10 + i, Wait.Kind.PARK), HOLDER, mailbox));
+        }
+        final String text = Text.locks(new ContentionReport(window(), waits), 15, true);
+        final String sites = section(text, "LOCK SITES BY TOTAL WAIT");
+        assertTrue(sites.contains("330 ms across 3 waits, 3 lock instances, longest 120 ms"), sites);
+        assertEquals(1, occurrences(sites, "DefaultMailbox.awaitNextMessage"), sites);
+        // The per-instance table is what --by-site replaces, so it is not printed as well.
+        assertFalse(text.contains("LOCKS BY TOTAL WAIT\n"), text);
+        assertFalse(text.contains("WHERE THEY WAITED"), text);
+        // Everything that does not group by stack stays where it was.
+        assertTrue(text.contains("THREADS BY TIME BLOCKED"), text);
+        assertTrue(text.contains("LONGEST WAITS"), text);
+    }
+
+    @Test
+    void allocSitesNameTheMethodAndCountEverySampleBehindTheRow() {
+        // The same method reached two ways: one row, and its support is both stacks' samples.
+        final Frame culprit = new Frame("dev.app.NodeId", "parse", 453, "JIT compiled");
+        final Stack viaSubstring = new Stack(List.of(new Frame("java.lang.String", "substring", 2904, "JIT compiled"),
+                culprit), false);
+        final Stack viaCopy = new Stack(List.of(new Frame("java.util.Arrays", "copyOfRange", 3849, "JIT compiled"),
+                new Frame("dev.app.NodeId", "parse", 454, "JIT compiled")), false);
+        final AllocationReport r = new AllocationReport(window(), "jdk.ObjectAllocationSample", 1000, 1200, 1200,
+                Map.of(), Map.of("worker", 1000L), Map.of(), Map.of(viaSubstring, 700L, viaCopy, 300L),
+                Map.of(), Map.of(), new AllocationReport.Support(Map.of(), Map.of(),
+                Map.of(viaSubstring, 900L, viaCopy, 300L)));
+
+        final String sites = section(Text.alloc(r, 15, true, SiteKey.culpritMethod()), "BY SITE");
+        assertTrue(sites.contains("1200 samples  dev.app.NodeId.parse  (2 stacks, the biggest below)"), sites);
+        assertEquals(1, occurrences(sites, "dev.app.NodeId.parse "), sites);
+        // The line that tells a reader what --app could be pointed at.
+        assertTrue(sites.contains("Packages dev.app 100.0%"), sites);
     }
 
     @Test

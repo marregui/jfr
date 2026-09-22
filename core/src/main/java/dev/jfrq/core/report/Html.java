@@ -16,6 +16,7 @@ import java.util.regex.Pattern;
 
 import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
+import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
@@ -170,7 +171,7 @@ public final class Html {
         return timeline(span, labels, rows) + legend;
     }
 
-    public static String locks(final ContentionReport report, final int top) {
+    public static String locks(final ContentionReport report, final int top, final boolean bySite) {
         final Page p = new Page("jfrq locks", report.info());
         p.kv("Total blocked time", Durations.format(report.totalNanos()) + " across " + report.waits().size()
                 + " waits");
@@ -180,16 +181,30 @@ public final class Html {
         }
         thresholds(p, report.info());
 
-        p.h2("Locks by total wait");
-        p.tableStart("Lock", "Kind", "Total", "Waits", "Max", "Waiters", "Held by");
-        for (final ContentionReport.LockStats l : report.locks(top)) {
-            p.row(l.lock().pretty(), l.lock().kind().label(), Durations.format(l.totalNanos()), l.count(),
-                    Durations.format(l.maxNanos()), names(l.waiters()), names(l.owners()));
-            if (l.longest() != null && !l.longest().stack().isEmpty()) {
-                p.stackRow(7, l.longest().stack());
+        if (bySite) {
+            p.h2("Lock sites by total wait");
+            p.tableStart("Site", "Kind", "Total", "Waits", "Instances", "Max", "Waiters");
+            for (final ContentionReport.SiteStats s : report.lockSites(top, STACK_FRAMES)) {
+                p.row(s.locks().size() == 1 ? s.locks().getFirst().pretty() : s.locks().size() + " lock instances",
+                        s.kind().label(), Durations.format(s.totalNanos()), s.count(), s.locks().size(),
+                        Durations.format(s.maxNanos()), names(s.waiters()));
+                if (!s.longest().stack().isEmpty()) {
+                    p.stackRow(7, s.longest().stack());
+                }
             }
+            p.tableEnd();
+        } else {
+            p.h2("Locks by total wait");
+            p.tableStart("Lock", "Kind", "Total", "Waits", "Max", "Waiters", "Held by");
+            for (final ContentionReport.LockStats l : report.locks(top)) {
+                p.row(l.lock().pretty(), l.lock().kind().label(), Durations.format(l.totalNanos()), l.count(),
+                        Durations.format(l.maxNanos()), names(l.waiters()), names(l.owners()));
+                if (l.longest() != null && !l.longest().stack().isEmpty()) {
+                    p.stackRow(7, l.longest().stack());
+                }
+            }
+            p.tableEnd();
         }
-        p.tableEnd();
 
         if (!report.workWaits().isEmpty()) {
             p.h2("Waiting for work: " + report.workWaitThreads()
@@ -280,7 +295,7 @@ public final class Html {
         return timeline(span, labels, rows) + legend;
     }
 
-    public static String alloc(final AllocationReport report, final int top) {
+    public static String alloc(final AllocationReport report, final int top, final SiteKey key) {
         final Page p = new Page("jfrq alloc", report.info());
         p.kv("Source", report.source());
         p.kv("Estimated allocation", Bytes.format(report.totalBytes()) + " over "
@@ -319,16 +334,12 @@ public final class Html {
         }
         p.tableEnd();
 
-        p.h2("By site");
+        p.h2("By site: " + key.description());
         p.tableStart("Site", "Bytes", "Rate", "Share", "Samples");
-        final Map<Stack, Integer> variants = new LinkedHashMap<>();
-        for (final AllocationReport.Row<Stack> r : report.foldedSites(top, STACK_FRAMES, variants)) {
-            final int distinct = variants.getOrDefault(r.key(), 1);
-            p.row(r.key().top().map(Frame::pretty).orElse("<no stack>")
-                            + (distinct > 1 ? " (" + distinct + " stacks that differ only in elided frames)" : ""),
-                    Bytes.format(r.bytes()), Bytes.rate(report.rate(r.bytes())), pct(r.share()),
-                    report.support().site(r.key()));
-            p.stackRow(5, r.key());
+        for (final AllocationReport.SiteRow r : report.sites(key, top)) {
+            p.row(r.label() + (r.stacks() > 1 ? " (" + r.stacks() + " stacks, the biggest below)" : ""),
+                    Bytes.format(r.bytes()), Bytes.rate(report.rate(r.bytes())), pct(r.share()), r.samples());
+            p.stackRow(5, r.stack());
         }
         p.tableEnd();
         return p.finish();
@@ -371,6 +382,7 @@ public final class Html {
         deltaTable(p, diff.threads(top), k -> k);
         p.h2("By class");
         deltaTable(p, diff.classes(top), ClassNames::pretty);
+        // The diff matches sites by their full stack, so its rows are stacks, not folded sites.
         p.h2("By site");
         p.tableStart("Site", "Before", "After", "Change");
         for (final AllocationDiff.Delta<Stack> d : diff.sites(top)) {

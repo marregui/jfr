@@ -50,6 +50,25 @@ public final class ContentionReport {
     }
 
     /**
+     * One lock site: the locks whose longest wait prints the same stack, and their summed
+     * evidence. Fifteen queues of the same kind are one site with fifteen instances, not
+     * fifteen rows a reader has to recognise as one and add up.
+     *
+     * @param longest    the longest wait at this site, whose stack stands for it
+     * @param locks      the lock instances folded into the row, in rank order
+     * @param totalNanos the wait over every one of them
+     * @param count      how many waits that was
+     * @param maxNanos   the longest single wait
+     */
+    public record SiteStats(Wait longest, List<Wait.LockKey> locks, long totalNanos, int count, long maxNanos,
+                            Set<ThreadRef> waiters, Set<ThreadRef> owners) {
+
+        public Wait.Kind kind() {
+            return longest.lock().kind();
+        }
+    }
+
+    /**
      * The locks whose longest wait prints the same stack. A server with one mailbox per worker
      * has as many locks as workers and a single stack between them: printed once per lock it
      * was 66 lines of a 177-line report, and the locks are the information the repetition hid.
@@ -406,6 +425,50 @@ public final class ContentionReport {
         final List<StackGroup> out = new ArrayList<>(byStack.size());
         byStack.forEach((rendering, locks) -> out.add(new StackGroup(List.copyOf(locks), longest.get(rendering))));
         return List.copyOf(out);
+    }
+
+    /**
+     * Lock sites ranked by total wait: every lock whose longest wait prints the same stack
+     * summed into one row, over all locks rather than over the top {@code top} of them, so a
+     * site spread across forty instances outranks one big lock instead of being lost below it.
+     *
+     * <p>Fifteen queues of the same kind are fifteen rows in {@link #locks(int)} and one line
+     * of work to the reader; the addresses stay reachable through a {@code --lock} query.
+     *
+     * @param frames how many frames the caller will print, as in {@link #lockStacks(int, int)}
+     */
+    public List<SiteStats> lockSites(final int top, final int frames) {
+        final Map<String, List<LockStats>> byStack = new LinkedHashMap<>();
+        for (final LockStats l : locksOf(waits, Integer.MAX_VALUE)) {
+            if (l.longest() != null) {
+                byStack.computeIfAbsent(l.longest().stack().pretty("", frames), _ -> new ArrayList<>()).add(l);
+            }
+        }
+        final List<SiteStats> sites = new ArrayList<>(byStack.size());
+        byStack.forEach((_, group) -> {
+            final List<Wait.LockKey> locks = new ArrayList<>(group.size());
+            final Set<ThreadRef> waiters = new LinkedHashSet<>();
+            final Set<ThreadRef> owners = new LinkedHashSet<>();
+            long total = 0;
+            long max = 0;
+            int count = 0;
+            Wait longest = null;
+            for (final LockStats l : group) {
+                locks.add(l.lock());
+                waiters.addAll(l.waiters());
+                owners.addAll(l.owners());
+                total += l.totalNanos();
+                max = Math.max(max, l.maxNanos());
+                count += l.count();
+                if (longest == null || l.longest().duration() > longest.duration()) {
+                    longest = l.longest();
+                }
+            }
+            sites.add(new SiteStats(longest, List.copyOf(locks), total, count, max, Set.copyOf(waiters),
+                    Set.copyOf(owners)));
+        });
+        sites.sort(Comparator.comparingLong(SiteStats::totalNanos).reversed());
+        return limit(sites, top);
     }
 
     private List<LockStats> locksOf(final List<Wait> from, final int top) {

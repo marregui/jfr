@@ -10,8 +10,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -22,6 +25,7 @@ import java.util.function.Supplier;
 import dev.jfrq.core.alloc.AllocationCollector;
 import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
+import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionCollector;
@@ -36,8 +40,8 @@ import dev.jfrq.core.util.Glob;
  *
  * <pre>
  *   jfrq info   recording.jfr
- *   jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--html out.html]
- *   jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--top N] [--html out.html]
+ *   jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html]
+ *   jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html]
  *   jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html]
  * </pre>
  */
@@ -64,7 +68,11 @@ public final class Main {
 
             alloc:
               --baseline F   compare against recording F (rates, so lengths may differ)
-              --sites        list allocation sites with stacks
+              --sites        list allocation sites with stacks, one row per allocating method
+                             (every path through it summed, so one site is one row)
+              --app PREFIX   rank those sites by the innermost frame in one of these packages
+                             instead, e.g. 'com.example,org.example'; the report names the
+                             packages it saw
 
             locks:
               --min D        ignore waits shorter than D (default 0; e.g. 10ms); a wait that
@@ -77,6 +85,8 @@ public final class Main {
                              Netty, logback)
               --lock GLOB    only these locks, by class or by 'class@address'
                              (e.g. 'java.lang.Object@714697020', '*Registry')
+              --by-site      rank one row per stack rather than per lock instance: fifteen
+                             queues of the same kind are one site with fifteen instances
 
             stalls:
               --thread GLOB  threads to watch (required; e.g. 'event-loop-*')
@@ -103,10 +113,13 @@ public final class Main {
         switch (command) {
             case "info" -> valued.remove("top");
             case "alloc" -> {
-                valued.add("baseline");
+                valued.addAll(Set.of("baseline", "app"));
                 flags.add("sites");
             }
-            case "locks" -> valued.addAll(Set.of("min", "thread", "idle", "lock"));
+            case "locks" -> {
+                valued.addAll(Set.of("min", "thread", "idle", "lock"));
+                flags.add("by-site");
+            }
             case "stalls" -> valued.addAll(Set.of("thread", "gap", "idle"));
             default -> throw new Args.UsageException("unknown command '" + command + "'");
         }
@@ -215,10 +228,16 @@ public final class Main {
     private int alloc(final Args args) throws IOException {
         final Path file = recording(args);
         final int top = args.top();
-        final boolean sites = args.flag("sites");
+        // --app says how to group the sites, so asking for it is asking for them.
+        final boolean sites = args.flag("sites") || args.option("app").isPresent();
         final AllocationCollector current = new AllocationCollector();
 
         if (args.option("baseline").isPresent()) {
+            if (args.option("app").isPresent()) {
+                // Silently ignoring it would be the one thing this parser refuses to do.
+                throw new Args.UsageException("--app does not apply to --baseline: a diff matches sites "
+                        + "by their full stack, not by the frame they are grouped under");
+            }
             final Path baselineFile = existing(Path.of(args.option("baseline").orElseThrow()));
             final AllocationCollector baseline = new AllocationCollector();
             readBoth(file, current, baselineFile, baseline);
@@ -230,8 +249,9 @@ public final class Main {
             JfrReader.read(file, current);
             phase("read");
             final AllocationReport report = current.report();
-            out.print(Text.alloc(report, top, sites));
-            html(args, () -> Html.alloc(report, top));
+            final SiteKey key = siteKey(args);
+            out.print(Text.alloc(report, top, sites, key));
+            html(args, () -> Html.alloc(report, top, key));
         }
         phase("render");
         return 0;
@@ -251,12 +271,34 @@ public final class Main {
         }
         final ContentionCollector collector = new ContentionCollector(min, threads, workWaits(args),
                 lock -> locks.test(lock.pretty()) || locks.test(lock.prettyClass()));
+        final boolean bySite = args.flag("by-site");
         JfrReader.read(file, collector);
         phase("read");
-        out.print(Text.locks(collector.report(), top));
-        html(args, () -> Html.locks(collector.report(), top));
+        out.print(Text.locks(collector.report(), top, bySite));
+        html(args, () -> Html.locks(collector.report(), top, bySite));
         phase("render");
         return 0;
+    }
+
+    /**
+     * What {@code alloc --sites} ranks by: the innermost non-JDK frame, or, when
+     * {@code --app} names package prefixes, the innermost frame in one of them.
+     */
+    private static SiteKey siteKey(final Args args) {
+        final Optional<String> app = args.option("app");
+        if (app.isEmpty()) {
+            return SiteKey.culpritMethod();
+        }
+        final List<String> prefixes = new ArrayList<>();
+        for (final String prefix : app.orElseThrow().split(",", -1)) {
+            if (!prefix.isBlank()) {
+                prefixes.add(prefix.trim());
+            }
+        }
+        if (prefixes.isEmpty()) {
+            throw new Args.UsageException("--app must name at least one package prefix");
+        }
+        return SiteKey.inPackages(List.copyOf(prefixes));
     }
 
     /**
