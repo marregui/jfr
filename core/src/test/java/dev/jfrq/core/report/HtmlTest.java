@@ -155,7 +155,8 @@ class HtmlTest {
                 Map.of("worker", Map.of("[B", 1000L)), Map.of("worker", Map.of(STACK, 1000L)));
         final String html = Html.alloc(a, 10);
         assertTrue(html.contains("By thread"));
-        assertTrue(html.contains("<dt>JVM counters</dt><dd>950 B on 1 threads seen at both ends of the file; the estimate for those is 1.00 KB (+5%)</dd>"), html);
+        assertTrue(html.contains("<dt>JVM counters</dt><dd>950 B on 1 threads seen at both ends of the file; "
+                + "the estimate for those is 1.00 KB (+5%), 100.0% of the estimate above</dd>"), html);
         assertTrue(html.contains("<td class=\"n\">950 B</td>"), html);
         assertTrue(html.contains("By class"));
         assertTrue(html.contains("By site"));

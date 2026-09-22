@@ -51,6 +51,9 @@ class AllocationTest {
         assertTrue(some.estimateErrorMaterial());
         assertEquals(1000L, some.counted("worker").orElseThrow());
         assertTrue(some.counted("short-lived").isEmpty());
+        // The +7 % is a statement about 68 % of the estimate: the short-lived thread has no counter.
+        assertEquals(1070.0 / 1570.0, some.countedCoverage(), 1e-9);
+        assertEquals(0.0, none.countedCoverage(), 0.0);
         // A counter on a thread that barely allocates says nothing about the estimate.
         final AllocationReport noise = new AllocationReport(info("a.jfr", 1), "jdk.ObjectAllocationSample", 1_000_000, 100, 100,
                 Map.of("main", 20L), Map.of("main", 480L, "worker", 999_520L), Map.of(), Map.of(), Map.of(), Map.of());

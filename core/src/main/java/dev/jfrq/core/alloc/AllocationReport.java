@@ -83,6 +83,17 @@ public record AllocationReport(
     }
 
     /**
+     * The share of the estimate that the counters can speak for: the estimate on the
+     * counted threads over the whole estimate. A thread that started and ended between two
+     * counter events has no counter, so in a recording where short-lived pool threads did
+     * most of the allocating, {@link #estimateError()} is a statement about a minority of
+     * the report and reading it as the error of the whole would be wrong.
+     */
+    public double countedCoverage() {
+        return totalBytes > 0 ? (double) estimatedOnCountedThreads() / totalBytes : 0;
+    }
+
+    /**
      * How far the estimate is from the JVM's counters on the threads that have one, as a
      * signed fraction of the counters ({@code 0.07} means the estimate is 7 % high); 0 when
      * nothing was counted.

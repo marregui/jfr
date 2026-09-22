@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import dev.jfrq.core.alloc.AllocationReport;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
@@ -46,6 +47,17 @@ class TextTest {
         assertTrue(text.contains("Blocked    900 ms across 1 waits"), text);
         assertTrue(text.contains("90.0%"), text);
         assertFalse(text.contains("1.50 s"), text);
+    }
+
+    @Test
+    void allocSaysHowMuchOfTheEstimateTheJvmCountersCover() {
+        // 1 070 of 1 570 estimated bytes are on the one thread with a counter: the +7 % is about 68 % of the report.
+        final AllocationReport r = new AllocationReport(new RecordingInfo(Path.of("a.jfr"),
+                new Interval(0, 1_000 * MS), 1, Map.of(), Map.of(), Set.of(), List.of()),
+                "jdk.ObjectAllocationSample", 1570, 100, 100, Map.of("worker", 1000L),
+                Map.of("worker", 1070L, "short-lived", 500L), Map.of(), Map.of(), Map.of(), Map.of());
+        final String text = Text.alloc(r, 15, false);
+        assertTrue(text.contains("the estimate for those is 1.07 KB (+7%), 68.2% of the estimate above"), text);
     }
 
     @Test

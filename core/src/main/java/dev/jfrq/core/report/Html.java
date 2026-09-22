@@ -232,7 +232,10 @@ public final class Html {
             p.kv("JVM counters", Bytes.format(report.countedBytes()) + " on " + report.countedByThread().size()
                     + " threads seen at both ends of the file; the estimate for those is "
                     + Bytes.format(report.estimatedOnCountedThreads()) + (report.estimateErrorMaterial()
-                    ? String.format(Locale.ROOT, " (%+.0f%%)", report.estimateError() * 100) : ""));
+                    ? String.format(Locale.ROOT, " (%+.0f%%)", report.estimateError() * 100) : "")
+                    + (report.totalBytes() > 0
+                    ? String.format(Locale.ROOT, ", %.1f%% of the estimate above", report.countedCoverage() * 100)
+                    : ""));
         }
 
         p.h2("By thread");

@@ -82,6 +82,12 @@ estimate: below that the two differ by start-up noise (the counters are read a f
 milliseconds after sampling begins, and on the thread that starts the recording those
 milliseconds are JFR's own initialisation), and a percentage would only alarm.
 
+The line also says what share of the estimate those threads carry, because that is what
+the percentage validates and nothing more. On a server whose work runs on pool threads
+that live and die inside the window, the counted threads can be a third of the estimate
+while the transient ones did the other two thirds; an unqualified "±2 %" reads as the
+error of the whole report, which it is not.
+
 **Aggregation.** Bytes by thread name, by allocated class, and by full stack, plus the
 class and stack breakdown per thread. Rates divide by the recording span. Byte units are
 decimal (`1 MB` is 1,000,000 bytes), as in `jfr view`; `jfr print` uses binary units.

@@ -91,8 +91,9 @@ final class Text {
                 Durations.format(r.info().duration()), Bytes.rate(r.rate())));
         if (r.hasCounters()) {
             sb.append(String.format(Locale.ROOT, "%-10s %s by the JVM's own counters on the %d threads seen at both ends "
-                    + "of the file; the estimate for those is %s%s%n", "Counted", Bytes.format(r.countedBytes()),
-                    r.countedByThread().size(), Bytes.format(r.estimatedOnCountedThreads()), errorNote(r)));
+                    + "of the file; the estimate for those is %s%s%s%n", "Counted", Bytes.format(r.countedBytes()),
+                    r.countedByThread().size(), Bytes.format(r.estimatedOnCountedThreads()), errorNote(r),
+                    coverageNote(r)));
         }
         if (r.samples() == 0) {
             if (r.events() == 0) {
@@ -340,6 +341,11 @@ final class Text {
     /** {@code " (+7%)"} when the counted threads carry enough of the estimate for the comparison to mean something. */
     static String errorNote(final AllocationReport r) {
         return r.estimateErrorMaterial() ? String.format(Locale.ROOT, " (%+.0f%%)", r.estimateError() * 100) : "";
+    }
+
+    /** How much of the estimate the counters cover, so the error above is read against the right total. */
+    static String coverageNote(final AllocationReport r) {
+        return r.totalBytes() > 0 ? ", " + pct(r.countedCoverage()) + " of the estimate above" : "";
     }
 
     /** How a stall was found, for anything less exact than an event: {@code  [samples]}, {@code  [silence]}. */
