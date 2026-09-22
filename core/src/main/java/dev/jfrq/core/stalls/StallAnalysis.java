@@ -5,8 +5,12 @@ package dev.jfrq.core.stalls;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 import dev.jfrq.core.coll.IdentityObjObjHashMap;
 import dev.jfrq.core.coll.LongList;
@@ -75,6 +79,8 @@ public final class StallAnalysis {
     static final int RUN_MIN_SAMPLES = 2;
     /** A "saturated" verdict (no dominant culprit) needs at least this many samples. */
     static final int SATURATED_MIN_SAMPLES = 5;
+    /** How deep a stack is compared when matching it against a loop Perch recognised. */
+    private static final int PERCH_FRAMES = 8;
     /** How many per-thread cadence warnings are spelled out before the rest are counted. */
     private static final int CADENCE_WARNINGS_SHOWN = 3;
 
@@ -100,6 +106,10 @@ public final class StallAnalysis {
     private int clippedStalls;
     /** Blocks left out as "waiting for work" in the current analysis, and their total. */
     private int workWaitCount;
+    /** The loops {@link Perch} recognised in this recording, as their stacks print. */
+    private Set<String> perchRenderings = Set.of();
+    /** That verdict per distinct stack, so a rendering is built once and not once per block. */
+    private final Map<Stack, Boolean> perchVerdict = new HashMap<>();
     private long workWaitNanos;
 
     /** Whether a block is a worker parked on its own empty queue rather than a wait that costs someone. */
@@ -109,7 +119,58 @@ public final class StallAnalysis {
 
     /** The same question from a candidate's explanation, which carries the representative stack. */
     private boolean isWaitingForWork(final Verdict verdict, final Stack stack) {
-        return (verdict == Verdict.PARKED || verdict == Verdict.OBJECT_WAIT) && workWaits.isIdle(stack);
+        return (verdict == Verdict.PARKED || verdict == Verdict.OBJECT_WAIT)
+                && (workWaits.isIdle(stack) || onAPerch(stack));
+    }
+
+    /**
+     * Whether this stack is one of the loops {@link Perch} recognised. Matched on what the
+     * frames say rather than on the stack object: a blocking event and a sample taken in the
+     * same park are two stacks with one meaning, and the candidate that explains a run of
+     * samples carries the sampler's. The verdict is reached once per distinct stack (G-2.2).
+     */
+    private boolean onAPerch(final Stack stack) {
+        if (perchRenderings.isEmpty()) {
+            return false;
+        }
+        return perchVerdict.computeIfAbsent(stack, s -> perchRenderings.contains(rendering(s)));
+    }
+
+    private static String rendering(final Stack stack) {
+        return stack.pretty("", PERCH_FRAMES);
+    }
+
+    /**
+     * The stacks of the locks that {@link Perch} recognised: a worker loop this JVM has and no
+     * idle list knows about. Found once for the whole analysis, because the evidence is what a
+     * lock did across every watched thread, not what one block did.
+     */
+    private Set<String> perchRenderings(final List<ThreadTimeline> timelines, final Interval span) {
+        if (workWaits.matchesNothing()) {
+            return Set.of();
+        }
+        final Map<String, Perch.Shape> byLock = new HashMap<>();
+        for (final ThreadTimeline tl : timelines) {
+            for (final Block b : tl.blocks()) {
+                if (b.kind() != BlockKind.PARK) {
+                    continue;
+                }
+                final long inside = b.interval().clampTo(span).length();
+                if (inside > 0) {
+                    // A park has no holder to record, so the lock is never owned; the name of
+                    // the lock is what the collector put in the detail.
+                    byLock.computeIfAbsent(b.detail(), _ -> new Perch.Shape())
+                            .add(tl.thread(), inside, b.stack(), false);
+                }
+            }
+        }
+        final Set<String> found = new HashSet<>();
+        byLock.forEach((_, shape) -> {
+            if (shape.matches(span.length()) && !shape.stack().isEmpty()) {
+                found.add(rendering(shape.stack()));
+            }
+        });
+        return found;
     }
 
     public StallAnalysis(final long gapNanos) {
@@ -135,6 +196,8 @@ public final class StallAnalysis {
         clippedStalls = 0;
         workWaitCount = 0;
         workWaitNanos = 0;
+        perchVerdict.clear();
+        perchRenderings = perchRenderings(timelines, info.span());
 
         final ObjList<Pause> sortedPauses = new ObjList<>(pauses.size());
         for (int i = 0, n = pauses.size(); i < n; i++) {
@@ -468,8 +531,15 @@ public final class StallAnalysis {
             }
             final Explanation ex = windows.explain(run.interval, false, cover(run.interval));
             if (ex != null) {
-                stalls.add(new Stall(tl.thread(), run.interval, ex.verdict, ex.detail, ex.stack,
-                        Evidence.SAMPLES, run.samples.size()));
+                // The third door, and the same rule as the other two: a run of samples whose
+                // explanation is the thread's own empty queue is not a stall. The samples are
+                // not idle by the sampler's reckoning — a park shows as native code, not as the
+                // idle point — so without this a worker's own waiting reappears here after
+                // being kept out of the event stalls and the silences.
+                if (!isWaitingForWork(ex.verdict, ex.stack)) {
+                    stalls.add(new Stall(tl.thread(), run.interval, ex.verdict, ex.detail, ex.stack,
+                            Evidence.SAMPLES, run.samples.size()));
+                }
             } else {
                 final Stall b = busy(tl, run);
                 if (b != null) {

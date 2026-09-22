@@ -584,6 +584,55 @@ class StallAnalysisTest {
         assertFalse(w.contains("FileRead") || w.contains("SocketWrite"), w);
     }
 
+    /** An application's own worker loop: no frame here is in any idle list. */
+    static final Stack MAILBOX = stack(
+            new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
+            new Frame("java.util.concurrent.locks.LockSupport", "parkNanos", 271, "JIT compiled"),
+            new Frame("dev.app.DefaultMailbox", "awaitNextMessage", 92, "JIT compiled"),
+            new Frame("dev.app.SystemDispatcher$DispatchLoop", "run", 80, "JIT compiled"));
+
+    @Test
+    void aLoopParkedOnItsOwnMailboxIsNotStalledAtAnyOfTheThreeDoors() {
+        // 60 ms parked out of every 70 ms of a 10 s recording, on a lock nobody else touches
+        // and nobody holds: the thread has nothing to do, and no idle list names that frame.
+        final List<Block> blocks = new ArrayList<>();
+        final List<Sample> samples = new ArrayList<>();
+        for (int i = 0; i < 140; i++) {
+            final long from = i * 70L;
+            blocks.add(blockWith(from, from + 60, BlockKind.PARK, "dev.app.DefaultMailbox@1", MAILBOX));
+            // The sampler sees a park as native code, not as the thread's idle point, so these
+            // samples chain into runs: door three, which is where they came back before.
+            samples.add(new Sample((from + 30) * MS, MAILBOX, false, true));
+        }
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(new ThreadTimeline(LOOP, samples, blocks)), List.of());
+        assertTrue(r.stalls().isEmpty(), r.stalls().toString());
+        assertTrue(r.warnings().stream().anyMatch(w -> w.contains("waiting for their own queue")),
+                r.warnings().toString());
+
+        // The same loop with the rule turned off: --idle none means none, and every park is a
+        // stall again — with the runs of park samples between them on top, which is what the
+        // report looked like before any of this existed.
+        final StallReport raw = new StallAnalysis(50 * MS, IdleMatcher.none()).analyse(sampledInfo(),
+                List.of(new ThreadTimeline(LOOP, samples, blocks)), List.of());
+        assertTrue(raw.stalls().size() >= blocks.size(), "got " + raw.stalls().size());
+    }
+
+    @Test
+    void aConsumerThatWaitsForWorkSomeoneOwesItStaysAStall() {
+        // The same shape at a fifth of the window: this one was waiting for data another
+        // thread had to produce, which is the finding the rule must not swallow.
+        final List<Block> blocks = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            final long from = i * 1_000L;
+            blocks.add(blockWith(from, from + 400, BlockKind.PARK, "dev.app.Sink@2", MAILBOX));
+        }
+        final StallReport r = new StallAnalysis(100 * MS).analyse(sampledInfo(),
+                List.of(new ThreadTimeline(LOOP, idle(0, 10_000, 10), blocks)), List.of());
+        assertEquals(5, r.stalls().size());
+        assertEquals(Stall.Verdict.PARKED, r.stalls().getFirst().verdict());
+    }
+
     @Test
     void gapsWithNoEvidenceAreListedApartFromTheStallsWithAnExplanation() {
         final Stall gap = new Stall(LOOP, new Interval(0, 474 * MS), Stall.Verdict.UNEXPLAINED, "no evidence",

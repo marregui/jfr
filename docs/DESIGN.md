@@ -172,6 +172,30 @@ in the second: its row was a name and an address with no way to act on it. Each 
 takes the stack of its own longest wait, listed under `WHERE THEY WAITED`, and `--lock`
 filters the whole report down to one lock by class or by `class@address`.
 
+**A thread's own perch, measured rather than named.** The idle list above recognises a
+pool's own frame, which works only for the runtimes someone thought to add. A service with
+its own worker loop is in nobody's list: on one recording, eight of the eight most
+contended locks were dispatcher threads parked on their own mailbox, and an operator who
+did not already know the codebase had no way to know to name that frame. A perch has a
+shape no list is needed to see — exactly one thread ever waits there, no thread was ever
+found holding it, and that thread is parked there for most of the recording. The margin is
+wide: on that file the mailboxes covered 76.7 % to 99.9 % of the window while the busiest
+real queue in it, a consumer genuinely waiting for data another thread had to produce,
+covered 9.8 %. Half the window is the line, with five times the margin either side.
+
+Two parks are required as well as the share, because one park covering the window is a
+thread that is *stuck*, which is the most important thing the report can say and must never
+be filed away as idleness; a lock with a holder is contention whatever its shape. What the
+measurement finds is a lock, but what it identifies is the loop above it, so the stack of
+each perch answers for every other lock waited on from the same place: one worker out of
+thirteen that was busy for two thirds of the recording parks on its own mailbox exactly
+like the other twelve, and a threshold deciding between them would leave that one lock,
+alone, at the top of the contention it is not part of. `--idle none` turns this off with
+the name list, since an escape hatch that leaves a rule running is not one. On the
+recording that raised it, `Blocked` fell from 32m42s to 2m32s and the browse consumer that
+mattered took the top five rows; `stalls`, which asks the same question of its blocks, its
+silences and its sample runs, went from 832 stalls on those threads to none.
+
 **One stack per stack, not per lock.** A server that gives every worker its own mailbox
 has as many locks as workers and a single stack between them: thirteen dispatcher threads
 printed the same seven frames eight times, 66 lines of a 177-line report. `WHERE THEY
@@ -312,8 +336,14 @@ exceed wall time. The report sorts by duration, summarises by verdict and by thr
 and lists the JVM-wide pauses.
 
 The same waiting-for-work rule as section 3 applies to blocking events: a park whose
-stack shows a pool's own idle frame is not a stall, however long it is, and a warning
-says how many were left out and what they totalled. The block stays in the timeline,
+stack shows a pool's own idle frame — or the loop that section's shape rule recognised in
+this recording — is not a stall, however long it is, and a warning says how many were left
+out and what they totalled. The rule runs at all three doors: on the event, on a silence's
+explanation, and on the explanation of a run of samples. That last one matters because the
+sampler sees a park as native code rather than as the thread's idle point, so a worker's
+own waiting chains into runs and would otherwise come back as a stall after being kept out
+of the other two. A stack is matched there on what its frames say, not on the stack object:
+a blocking event and a sample taken in the same park are two stacks with one meaning. The block stays in the timeline,
 because it is still what explains the silence in the samples — dropping it outright
 would turn a 1m10s idle worker into a 1m10s `UNEXPLAINED` stall, which is a worse answer
 than the one being rejected. The same check therefore runs on the explanation of a

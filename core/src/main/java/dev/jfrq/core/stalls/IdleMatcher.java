@@ -103,6 +103,15 @@ public final class IdleMatcher {
         return new IdleMatcher("none", new Pattern[0], 0);
     }
 
+    /**
+     * True for {@link #none()}. A caller that asks for no idle classification is asking for
+     * all of it to stop, {@link Perch} included: the escape hatch is only an escape hatch if
+     * nothing else puts a wait aside behind its back.
+     */
+    public boolean matchesNothing() {
+        return patterns.length == 0;
+    }
+
     private static Pattern[] compile(final String spec) {
         final List<Pattern> compiled = new ArrayList<>();
         for (final String p : spec.split(",")) {

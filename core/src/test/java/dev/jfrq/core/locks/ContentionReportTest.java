@@ -354,6 +354,103 @@ class ContentionReportTest {
         assertEquals(4, new ContentionReport(info(), all).waits().size());
     }
 
+    /**
+     * A worker loop of an application's own making: no frame here is in any idle list, which
+     * is the case shape exists for.
+     */
+    static final Stack MAILBOX = stack(
+            new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
+            new Frame("java.util.concurrent.locks.LockSupport", "parkNanos", 271, "JIT compiled"),
+            new Frame("dev.app.DefaultMailbox", "awaitNextMessage", 92, "JIT compiled"),
+            new Frame("dev.app.SystemDispatcher$DispatchLoop", "run", 80, "JIT compiled"));
+
+    /**
+     * {@code parks} parks of {@code eachMs} on one lock, one waiter, nobody holding it, 10 ms
+     * of work between them: a loop that is parked for all but a fraction of its own span.
+     */
+    static List<Wait> perch(final LockKey lock, final ThreadRef waiter, final int parks, final long eachMs) {
+        final List<Wait> out = new java.util.ArrayList<>(parks);
+        for (int i = 0; i < parks; i++) {
+            final long from = i * (eachMs + 10);
+            out.add(new Wait(new Interval(from * MS, (from + eachMs) * MS), waiter, lock, null, MAILBOX));
+        }
+        return out;
+    }
+
+    @Test
+    void aLockOneThreadSitsOnForMostOfTheRecordingIsNotContention() {
+        // The shape of a mailbox, measured rather than named: one waiter, no holder, and the
+        // thread is parked there for most of the window. The frame says nothing an idle list
+        // would recognise, which is the case this exists for.
+        final LockKey mailbox = new LockKey("dev.app.DefaultMailbox", 0x1, Kind.PARK);
+        final List<Wait> waits = perch(mailbox, LOOP1, 100, 60);
+        final ContentionReport r = new ContentionReport(window(0, 10_000), waits);
+        assertTrue(r.waits().isEmpty(), "the mailbox is still reported as contention");
+        assertEquals(100, r.workWaits().size());
+        assertEquals(1, r.perchCount());
+
+        // The same thread on the same lock for a tenth of the window is a consumer waiting for
+        // work someone else owes it: that is a finding, and it stays in the report.
+        final ContentionReport busy = new ContentionReport(window(0, 10_000), perch(mailbox, LOOP1, 10, 100));
+        assertEquals(10, busy.waits().size());
+        assertEquals(0, busy.perchCount());
+
+        // Two threads on it is contention whatever the share, and so is one holder.
+        final List<Wait> shared = new java.util.ArrayList<>(perch(mailbox, LOOP1, 50, 90));
+        shared.add(new Wait(new Interval(0, 5_000 * MS), LOOP2, mailbox, null, MAILBOX));
+        assertEquals(51, new ContentionReport(window(0, 10_000), shared).waits().size());
+        final List<Wait> held = new java.util.ArrayList<>(perch(mailbox, LOOP1, 50, 90));
+        held.add(new Wait(new Interval(0, 5_000 * MS), LOOP1, mailbox, HOUSEKEEPER, MAILBOX));
+        assertEquals(51, new ContentionReport(window(0, 10_000), held).waits().size());
+
+        // One park covering the window is a thread that is stuck. That is the most important
+        // thing the report can say, so shape never files it away.
+        final List<Wait> stuck = List.of(new Wait(new Interval(0, 9_000 * MS), LOOP1, mailbox, null, MAILBOX));
+        assertEquals(1, new ContentionReport(window(0, 10_000), stuck).waits().size());
+
+        // --idle none turns off every idle rule, this one included.
+        final ContentionReport raw = new ContentionReport(window(0, 10_000), waits, 0, _ -> true, IdleMatcher.none());
+        assertEquals(100, raw.waits().size());
+        assertEquals(0, raw.perchCount());
+    }
+
+    @Test
+    void theWorkerThatWasBusyParksWhereTheIdleOnesDo() {
+        // Twelve dispatchers idle on their own mailbox and a thirteenth that was busy for two
+        // thirds of the recording. Its lock is under the share on its own, and a rule that let
+        // the threshold decide would put that one lock, alone, at the top of the contention it
+        // is not part of. The stack the measurement found answers for it.
+        final List<Wait> waits = new java.util.ArrayList<>();
+        for (int i = 0; i < 12; i++) {
+            waits.addAll(perch(new LockKey("dev.app.DefaultMailbox", 0x10 + i, Kind.PARK),
+                    new ThreadRef(10 + i, "dispatcher-" + i), 100, 60));
+        }
+        final LockKey busyOne = new LockKey("dev.app.DefaultMailbox", 0x99, Kind.PARK);
+        waits.addAll(perch(busyOne, new ThreadRef(99, "dispatcher-12"), 20, 60));
+        final ContentionReport r = new ContentionReport(window(0, 10_000), waits);
+        assertTrue(r.waits().isEmpty(), "the busy worker's own mailbox is reported as contention");
+        assertEquals(13, r.perchCount());
+
+        // The propagation follows the stack, not the class: a lock nobody idles on keeps its row.
+        final List<Wait> withReal = new java.util.ArrayList<>(waits);
+        withReal.add(new Wait(new Interval(0, 2_000 * MS), FLUSHER, STORE, HOUSEKEEPER, AWAITING_RESULT));
+        assertEquals(1, new ContentionReport(window(0, 10_000), withReal).waits().size());
+    }
+
+    @Test
+    void aPerchIsDecidedBeforeTheFiltersNarrowTheReport() {
+        // --min hides the short parks that prove the lock is a perch; the verdict is reached
+        // on every wait in the file, so what the reader passes cannot change what it is.
+        final LockKey mailbox = new LockKey("dev.app.DefaultMailbox", 0x1, Kind.PARK);
+        final List<Wait> waits = perch(mailbox, LOOP1, 100, 60);
+        final ContentionReport r = new ContentionReport(window(0, 11_000), waits, 100 * MS, _ -> true);
+        assertEquals(1, r.perchCount());
+        assertTrue(r.waits().isEmpty());
+        // Nothing is reported either way here; what must not happen is the lock coming back as
+        // contention because --min hid the evidence.
+        assertTrue(r.workWaits().isEmpty());
+    }
+
     @Test
     void locksWhoseLongestWaitPrintsTheSameStackAreOneGroup() {
         // One mailbox per worker: as many locks as workers, one stack between them.

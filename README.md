@@ -104,6 +104,12 @@ jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N
 a unit (`50ms`, `1.5s`, `2m`); options belong to their command, so a `stalls` option on
 `locks` is an error rather than silently ignored.
 
+A thread parked on its own empty queue is not contention and is not a stall: `locks` lists
+those apart and `stalls` leaves them out. They are recognised by the frame of a pool
+waiting for work (`--idle` replaces the list) and, for a worker loop no list knows about,
+by shape — one thread, no holder, most of the recording parked there. `--idle none` turns
+both off.
+
 Every stall says how it was found: nothing after the detail means a blocking event,
 exact to its timestamps; `[samples]` means a run of sampler observations; `[silence]`
 means an absence of samples explained by what covered it.

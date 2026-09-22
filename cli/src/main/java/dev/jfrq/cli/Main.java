@@ -70,8 +70,10 @@ public final class Main {
               --min D        ignore waits shorter than D (default 0; e.g. 10ms)
               --thread GLOB  only waits by threads matching GLOB (e.g. 'event-loop-*,worker-?')
               --idle REGEX   comma-separated regexes naming the frame of a pool waiting for work;
-                             those parks are reported apart from contention. 'none' reports every
-                             park as contention (default: the JDK pools, Netty, logback)
+                             those parks are reported apart from contention, as is any lock one
+                             thread sits on for most of the recording with nobody holding it.
+                             'none' reports every park as contention (default: the JDK pools,
+                             Netty, logback)
               --lock GLOB    only these locks, by class or by 'class@address'
                              (e.g. 'java.lang.Object@714697020', '*Registry')
 
@@ -80,7 +82,8 @@ public final class Main {
               --gap D        a stall is at least D without returning to idle (default 50ms)
               --idle REGEX   comma-separated regexes that mean "idle", each matching a whole
                              'pkg.Class.method' (so no commas inside one); replaces the defaults
-                             (JDK selectors, Netty transports, park, Object.wait)
+                             (JDK selectors, Netty transports, park, Object.wait). 'none' also
+                             turns off the split of workers waiting for their own queue
 
             durations take a unit: 50ms, 1.5s, 2m. Options belong to their command; a stalls
             option on locks is an error, so a typo never passes silently.
@@ -288,7 +291,13 @@ public final class Main {
         } catch (final IllegalArgumentException e) {
             throw new Args.UsageException("--idle: " + e.getMessage());
         }
-        final StallCollector collector = new StallCollector(threads, idle, gap);
+        // Here --idle replaces the patterns that say a *sample* is at the thread's idle point,
+        // which is a different question from which parks are a worker with nothing to do. The
+        // one answer that has to mean the same in both commands is "none": it is the escape
+        // hatch, and an escape hatch that leaves a rule running is not one.
+        final boolean none = args.option("idle").filter("none"::equals).isPresent();
+        final StallCollector collector = new StallCollector(threads, none ? IdleMatcher.none() : idle,
+                none ? IdleMatcher.none() : IdleMatcher.forWorkWaits(), gap);
         JfrReader.read(file, collector);
         phase("read");
         out.print(Text.stalls(collector.report(), top));

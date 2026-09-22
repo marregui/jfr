@@ -6,6 +6,7 @@ package dev.jfrq.core.locks;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -19,8 +20,10 @@ import dev.jfrq.core.coll.ObjLongHashMap;
 import dev.jfrq.core.coll.ObjObjHashMap;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Interval;
+import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.stalls.IdleMatcher;
+import dev.jfrq.core.stalls.Perch;
 import dev.jfrq.core.util.Sorted;
 
 /**
@@ -84,6 +87,8 @@ public final class ContentionReport {
     private final int unfilteredCount;
     /** How many reported waits were cut down to the recording's span. */
     private final int clippedCount;
+    /** How many locks were set aside by their shape rather than by a frame in the idle list. */
+    private final int perchCount;
     /** Every thread's waits, filters or not, so that a convoy can be followed into any thread. */
     private final ObjObjHashMap<ThreadRef, Waits> byWaiter = new ObjObjHashMap<>(256);
 
@@ -145,18 +150,55 @@ public final class ContentionReport {
         final ObjList<Wait> reported = new ObjList<>(sorted.size());
         final ObjList<Wait> idling = new ObjList<>();
         final Interval window = info.span();
+
+        // First pass: resolve the holders and clip, and weigh each lock while every wait is
+        // still in hand. Holders are resolved on the true intervals; everything counted is
+        // the part inside the window, so the totals and the shares cannot exceed it. Clipping
+        // keeps the order: both ends move by a monotone function of themselves.
+        final ObjList<Wait> insides = new ObjList<>(sorted.size());
+        final Map<Wait.LockKey, Perch.Shape> shapes = new LinkedHashMap<>();
+        for (int i = 0, n = sorted.size(); i < n; i++) {
+            final Wait w = sorted.getQuick(i);
+            final Wait inside = clip(resolveHolder(w, raw, via, seen), window);
+            insides.add(inside);
+            if (inside.duration() > 0) {
+                shapes.computeIfAbsent(inside.lock(), _ -> new Perch.Shape())
+                        .add(inside.waiter(), inside.duration(), inside.stack(), inside.owner() != null);
+            }
+        }
+        // The shape verdict is reached before any filter narrows the report, so that --min or
+        // --thread cannot turn a perch into contention by hiding the waits that prove it is not.
+        final Set<Wait.LockKey> perches = new HashSet<>();
+        if (!workWaits.matchesNothing()) {
+            final Set<Stack> perchStacks = new HashSet<>();
+            shapes.forEach((lock, s) -> {
+                if (lock.kind() == Wait.Kind.PARK && s.matches(window.length())) {
+                    perches.add(lock);
+                    perchStacks.add(s.stack());
+                }
+            });
+            // What shape finds is a lock; what it identifies is the loop above it. One worker
+            // out of thirteen that was busy for two thirds of the recording parks on its own
+            // mailbox exactly like the other twelve, and a rule that let a threshold decide
+            // between them would put that one lock, alone, at the top of the contention it is
+            // not part of. The measurement names the frame the idle list was missing; the
+            // frame then answers for every lock that waits there.
+            shapes.forEach((lock, s) -> {
+                if (lock.kind() == Wait.Kind.PARK && perchStacks.contains(s.stack())) {
+                    perches.add(lock);
+                }
+            });
+        }
+
         int clipped = 0;
         for (int i = 0, n = sorted.size(); i < n; i++) {
             final Wait w = sorted.getQuick(i);
-            final Wait resolved = resolveHolder(w, raw, via, seen);
-            // Holders are resolved on the true intervals; everything counted is the part
-            // inside the window, so the totals and the shares cannot exceed it. Clipping
-            // keeps the order: both ends move by a monotone function of themselves.
-            final Wait inside = clip(resolved, window);
             if (!lockFilter.test(w.lock())) {
                 continue;
             }
-            final boolean idle = w.kind() == Wait.Kind.PARK && workWaits.isIdle(w.stack());
+            final Wait inside = insides.getQuick(i);
+            final boolean idle = w.kind() == Wait.Kind.PARK
+                    && (workWaits.isIdle(w.stack()) || perches.contains(w.lock()));
             // A worker parked on its own queue holds nothing and blocks nobody, so it is not a
             // convoy link either; the rest stay reachable so a convoy can be followed into any
             // thread. The report lists the filtered ones.
@@ -169,7 +211,7 @@ public final class ContentionReport {
                     idling.add(inside);
                 } else {
                     reported.add(inside);
-                    if (inside != resolved) {
+                    if (inside.duration() < w.duration()) {
                         clipped++;
                     }
                 }
@@ -179,7 +221,9 @@ public final class ContentionReport {
         this.workWaits = idling.toList();
         this.unfilteredCount = sorted.size();
         this.clippedCount = clipped;
+        this.perchCount = perches.size();
     }
+
 
     /** A wait counted only for the part inside the window; the same object when it is wholly inside. */
     private static Wait clip(final Wait w, final Interval window) {
@@ -293,6 +337,16 @@ public final class ContentionReport {
     /** {@link #locks(int)} over the waiting-for-work parks instead of the contended waits. */
     public List<LockStats> workWaitLocks(final int top) {
         return locksOf(workWaits, top);
+    }
+
+    /**
+     * How many of the locks under {@link #workWaits()} were recognised by their shape rather
+     * than by a frame in the idle list: one thread, no holder, most of the recording parked
+     * there. The report says so, because a reader who does not know the rule cannot tell why
+     * a lock they can see in the file is missing from the contention above.
+     */
+    public int perchCount() {
+        return perchCount;
     }
 
     /** How many distinct threads were waiting for work. */

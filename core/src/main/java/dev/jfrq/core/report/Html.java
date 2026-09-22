@@ -196,6 +196,12 @@ public final class Html {
                     + (report.workWaitThreads() == 1 ? " thread" : " threads") + " parked on an empty queue");
             p.kv("Not contention", Durations.format(report.workWaitNanos()) + " across " + report.workWaits().size()
                     + (report.workWaits().size() == 1 ? " park" : " parks") + ", kept out of the totals above");
+            if (report.perchCount() > 0) {
+                p.kv("Recognised by shape", report.perchCount() + (report.perchCount() == 1 ? " lock" : " locks")
+                        + " with one thread, no holder, and most of the recording parked there, or the same stack as "
+                        + "a lock like that; the rest were recognised by a frame in the idle list. --idle none turns "
+                        + "both off");
+            }
             p.tableStart("Queue", "Total", "Parks", "Max", "Threads");
             for (final ContentionReport.LockStats l : report.workWaitLocks(top)) {
                 p.row(l.lock().pretty(), Durations.format(l.totalNanos()), l.count(), Durations.format(l.maxNanos()),
