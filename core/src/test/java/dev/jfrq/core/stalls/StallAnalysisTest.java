@@ -96,10 +96,21 @@ class StallAnalysisTest {
     }
 
     static StallReport analyse(final List<Sample> samples, final List<Block> blocks, final List<Pause> pauses) {
+        return analyse(sampledInfo(), samples, blocks, pauses);
+    }
+
+    static StallReport analyse(final RecordingInfo info, final List<Sample> samples, final List<Block> blocks,
+                               final List<Pause> pauses) {
         final List<Sample> sorted = new ArrayList<>(samples);
         sorted.sort(java.util.Comparator.comparingLong(Sample::time));
-        return new StallAnalysis(50 * MS).analyse(sampledInfo(),
-                List.of(new ThreadTimeline(LOOP, sorted, blocks)), pauses);
+        return new StallAnalysis(50 * MS).analyse(info, List.of(new ThreadTimeline(LOOP, sorted, blocks)), pauses);
+    }
+
+    /** A recording whose span does not start at zero: what a {@code jfrq-live delta} dump looks like. */
+    static RecordingInfo window(final long fromMs, final long toMs) {
+        return new RecordingInfo(Path.of("test.jfr"), new Interval(fromMs * MS, toMs * MS), 1,
+                Map.of("jdk.ExecutionSample", 1L),
+                Map.of("jdk.ExecutionSample", Map.of("enabled", "true", "period", "10 ms")), Set.of(), List.of());
     }
 
     @Test
@@ -191,6 +202,52 @@ class StallAnalysisTest {
         assertEquals(Evidence.EVENT, s.evidence());
         assertEquals(monitor.interval(), s.interval());
         assertEquals("blocked on monitor dev.app.Registry@1 held by housekeeper", s.detail());
+    }
+
+    @Test
+    void anEventStallIsCountedOnlyForThePartInsideTheWindow() {
+        // The window opens at 1 000 ms; the monitor wait began 500 ms before it. Counted
+        // whole it is a 1 300 ms stall inside a 1 000 ms window.
+        final RecordingInfo info = window(1_000, 2_000);
+        final List<Sample> samples = new ArrayList<>(idle(1_800, 2_000, 10));
+        final Block monitor = block(500, 1_800, BlockKind.MONITOR, "dev.app.Registry@1", HOLDER);
+        final StallReport r = analyse(info, samples, List.of(monitor), List.of());
+
+        assertEquals(1, r.stalls().size());
+        final Stall s = r.stalls().getFirst();
+        assertEquals(800 * MS, s.duration());
+        assertEquals(1_000 * MS, s.start());
+        assertEquals(Verdict.BLOCKED_MONITOR, s.verdict());
+        assertEquals(Evidence.EVENT, s.evidence());
+        assertEquals("blocked on monitor dev.app.Registry@1 held by housekeeper", s.detail());
+        assertEquals(800 * MS, r.threads().getFirst().stalledNanos());
+        assertTrue(r.warnings().contains(
+                "1 stall extends beyond the recording's span and is counted only for the part inside it"),
+                r.warnings().toString());
+    }
+
+    @Test
+    void anEventWhoseInWindowPartIsBelowTheGapIsNotAStall() {
+        // 700 ms of blocking, 20 ms of it inside the window: below the 50 ms gap.
+        final RecordingInfo info = window(1_000, 2_000);
+        final Block monitor = block(300, 1_020, BlockKind.MONITOR, "dev.app.Registry@1", HOLDER);
+        final StallReport r = analyse(info, idle(1_100, 2_000, 10), List.of(monitor), List.of());
+        assertTrue(r.stalls().isEmpty(), r.stalls().toString());
+        assertTrue(r.warnings().stream().noneMatch(w -> w.contains("beyond the recording's span")), r.warnings().toString());
+    }
+
+    @Test
+    void aBusyRunDoesNotReachPastTheEndOfTheRecording() {
+        // The last sample is 2 ms before the end, so the run's one-period tail would overrun it.
+        final RecordingInfo info = window(1_000, 2_000);
+        final List<Sample> samples = new ArrayList<>(idle(1_000, 1_900, 10));
+        samples.addAll(busy(1_900, 1_999, 10, BURN, false));
+        final StallReport r = analyse(info, samples, List.of(), List.of());
+
+        assertEquals(1, r.stalls().size());
+        final Stall s = r.stalls().getFirst();
+        assertEquals(2_000 * MS, s.interval().end());
+        assertEquals(100 * MS, s.duration());
     }
 
     @Test

@@ -43,6 +43,23 @@ public record Interval(long start, long end) implements Comparable<Interval> {
         return new Interval(Math.min(start, o.start), Math.max(end, o.end));
     }
 
+    /**
+     * This interval cut down to {@code window}, which is the part of it a recording can
+     * speak for. A blocking event that began before the recording's span, or was still
+     * running at its end, is written to the file whole: counted whole it puts more time
+     * inside the window than the window holds. Returns {@code this} when nothing is cut,
+     * so the common case allocates nothing, and a zero-length interval inside
+     * {@code window} when the two are disjoint.
+     */
+    public Interval clampTo(final Interval window) {
+        if (start >= window.start && end <= window.end) {
+            return this;
+        }
+        final long s = Math.min(Math.max(start, window.start), window.end);
+        final long e = Math.min(Math.max(end, window.start), window.end);
+        return new Interval(s, e);
+    }
+
     @Override
     public int compareTo(final Interval o) {
         final int c = Long.compare(start, o.start);

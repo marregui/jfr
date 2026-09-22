@@ -61,6 +61,8 @@ public final class ContentionReport {
     private final List<Wait> waits;
     /** How many waits the recording holds before the filters. */
     private final int unfilteredCount;
+    /** How many reported waits were cut down to the recording's span. */
+    private final int clippedCount;
     /** Every thread's waits, filters or not, so that a convoy can be followed into any thread. */
     private final ObjObjHashMap<ThreadRef, Waits> byWaiter = new ObjObjHashMap<>(256);
 
@@ -101,17 +103,34 @@ public final class ContentionReport {
         final ObjList<ThreadRef> via = new ObjList<>();
         final ObjHashSet<ThreadRef> seen = new ObjHashSet<>();
         final ObjList<Wait> reported = new ObjList<>(sorted.size());
+        final Interval window = info.span();
+        int clipped = 0;
         for (int i = 0, n = sorted.size(); i < n; i++) {
             final Wait w = sorted.getQuick(i);
             final Wait resolved = resolveHolder(w, raw, via, seen);
+            // Holders are resolved on the true intervals; everything counted is the part
+            // inside the window, so the totals and the shares cannot exceed it. Clipping
+            // keeps the order: both ends move by a monotone function of themselves.
+            final Wait inside = clip(resolved, window);
             // Every thread's waits stay reachable for convoy following; the report lists the filtered ones.
-            waitsOf(byWaiter, w.waiter()).add(resolved);
-            if (w.duration() >= minNanos && passes(filterVerdict, waiterFilter, w.waiter())) {
-                reported.add(resolved);
+            waitsOf(byWaiter, w.waiter()).add(inside);
+            if (inside.duration() > 0 && inside.duration() >= minNanos
+                    && passes(filterVerdict, waiterFilter, w.waiter())) {
+                reported.add(inside);
+                if (inside != resolved) {
+                    clipped++;
+                }
             }
         }
         this.waits = reported.toList();
         this.unfilteredCount = sorted.size();
+        this.clippedCount = clipped;
+    }
+
+    /** A wait counted only for the part inside the window; the same object when it is wholly inside. */
+    private static Wait clip(final Wait w, final Interval window) {
+        final Interval inside = w.interval().clampTo(window);
+        return inside == w.interval() ? w : new Wait(inside, w.waiter(), w.lock(), w.owner(), w.stack(), w.via());
     }
 
     private static Waits waitsOf(final ObjObjHashMap<ThreadRef, Waits> map, final ThreadRef thread) {
@@ -136,6 +155,17 @@ public final class ContentionReport {
 
     public int unfilteredCount() {
         return unfilteredCount;
+    }
+
+    /**
+     * How many reported waits began before the recording's span or were still running at
+     * its end, and are therefore counted only for the part inside it. A {@code jfrq-live}
+     * delta window slices waits at both ends by construction, so this is normal rather
+     * than a defect in the file; it is reported because it is why a wait's total here can
+     * be smaller than the same wait elsewhere.
+     */
+    public int clippedCount() {
+        return clippedCount;
     }
 
     /**

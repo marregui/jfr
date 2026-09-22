@@ -210,6 +210,11 @@ final class Text {
         }
         sb.append(String.format(Locale.ROOT, "%-10s %s across %d waits%n", "Blocked", Durations.format(r.totalNanos()),
                 r.waits().size()));
+        if (r.clippedCount() > 0) {
+            sb.append(String.format(Locale.ROOT, "%-10s %d wait%s began before the recording or outlived it; "
+                            + "only the part inside it is counted%n", "Note", r.clippedCount(),
+                    r.clippedCount() == 1 ? "" : "s"));
+        }
 
         sb.append("\nLOCKS BY TOTAL WAIT\n");
         final TextTable locks = new TextTable("Lock", "Kind", "Total", "Waits", "Max", "Waiters", "Held by").numeric(2, 3, 4);

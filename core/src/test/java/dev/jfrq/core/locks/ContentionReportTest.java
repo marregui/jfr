@@ -37,7 +37,12 @@ class ContentionReportTest {
     }
 
     static RecordingInfo info() {
-        return new RecordingInfo(Path.of("t.jfr"), new Interval(0, 10_000 * MS), 1, Map.of(), Map.of(), Set.of(), List.of());
+        return window(0, 10_000);
+    }
+
+    static RecordingInfo window(final long fromMs, final long toMs) {
+        return new RecordingInfo(Path.of("t.jfr"), new Interval(fromMs * MS, toMs * MS), 1, Map.of(), Map.of(),
+                Set.of(), List.of());
     }
 
     @Test
@@ -134,6 +139,63 @@ class ContentionReportTest {
         assertEquals(1, r.convoys(5, 1).size());
         // A depth limit of one link means no convoy can form.
         assertTrue(r.convoys(1, 10).isEmpty());
+    }
+
+    @Test
+    void waitsAreCountedOnlyForThePartInsideTheWindow() {
+        // A one-second window: event-loop-1's wait began before it, event-loop-2's runs past
+        // its end. Counted whole they put 2.3 s of blocking inside a 1 s window.
+        final RecordingInfo info = window(1_000, 2_000);
+        final ContentionReport r = new ContentionReport(info, List.of(
+                wait(400, 1_900, LOOP1, REGISTRY, HOUSEKEEPER),
+                wait(1_800, 2_600, LOOP2, STORE, HOUSEKEEPER)));
+
+        assertEquals(1_100 * MS, r.totalNanos());
+        assertEquals(2, r.clippedCount());
+        assertEquals(900 * MS, r.locks(10).getFirst().totalNanos());
+        assertEquals(900 * MS, r.locks(10).getFirst().maxNanos());
+        assertEquals(900 * MS, r.waiters(10).getFirst().totalNanos());
+        assertEquals(900 * MS, r.longest(1).getFirst().duration());
+        // The clipped wait keeps everything but its interval.
+        assertEquals(HOUSEKEEPER, r.longest(1).getFirst().owner());
+        assertEquals(REGISTRY, r.longest(1).getFirst().lock());
+        // The invariant the 112.5 % in the report broke: no thread is blocked for longer than the window.
+        for (final ContentionReport.ThreadStats t : r.waiters(10)) {
+            assertTrue(t.totalNanos() <= info.span().length(), t.thread() + " " + t.totalNanos());
+        }
+        assertEquals(1_000 * MS, r.longest(2).getFirst().start());
+        assertEquals(2_000 * MS, r.longest(2).get(1).end());
+    }
+
+    @Test
+    void aWaitWhollyOutsideTheWindowIsNotReported() {
+        final ContentionReport r = new ContentionReport(window(1_000, 2_000), List.of(
+                wait(100, 900, LOOP1, REGISTRY, HOUSEKEEPER)));
+        assertTrue(r.isEmpty());
+        assertEquals(0, r.totalNanos());
+        assertEquals(0, r.clippedCount());
+    }
+
+    @Test
+    void theMinFilterAppliesToTheInWindowPart() {
+        // 800 ms of waiting, 50 ms of it inside the window: --min 100ms leaves nothing.
+        final List<Wait> straddling = List.of(wait(200, 1_050, LOOP1, REGISTRY, HOUSEKEEPER));
+        assertTrue(new ContentionReport(window(1_000, 2_000), straddling, 100 * MS, _ -> true).isEmpty());
+        assertEquals(50 * MS, new ContentionReport(window(1_000, 2_000), straddling, 10 * MS, _ -> true).totalNanos());
+    }
+
+    @Test
+    void convoysAreFollowedOnTheTrueIntervalsAndReportedOnTheClippedOnes() {
+        // The housekeeper's own wait began before the window; the walk-back still finds it.
+        final ContentionReport r = new ContentionReport(window(1_000, 2_000), List.of(
+                wait(1_100, 1_400, LOOP1, REGISTRY, HOUSEKEEPER),
+                wait(900, 1_300, HOUSEKEEPER, STORE, FLUSHER)));
+        final List<ContentionReport.Convoy> convoys = r.convoys(5, 10);
+        assertEquals(1, convoys.size());
+        assertEquals(LOOP1, convoys.getFirst().head().waiter());
+        assertEquals(STORE, convoys.getFirst().links().get(1).lock());
+        // The link is printed with its in-window duration: 1 000 ms .. 1 300 ms, not 900 ms .. 1 300 ms.
+        assertEquals(300 * MS, convoys.getFirst().links().get(1).duration());
     }
 
     @Test

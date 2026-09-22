@@ -132,6 +132,18 @@ waiting. Co-waiters for the same lock are not links; they are already folded int
 **Lock identity** is class plus address. Addresses are stable only until a collection
 moves the object, so the class is always shown and the address only disambiguates.
 
+**Window semantics.** JFR writes a blocking event when the wait *ends*, so a file holds
+waits that began before its first chunk, and a `jfrq-live delta` window slices waits at
+both ends by construction. Every wait is therefore counted only for the part inside the
+recording's span: a wait of three minutes in a window of two and a half contributes two
+and a half. Without that, one thread could be reported as blocked for 112 % of a window,
+and the totals said more time was spent waiting than the window contains. The clipping
+happens once, in `ContentionReport`, after holder resolution, which runs on the true
+intervals — who held a lock does not depend on where the window starts. `--min` applies
+to the clipped duration, because it is the duration the report is about, and `LONGEST
+WAITS` ranks on it for the same reason; a line under the `Blocked` total says how many
+waits were cut. The same rule is applied to `stalls` in section 4.5.
+
 ## 4. `stalls`: when a thread did not return to idle
 
 The question is "why was this event loop not at its selector between t1 and t2", and
@@ -246,6 +258,15 @@ covers by half; then runs, likewise. Stalls may therefore nest (a 500 ms busy ru
 a 100 ms socket read inside it is two stalls), and per-thread "stalled" totals can
 exceed wall time. The report sorts by duration, summarises by verdict and by thread,
 and lists the JVM-wide pauses.
+
+Every stall is clipped to the recording's span, for the reason section 3 gives for
+waits: a blocking event that began before the file, or was still running at its end, is
+in the file whole, and counted whole it puts more time in the window than the window
+holds. The gap is then applied to the clipped length — 700 ms of blocking with 20 ms of
+it inside the window is not a 50 ms stall — and a warning says how many stalls were cut.
+A busy run's tail, which is an estimate (one sampler period past its last sample), stops
+at the end of the recording for the same reason. Silences need no clipping: they are
+bounded by two samples, both inside the span by construction.
 
 ## 5. Output
 
@@ -391,6 +412,11 @@ delta in `alloc --baseline`, which was hash-map order before and is hash-map ord
   file. Record with 1 ms thresholds when hunting sub-20 ms stalls.
 - `PARKED` never names an owner: JFR does not know who holds a `java.util.concurrent`
   lock.
+- A wait or a stall that straddles an end of the recording is counted only for the part
+  inside it (sections 3 and 4.5), so the same wait reads shorter in a narrow window than
+  in a wide one. The `locks` note and the `stalls` warning say when this happened.
+  A `stalls` per-thread share can still exceed 100 % because stalls nest; a `locks`
+  share cannot.
 - Unexplained silences below `3 × routine absence` are invisible; the warning prints the
   number. Reducing the count of threads in native code during the recording, or lowering
   the blocking thresholds so the explanation comes from events, are the two remedies.

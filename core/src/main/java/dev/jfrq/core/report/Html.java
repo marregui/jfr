@@ -138,6 +138,10 @@ public final class Html {
         final Page p = new Page("jfrq locks", report.info());
         p.kv("Total blocked time", Durations.format(report.totalNanos()) + " across " + report.waits().size()
                 + " waits");
+        if (report.clippedCount() > 0) {
+            p.kv("Clipped to the window", report.clippedCount() + (report.clippedCount() == 1 ? " wait" : " waits")
+                    + " began before the recording or outlived it, and count only for the part inside it");
+        }
         thresholds(p, report.info());
 
         p.h2("Locks by total wait");

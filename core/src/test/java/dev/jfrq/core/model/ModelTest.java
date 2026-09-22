@@ -5,6 +5,7 @@ package dev.jfrq.core.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -52,6 +53,23 @@ class ModelTest {
         @Test
         void rejectsNegativeLength() {
             assertThrows(IllegalArgumentException.class, () -> new Interval(5, 4));
+        }
+
+        @Test
+        void clampsToAWindowAtEitherEnd() {
+            final Interval window = new Interval(10, 20);
+            assertEquals(new Interval(10, 15), new Interval(5, 15).clampTo(window));
+            assertEquals(new Interval(15, 20), new Interval(15, 25).clampTo(window));
+            assertEquals(window, new Interval(0, 100).clampTo(window));
+            // Wholly inside: the same object, so clipping a report allocates nothing in the common case.
+            final Interval inside = new Interval(12, 14);
+            assertSame(inside, inside.clampTo(window));
+            assertSame(window, window.clampTo(window));
+            // Disjoint on either side collapses to a point inside the window, never to a negative length.
+            assertEquals(0, new Interval(0, 5).clampTo(window).length());
+            assertEquals(10, new Interval(0, 5).clampTo(window).start());
+            assertEquals(0, new Interval(30, 40).clampTo(window).length());
+            assertEquals(20, new Interval(30, 40).clampTo(window).start());
         }
     }
 

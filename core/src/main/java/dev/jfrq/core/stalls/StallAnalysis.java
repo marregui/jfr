@@ -94,6 +94,8 @@ public final class StallAnalysis {
     /** Scratch for {@link #busy}: culprit counts in first-seen order, and a stack per culprit. */
     private final ObjList<Culprit> culprits = new ObjList<>();
     private final ObjObjHashMap<String, Culprit> culpritByName = new ObjObjHashMap<>(64);
+    /** Event stalls cut down to the recording's span in the current analysis; reset per {@link #analyse}. */
+    private int clippedStalls;
 
     public StallAnalysis(final long gapNanos) {
         if (gapNanos <= 0) {
@@ -110,6 +112,7 @@ public final class StallAnalysis {
         final List<String> warnings = new ArrayList<>();
         warnRecording(info, warnings);
         final long period = samplerPeriod(info);
+        clippedStalls = 0;
 
         final ObjList<Pause> sortedPauses = new ObjList<>(pauses.size());
         for (int i = 0, n = pauses.size(); i < n; i++) {
@@ -137,7 +140,7 @@ public final class StallAnalysis {
             final ThreadTimeline tl = ordered.getQuick(i);
             final Cadence cadence = Cadence.of(tl.samples(), period);
             final int before = stalls.size();
-            analyseThread(tl, cadence, windows, stalls);
+            analyseThread(tl, cadence, windows, stalls, info.span());
             long stalled = 0;
             long worst = 0;
             for (int s = before, m = stalls.size(); s < m; s++) {
@@ -155,6 +158,12 @@ public final class StallAnalysis {
                         tl.thread().name(), Durations.format(absence),
                         Durations.format(absence * CADENCE_FACTOR)));
             }
+        }
+        if (clippedStalls > 0) {
+            warnings.add(clippedStalls == 1
+                    ? "1 stall extends beyond the recording's span and is counted only for the part inside it"
+                    : clippedStalls + " stalls extend beyond the recording's span and are counted only for the "
+                            + "part inside it");
         }
         final int shown = Math.min(cadenceWarnings.size(), CADENCE_WARNINGS_SHOWN);
         for (int i = 0; i < shown; i++) {
@@ -319,14 +328,22 @@ public final class StallAnalysis {
         }
     }
 
-    private void analyseThread(final ThreadTimeline tl, final Cadence cadence, final Windows windows, final ObjList<Stall> stalls) {
+    private void analyseThread(final ThreadTimeline tl, final Cadence cadence, final Windows windows,
+                               final ObjList<Stall> stalls, final Interval span) {
         // 1. Event-based stalls: precise, independent of sampling.
         final List<Block> blocks = tl.blocks();
         final ObjList<Stall> eventStalls = new ObjList<>();
         for (int i = 0, n = blocks.size(); i < n; i++) {
             final Block b = blocks.get(i);
-            if (b.length() >= gap) {
-                eventStalls.add(new Stall(tl.thread(), b.interval(), verdictOf(b.kind()), describe(b), b.stack(),
+            // A block that began before the recording, or was still running at its end, is in
+            // the file whole; only the part inside the span happened in the window the report
+            // is about, and the gap applies to that part.
+            final Interval inside = b.interval().clampTo(span);
+            if (inside.length() >= gap) {
+                if (inside != b.interval()) {
+                    clippedStalls++;
+                }
+                eventStalls.add(new Stall(tl.thread(), inside, verdictOf(b.kind()), describe(b), b.stack(),
                         Evidence.EVENT, 0));
             }
         }
@@ -368,11 +385,14 @@ public final class StallAnalysis {
                 j++;
             }
             final Sample last = samples.get(j);
+            // The run reaches one sampler period past its last sample, or to the next
+            // observation, whichever comes first; never past the end of the recording, since
+            // that period is an estimate and the file says nothing beyond its span.
             long end = last.time() + cadence.period;
             if (j + 1 < n) {
                 end = Math.min(end, samples.get(j + 1).time());
             }
-            end = Math.max(end, last.time());
+            end = Math.max(Math.min(end, span.end()), last.time());
             final Interval run = new Interval(first.time(), end);
             if (run.length() >= gap && j + 1 - i >= RUN_MIN_SAMPLES) {
                 runs.add(new Candidate(run, samples.subList(i, j + 1)));
