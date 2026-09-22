@@ -122,6 +122,20 @@ class HtmlTest {
     }
 
     @Test
+    void unexplainedGapsHaveTheirOwnSectionAndSayWhatIsMissing() {
+        final Stall gap = new Stall(LOOP, new Interval(0, 474 * MS), Stall.Verdict.UNEXPLAINED, "no evidence",
+                Stack.EMPTY, Stall.Evidence.SILENCE, 0);
+        final Stall parked = new Stall(LOOP, new Interval(500 * MS, 671 * MS), Stall.Verdict.PARKED, "parked",
+                STACK, Stall.Evidence.EVENT, 3);
+        final StallReport r = new StallReport(info(), 50 * MS, List.of(), List.of(gap, parked), List.of(), List.of());
+        final String html = Html.stalls(r, 10);
+        assertTrue(html.contains("<h2>Stalls, longest first"), html);
+        assertTrue(html.contains("<h2>Unexplained gaps, longest first"), html);
+        assertTrue(html.indexOf("dev.app.A.b") < html.indexOf("Unexplained gaps"), html);
+        assertTrue(html.contains("0 jdk.SocketWrite events in 2.00 s"), html);
+    }
+
+    @Test
     void stallsPageWithoutPausesOrWarnings() {
         final StallReport r = new StallReport(info(), 50 * MS, List.of(), List.of(), List.of(), List.of());
         final String html = Html.stalls(r, 10);

@@ -172,6 +172,15 @@ in the second: its row was a name and an address with no way to act on it. Each 
 takes the stack of its own longest wait, listed under `WHERE THEY WAITED`, and `--lock`
 filters the whole report down to one lock by class or by `class@address`.
 
+**One stack per stack, not per lock.** A server that gives every worker its own mailbox
+has as many locks as workers and a single stack between them: thirteen dispatcher threads
+printed the same seven frames eight times, 66 lines of a 177-line report. `WHERE THEY
+WAITED` groups the ranked locks by what their stack *renders to* at the depth being
+printed — the same rule the allocation sites are folded by, so whatever prints the same is
+one entry — and names the locks the entry stands for, capped like every other name list.
+Locks whose longest wait carries no stack are one group too, for the same reason: there is
+nothing to tell them apart.
+
 **Lock identity** is class plus address. Addresses are stable only until a collection
 moves the object, so the class is always shown and the address only disambiguates.
 
@@ -319,10 +328,25 @@ A busy run's tail, which is an estimate (one sampler period past its last sample
 at the end of the recording for the same reason. Silences need no clipping: they are
 bounded by two samples, both inside the span by construction.
 
+**Unexplained gaps are ranked apart.** A gap with no event and too few samples is the
+longest number the report can produce and the one that says least: a 47.4 s `UNEXPLAINED`
+outranked an actionable 17.1 s park on the same page. The verdict is honest and stays;
+the ranking was the mistake, because a gap and a park are different kinds of claim. They
+are listed under their own heading, after the stalls with an explanation, with the count
+of `jdk.SocketWrite` events in the file beside them — a recording that streamed gigabytes
+can hold sixteen, because an HTTP stack that buffers its own writes produces none, and a
+gap on a thread that was writing a response is then all the evidence there is. Both kinds
+still count in `BY VERDICT` and in the per-thread totals.
+
 **`info`.** The thresholds and throttles it prints are derived from the settings in the
 file, not from a list of event types written into the tool: the line exists to answer
 "did the settings I asked for take effect", and a fixed list answers it only for the
-events someone thought of. The thread count is the threads *seen in events*, which is
+events someone thought of. Derived, it first printed 41 entries, most of them JDK
+defaults nobody chose; a threshold of zero suppresses nothing and so is not a threshold,
+and the line now leaves those out and sorts by name, so two runs of the same file produce
+the same line and two reports diff. The zeroes are still in the per-type table below,
+where they are a fact about one event type rather than a claim about the recording. The
+thread count is the threads *seen in events*, which is
 why it moves with the window's activity rather than matching a thread dump, and it is
 labelled as such; the `THREADS` section folds them into families by replacing each run
 of digits with `N`, because that is what a pool varies per worker and what a `--thread`

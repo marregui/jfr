@@ -4,6 +4,7 @@
 package dev.jfrq.cli;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -142,29 +143,37 @@ final class Text {
         return sb.toString();
     }
 
-    /** Every enabled event type that carries a threshold, in name order. */
+    /**
+     * Every enabled event type whose threshold suppresses something, in name order. A threshold
+     * of zero lets every event through, so it is the absence of one: the JDK's own profiles set
+     * it on dozens of types nobody chose, and listing those buried the handful that were chosen
+     * under 41 entries. The zeroes are still in the per-type table below, where they answer a
+     * question about one event type rather than about the recording.
+     */
     static String[] thresholded(final RecordingInfo info) {
-        return settingsWith(info, "threshold");
+        final List<String> types = new ArrayList<>();
+        for (final String type : info.settings().keySet()) {
+            if (info.enabled(type) && info.threshold(type).filter(d -> !d.isZero()).isPresent()) {
+                types.add(type);
+            }
+        }
+        return sorted(types);
     }
 
     /** Every enabled event type that is throttled: those are sampled, so the file is not complete for them. */
     static String[] throttled(final RecordingInfo info) {
-        return settingsWith(info, "throttle");
-    }
-
-    private static String[] settingsWith(final RecordingInfo info, final String setting) {
         final List<String> types = new ArrayList<>();
-        for (final Map.Entry<String, Map<String, String>> e : info.settings().entrySet()) {
-            if (!info.enabled(e.getKey())) {
-                continue;
-            }
-            final String value = setting.equals("throttle")
-                    ? info.throttle(e.getKey()).orElse(null)
-                    : e.getValue().get(setting);
-            if (value != null && !value.isBlank()) {
-                types.add(e.getKey());
+        for (final String type : info.settings().keySet()) {
+            if (info.enabled(type) && info.throttle(type).filter(v -> !v.isBlank()).isPresent()) {
+                types.add(type);
             }
         }
+        return sorted(types);
+    }
+
+    /** Name order, because the settings come out of a hash map and two reports have to diff. */
+    private static String[] sorted(final List<String> types) {
+        types.sort(Comparator.naturalOrder());
         return types.toArray(new String[0]);
     }
 
@@ -323,13 +332,11 @@ final class Text {
         // never reaches LONGEST WAITS, which is where the only other stack is.
         if (!ranked.isEmpty()) {
             sb.append("\nWHERE THEY WAITED (the longest wait for each lock above)\n");
-            for (final ContentionReport.LockStats l : ranked) {
-                if (l.longest() == null) {
-                    continue;
-                }
-                sb.append(String.format(Locale.ROOT, "  %s  %s%n", l.lock().pretty(),
-                        Durations.format(l.longest().duration())));
-                sb.append(l.longest().stack().pretty("        ", STACK_FRAMES));
+            for (final ContentionReport.StackGroup g : r.lockStacks(top, STACK_FRAMES)) {
+                sb.append(String.format(Locale.ROOT, "  %s  %s%s%n", lockNames(g.locks()),
+                        Durations.format(g.longest().duration()),
+                        g.locks().size() > 1 ? "  (" + g.locks().size() + " locks with this stack)" : ""));
+                sb.append(g.longest().stack().pretty("        ", STACK_FRAMES));
             }
         }
 
@@ -411,19 +418,26 @@ final class Text {
             sb.append("WARNING    ").append(w).append('\n');
         }
 
-        final List<Stall> shown = r.top(top);
+        final List<Stall> explained = r.explained();
+        final List<Stall> shown = StallReport.top(explained, top);
         sb.append(String.format(Locale.ROOT, "%nSTALLS >= %s: %d found%s, longest first%n",
-                Durations.format(r.gapNanos()), r.stalls().size(),
-                shown.size() < r.stalls().size() ? ", showing " + shown.size() : ""));
-        if (r.stalls().isEmpty()) {
+                Durations.format(r.gapNanos()), explained.size(),
+                shown.size() < explained.size() ? ", showing " + shown.size() : ""));
+        if (explained.isEmpty()) {
             sb.append("  none\n");
         }
-        int n = 1;
-        for (final Stall s : shown) {
-            sb.append(String.format(Locale.ROOT, "  %2d  %-22s %s  %8s  %-15s %s%s%n", n++, s.thread().name(),
-                    Durations.offset(s.start() - r.info().startNanos()), Durations.format(s.duration()),
-                    s.verdict(), s.detail(), evidence(s)));
-            sb.append(s.stack().pretty("        ", STACK_FRAMES));
+        sb.append(rows(r, shown));
+
+        // Ranked apart, not hidden: an unexplained gap is a long number with nothing under it,
+        // and next to an explained stall it wins every comparison it should lose.
+        final List<Stall> gaps = r.unexplained();
+        if (!gaps.isEmpty()) {
+            final List<Stall> shownGaps = StallReport.top(gaps, top);
+            sb.append(String.format(Locale.ROOT, "%nUNEXPLAINED GAPS >= %s: %d found%s, longest first%n",
+                    Durations.format(r.gapNanos()), gaps.size(),
+                    shownGaps.size() < gaps.size() ? ", showing " + shownGaps.size() : ""));
+            sb.append(blindSpotNote(r.info()));
+            sb.append(rows(r, shownGaps));
         }
 
         if (!r.stalls().isEmpty()) {
@@ -457,6 +471,33 @@ final class Text {
             }
         }
         return sb.toString();
+    }
+
+    /** One numbered line per stall with its stack under it. */
+    private static String rows(final StallReport r, final List<Stall> stalls) {
+        final StringBuilder sb = new StringBuilder();
+        int n = 1;
+        for (final Stall s : stalls) {
+            sb.append(String.format(Locale.ROOT, "  %2d  %-22s %s  %8s  %-15s %s%s%n", n++, s.thread().name(),
+                    Durations.offset(s.start() - r.info().startNanos()), Durations.format(s.duration()),
+                    s.verdict(), s.detail(), evidence(s)));
+            sb.append(s.stack().pretty("        ", STACK_FRAMES));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * What a gap with no evidence most often is. The socket count is a fact about the file and
+     * it can be near zero on a server that streamed gigabytes: an HTTP stack that writes a
+     * response through its own buffering produces no {@code jdk.SocketWrite} at all, so time
+     * spent in one lands here with nothing under it.
+     */
+    static String blindSpotNote(final RecordingInfo info) {
+        final long writes = info.eventCounts().getOrDefault("jdk.SocketWrite", 0L);
+        return String.format(Locale.ROOT, "  No blocking event and too few samples to say what the thread was doing.%n"
+                        + "  This recording holds %d jdk.SocketWrite event%s in %s: some HTTP stacks produce none, so a%n"
+                        + "  response being written is invisible here.%n", writes, writes == 1 ? "" : "s",
+                Durations.format(info.duration()));
     }
 
     /** {@code " (+7%)"} when the counted threads carry enough of the estimate for the comparison to mean something. */
@@ -494,14 +535,30 @@ final class Text {
      * on one line, 3,630 characters of it, and the count is the information a reader wants.
      */
     static String names(final Set<ThreadRef> threads) {
-        final StringBuilder sb = new StringBuilder();
-        int shown = 0;
+        final List<String> names = new ArrayList<>(threads.size());
         for (final ThreadRef t : threads) {
-            if (shown == NAMES_SHOWN) {
-                sb.append(" (+").append(threads.size() - shown).append(" more)");
+            names.add(t.name());
+        }
+        return capped(names);
+    }
+
+    /** The locks one stack stands for, under the same cap: the count is the information. */
+    static String lockNames(final List<Wait.LockKey> locks) {
+        final List<String> names = new ArrayList<>(locks.size());
+        for (final Wait.LockKey l : locks) {
+            names.add(l.pretty());
+        }
+        return capped(names);
+    }
+
+    private static String capped(final List<String> names) {
+        final StringBuilder sb = new StringBuilder();
+        for (int i = 0, n = names.size(); i < n; i++) {
+            if (i == NAMES_SHOWN) {
+                sb.append(" (+").append(n - i).append(" more)");
                 break;
             }
-            sb.append(shown++ > 0 ? ", " : "").append(t.name());
+            sb.append(i > 0 ? ", " : "").append(names.get(i));
         }
         return sb.toString();
     }

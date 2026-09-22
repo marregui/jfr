@@ -51,7 +51,37 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
     }
 
     public List<Stall> top(final int n) {
+        return top(stalls, n);
+    }
+
+    /** The first {@code n} of a list already in the order it is to be read. */
+    public static List<Stall> top(final List<Stall> stalls, final int n) {
         return stalls.size() > n ? stalls.subList(0, n) : stalls;
+    }
+
+    /**
+     * The stalls the recording can explain, longest first. They are kept apart from
+     * {@link #unexplained()} because ranking the two together puts the biggest number on the
+     * row that says least: a 47 s gap with no evidence above a 17 s park with a stack under it.
+     * A gap and a park are different kinds of claim, so they are different lists.
+     */
+    public List<Stall> explained() {
+        return withVerdict(false);
+    }
+
+    /** The stalls with no blocking event and too few samples to say anything, longest first. */
+    public List<Stall> unexplained() {
+        return withVerdict(true);
+    }
+
+    private List<Stall> withVerdict(final boolean unexplained) {
+        final List<Stall> out = new ArrayList<>();
+        for (final Stall s : stalls) {
+            if ((s.verdict() == Stall.Verdict.UNEXPLAINED) == unexplained) {
+                out.add(s);
+            }
+        }
+        return List.copyOf(out);
     }
 
     /** Totals per verdict: count and summed duration, largest total first. */

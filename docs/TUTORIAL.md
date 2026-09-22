@@ -62,10 +62,11 @@ something is wrong, and it does not say what. That is the gap this tool fills.
 ```
 $ jfrq info demo-lock.jfr
 Recording  demo-lock.jfr  15.2 s  starting 2026-09-18T11:02:11.875063Z
-Threads    31
+Threads    31 seen in events
 Chunks     1
 Sampling   ExecutionSample 10.0 ms, NativeMethodSample 10.0 ms
-Thresholds JavaMonitorEnter 1.00 ms, ThreadPark 1.00 ms, ThreadSleep 1.00 ms, SocketRead 1.00 ms, FileRead 1.00 ms
+Thresholds Compilation 100 ms, CompilerPhase 10.0 s, FileForce 10.0 ms, FileRead 1.00 ms, FileWrite 1.00 ms, JavaMonitorEnter 1.00 ms, JavaMonitorWait 1.00 ms, SocketRead 1.00 ms, SocketWrite 1.00 ms, ThreadPark 1.00 ms, ThreadSleep 1.00 ms, VirtualThreadPinned 20.0 ms, ZPageAllocation 1.00 ms
+Throttled  JavaExceptionThrow 300/s, ObjectAllocationSample 1000/s
 Allocation ObjectAllocationSample 1000/s
 
 Event type                         Count  Enabled  Threshold  Period
@@ -76,7 +77,9 @@ jdk.NativeMethodSample              1265  yes                 10.0 ms
 
 Read the `Thresholds` line before anything else. It comes from the `jdk.ActiveSetting`
 events in the file and bounds what any analysis can find: with a 20 ms monitor threshold,
-a 15 ms wait never existed as far as the file is concerned. `jfrq` prints these
+a 15 ms wait never existed as far as the file is concerned. It lists every event type
+whose threshold suppresses something, in name order; a threshold of zero lets everything
+through, so it is not one, and it stays in the per-type table below instead. `jfrq` prints these
 thresholds on every `stalls` and `locks` report and warns when one is coarser than the
 stall gap, and warns
 too when the JDK's default *throttle* on socket and file events is in force (the

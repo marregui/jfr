@@ -47,6 +47,17 @@ public final class ContentionReport {
     }
 
     /**
+     * The locks whose longest wait prints the same stack. A server with one mailbox per worker
+     * has as many locks as workers and a single stack between them: printed once per lock it
+     * was 66 lines of a 177-line report, and the locks are the information the repetition hid.
+     *
+     * @param locks   the locks this stack stands for, in the order they were ranked
+     * @param longest the longest wait across them, whose stack is the one to print
+     */
+    public record StackGroup(List<Wait.LockKey> locks, Wait longest) {
+    }
+
+    /**
      * A wait whose owner was itself waiting: {@code links.get(0)} is the outermost wait,
      * {@code links.get(1)} is the owner's own overlapping wait, and so on.
      */
@@ -312,6 +323,35 @@ public final class ContentionReport {
     /** Locks ranked by total time threads spent waiting for them. */
     public List<LockStats> locks(final int top) {
         return locksOf(waits, top);
+    }
+
+    /**
+     * The ranked locks of {@link #locks(int)} grouped by the stack that stands for them, in
+     * rank order.
+     *
+     * @param frames how many frames the caller will print: two stacks that differ only below
+     *               that print the same, so they are one group. Keyed on the rendering rather
+     *               than on the frames, because an elided stack also shows the first frame
+     *               of the application's own code wherever it lies, and two stacks that differ
+     *               there are two a reader can tell apart
+     */
+    public List<StackGroup> lockStacks(final int top, final int frames) {
+        final Map<String, List<Wait.LockKey>> byStack = new LinkedHashMap<>();
+        final Map<String, Wait> longest = new HashMap<>();
+        for (final LockStats l : locks(top)) {
+            if (l.longest() == null) {
+                continue;
+            }
+            final String rendering = l.longest().stack().pretty("", frames);
+            byStack.computeIfAbsent(rendering, _ -> new ArrayList<>()).add(l.lock());
+            final Wait best = longest.get(rendering);
+            if (best == null || l.longest().duration() > best.duration()) {
+                longest.put(rendering, l.longest());
+            }
+        }
+        final List<StackGroup> out = new ArrayList<>(byStack.size());
+        byStack.forEach((rendering, locks) -> out.add(new StackGroup(List.copyOf(locks), longest.get(rendering))));
+        return List.copyOf(out);
     }
 
     private List<LockStats> locksOf(final List<Wait> from, final int top) {

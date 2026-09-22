@@ -83,20 +83,27 @@ public final class Html {
         p.h2("Timeline");
         p.raw(stallTimeline(report));
 
-        final List<Stall> listed = report.top(Math.max(top, MIN_LISTED));
-        p.h2(listed.size() < report.stalls().size()
-                ? "Stalls, longest first (" + listed.size() + " of " + report.stalls().size() + ")"
+        final List<Stall> explained = report.explained();
+        final List<Stall> listed = StallReport.top(explained, Math.max(top, MIN_LISTED));
+        p.h2(listed.size() < explained.size()
+                ? "Stalls, longest first (" + listed.size() + " of " + explained.size() + ")"
                 : "Stalls, longest first");
-        p.tableStart("#", "Thread", "At", "Duration", "Verdict", "Detail", "Evidence");
-        int n = 1;
-        for (final Stall s : listed) {
-            p.row(n++, s.thread().name(), Durations.offset(s.start() - report.info().startNanos()),
-                    Durations.format(s.duration()), s.verdict(), s.detail(), s.evidence().name().toLowerCase(Locale.ROOT));
-            if (!s.stack().isEmpty()) {
-                p.stackRow(7, s.stack());
-            }
+        stallTable(p, report, listed);
+
+        // Their own section, because a gap with no evidence outranks anything explained and
+        // says less than any of it.
+        final List<Stall> gaps = report.unexplained();
+        if (!gaps.isEmpty()) {
+            final List<Stall> listedGaps = StallReport.top(gaps, Math.max(top, MIN_LISTED));
+            p.h2(listedGaps.size() < gaps.size()
+                    ? "Unexplained gaps, longest first (" + listedGaps.size() + " of " + gaps.size() + ")"
+                    : "Unexplained gaps, longest first");
+            p.kv("No evidence", "no blocking event and too few samples to say what the thread was doing. This "
+                    + "recording holds " + report.info().eventCounts().getOrDefault("jdk.SocketWrite", 0L)
+                    + " jdk.SocketWrite events in " + Durations.format(report.info().duration())
+                    + ": some HTTP stacks produce none, so a response being written is invisible here.");
+            stallTable(p, report, listedGaps);
         }
-        p.tableEnd();
 
         if (!report.pauses().isEmpty()) {
             p.h2("JVM-wide pauses ≥ gap");
@@ -108,6 +115,19 @@ public final class Html {
             p.tableEnd();
         }
         return p.finish();
+    }
+
+    private static void stallTable(final Page p, final StallReport report, final List<Stall> stalls) {
+        p.tableStart("#", "Thread", "At", "Duration", "Verdict", "Detail", "Evidence");
+        int n = 1;
+        for (final Stall s : stalls) {
+            p.row(n++, s.thread().name(), Durations.offset(s.start() - report.info().startNanos()),
+                    Durations.format(s.duration()), s.verdict(), s.detail(), s.evidence().name().toLowerCase(Locale.ROOT));
+            if (!s.stack().isEmpty()) {
+                p.stackRow(7, s.stack());
+            }
+        }
+        p.tableEnd();
     }
 
     private static String stallTimeline(final StallReport report) {

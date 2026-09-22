@@ -583,4 +583,22 @@ class StallAnalysisTest {
         assertTrue(w.startsWith("throttled events (jdk.SocketRead 300/s)"), w);
         assertFalse(w.contains("FileRead") || w.contains("SocketWrite"), w);
     }
+
+    @Test
+    void gapsWithNoEvidenceAreListedApartFromTheStallsWithAnExplanation() {
+        final Stall gap = new Stall(LOOP, new Interval(0, 474 * MS), Stall.Verdict.UNEXPLAINED, "no evidence",
+                Stack.EMPTY, Stall.Evidence.SILENCE, 0);
+        final Stall parked = new Stall(LOOP, new Interval(500 * MS, 671 * MS), Stall.Verdict.PARKED, "parked",
+                Stack.EMPTY, Stall.Evidence.EVENT, 3);
+        final StallReport r = new StallReport(info(10_000, Map.of(), "jdk.ExecutionSample"), 50 * MS, List.of(),
+                List.of(parked, gap), List.of(), List.of());
+
+        // Ranked together the 474 ms gap comes first and says nothing; apart, each list is
+        // longest-first within its own kind, and both still count in stalls().
+        assertEquals(List.of(gap, parked), r.stalls());
+        assertEquals(List.of(parked), r.explained());
+        assertEquals(List.of(gap), r.unexplained());
+        assertEquals(List.of(parked), StallReport.top(r.explained(), 5));
+        assertEquals(List.of(), StallReport.top(r.explained(), 0));
+    }
 }

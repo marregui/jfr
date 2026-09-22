@@ -353,4 +353,34 @@ class ContentionReportTest {
         // The same waits with no filter report everything.
         assertEquals(4, new ContentionReport(info(), all).waits().size());
     }
+
+    @Test
+    void locksWhoseLongestWaitPrintsTheSameStackAreOneGroup() {
+        // One mailbox per worker: as many locks as workers, one stack between them.
+        final Stack mailbox = stack(
+                new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
+                new Frame("dev.app.DefaultMailbox", "awaitNextMessage", 92, "JIT compiled"));
+        final List<Wait> waits = List.of(
+                new Wait(new Interval(100 * MS, 300 * MS), LOOP1, new LockKey("dev.app.Mailbox", 0x1, Kind.PARK),
+                        null, mailbox),
+                new Wait(new Interval(100 * MS, 250 * MS), LOOP2, new LockKey("dev.app.Mailbox", 0x2, Kind.PARK),
+                        null, mailbox),
+                new Wait(new Interval(100 * MS, 200 * MS), HOUSEKEEPER, REGISTRY, FLUSHER, AWAITING_RESULT));
+        final ContentionReport r = new ContentionReport(info(), waits);
+
+        assertEquals(3, r.locks(10).size());
+        final List<ContentionReport.StackGroup> groups = r.lockStacks(10, 6);
+        assertEquals(2, groups.size());
+        // Rank order is kept: the two mailboxes total more than the registry.
+        assertEquals(2, groups.getFirst().locks().size());
+        assertEquals(200 * MS, groups.getFirst().longest().duration());
+        assertEquals(1, groups.get(1).locks().size());
+        assertEquals(REGISTRY, groups.get(1).locks().getFirst());
+        // Locks whose longest wait carries no stack have nothing to tell them apart either,
+        // so they are one group too: the row still names them and gives the longest wait.
+        final List<ContentionReport.StackGroup> stackless = new ContentionReport(info(), List.of(
+                wait(100, 300, LOOP1, REGISTRY, LOOP2), wait(100, 200, LOOP2, STORE, FLUSHER))).lockStacks(10, 6);
+        assertEquals(1, stackless.size());
+        assertEquals(List.of(REGISTRY, STORE), stackless.getFirst().locks());
+    }
 }
