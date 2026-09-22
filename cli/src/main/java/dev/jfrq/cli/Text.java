@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
@@ -28,6 +29,8 @@ import dev.jfrq.core.util.TextTable;
 final class Text {
 
     private static final int STACK_FRAMES = 6;
+    /** Names listed before the rest become a count. */
+    private static final int NAMES_SHOWN = 4;
 
     private Text() {
     }
@@ -64,11 +67,13 @@ final class Text {
 
     static String info(final RecordingInfo info) {
         final StringBuilder sb = new StringBuilder(header(info));
-        sb.append(String.format(Locale.ROOT, "%-10s %d%n", "Threads", info.threads().size()));
+        sb.append(String.format(Locale.ROOT, "%-10s %d seen in events%n", "Threads", info.threads().size()));
         sb.append(String.format(Locale.ROOT, "%-10s %d%n", "Chunks", info.chunks()));
         sb.append(settingsLine(info, "Sampling", "jdk.ExecutionSample", "jdk.NativeMethodSample"));
-        sb.append(settingsLine(info, "Thresholds", "jdk.JavaMonitorEnter", "jdk.ThreadPark", "jdk.ThreadSleep",
-                "jdk.SocketRead", "jdk.FileRead"));
+        // Derived, not a whitelist: this line exists to answer "did the settings I asked for
+        // take effect", and a fixed list answers it for the events someone thought of in 2026.
+        sb.append(settingsLine(info, "Thresholds", thresholded(info)));
+        sb.append(settingsLine(info, "Throttled", throttled(info)));
         sb.append(settingsLine(info, "Allocation", "jdk.ObjectAllocationSample", "jdk.ObjectAllocationInNewTLAB"));
         sb.append('\n');
         final TextTable t = new TextTable("Event type", "Count", "Enabled", "Threshold", "Period").numeric(1);
@@ -81,7 +86,86 @@ final class Text {
                     info.period(type).map(Durations::format).or(() -> info.setting(type, "period")).orElse(""));
         }
         sb.append(t.render());
+        sb.append(threadFamilies(info));
         return sb.toString();
+    }
+
+    /**
+     * The threads in the file, folded into families by stripping the trailing number a pool
+     * gives its workers. {@code stalls} and {@code locks} take a {@code --thread} glob and
+     * this is the only place that can say what to pass them.
+     */
+    static String threadFamilies(final RecordingInfo info) {
+        if (info.threads().isEmpty()) {
+            return "";
+        }
+        final Map<String, int[]> families = new TreeMap<>();
+        final Map<String, String> example = new TreeMap<>();
+        for (final ThreadRef t : info.threads()) {
+            final String family = family(t.name());
+            families.computeIfAbsent(family, _ -> new int[1])[0]++;
+            example.putIfAbsent(family, t.name());
+        }
+        final StringBuilder sb = new StringBuilder("\nTHREADS (the names --thread matches)\n");
+        final TextTable table = new TextTable("Family", "Count", "Example").numeric(1);
+        for (final Map.Entry<String, int[]> e : families.entrySet()) {
+            final int count = e.getValue()[0];
+            table.row(count > 1 ? e.getKey() + "*" : e.getKey(), count, count > 1 ? example.get(e.getKey()) : "");
+        }
+        sb.append(table.render("  "));
+        return sb.toString();
+    }
+
+    /**
+     * {@code milo-shared-thread-pool-17} and {@code pool-36-thread-2} are one family each:
+     * the trailing run of digits, and any digits between two separators, are what a pool
+     * varies per worker.
+     */
+    static String family(final String name) {
+        final StringBuilder sb = new StringBuilder(name.length());
+        boolean digits = false;
+        for (int i = 0, n = name.length(); i < n; i++) {
+            final char c = name.charAt(i);
+            if (c >= '0' && c <= '9') {
+                digits = true;
+                continue;
+            }
+            if (digits) {
+                sb.append('N');
+                digits = false;
+            }
+            sb.append(c);
+        }
+        if (digits) {
+            sb.append('N');
+        }
+        return sb.toString();
+    }
+
+    /** Every enabled event type that carries a threshold, in name order. */
+    static String[] thresholded(final RecordingInfo info) {
+        return settingsWith(info, "threshold");
+    }
+
+    /** Every enabled event type that is throttled: those are sampled, so the file is not complete for them. */
+    static String[] throttled(final RecordingInfo info) {
+        return settingsWith(info, "throttle");
+    }
+
+    private static String[] settingsWith(final RecordingInfo info, final String setting) {
+        final List<String> types = new ArrayList<>();
+        for (final Map.Entry<String, Map<String, String>> e : info.settings().entrySet()) {
+            if (!info.enabled(e.getKey())) {
+                continue;
+            }
+            final String value = setting.equals("throttle")
+                    ? info.throttle(e.getKey()).orElse(null)
+                    : e.getValue().get(setting);
+            if (value != null && !value.isBlank()) {
+                types.add(e.getKey());
+            }
+        }
+        return types.toArray(new String[0]);
     }
 
     static String alloc(final AllocationReport r, final int top, final boolean sites) {
@@ -395,11 +479,20 @@ final class Text {
         return String.format(Locale.ROOT, "%+.0f%%", r * 100);
     }
 
-    private static String names(final Set<ThreadRef> threads) {
-        final List<String> names = new ArrayList<>();
+    /**
+     * Thread names, capped: a lock on a hundred-thread server listed every distinct waiter
+     * on one line, 3,630 characters of it, and the count is the information a reader wants.
+     */
+    static String names(final Set<ThreadRef> threads) {
+        final StringBuilder sb = new StringBuilder();
+        int shown = 0;
         for (final ThreadRef t : threads) {
-            names.add(t.name());
+            if (shown == NAMES_SHOWN) {
+                sb.append(" (+").append(threads.size() - shown).append(" more)");
+                break;
+            }
+            sb.append(shown++ > 0 ? ", " : "").append(t.name());
         }
-        return String.join(", ", names);
+        return sb.toString();
     }
 }

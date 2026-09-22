@@ -51,6 +51,9 @@ public final class Html {
     /** Rows listed in the stalls table; the timeline always shows every stall. */
     static final int MIN_LISTED = 100;
 
+    /** Names listed in a cell before the rest become a count. */
+    private static final int NAMES_SHOWN = 4;
+
     public static String stalls(final StallReport report, final int top) {
         final Page p = new Page("jfrq stalls", report.info());
         p.kv("Gap", Durations.format(report.gapNanos()));
@@ -373,13 +376,16 @@ public final class Html {
         }
     }
 
+    /** Thread names, capped the same way as the text report: the count carries the information. */
     private static String names(final Set<ThreadRef> threads) {
         final StringBuilder sb = new StringBuilder();
-        for (final var t : threads) {
-            if (!sb.isEmpty()) {
-                sb.append(", ");
+        int shown = 0;
+        for (final ThreadRef t : threads) {
+            if (shown == NAMES_SHOWN) {
+                sb.append(" (+").append(threads.size() - shown).append(" more)");
+                break;
             }
-            sb.append(t.name());
+            sb.append(shown++ > 0 ? ", " : "").append(t.name());
         }
         return sb.toString();
     }

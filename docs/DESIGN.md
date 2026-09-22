@@ -302,6 +302,15 @@ A busy run's tail, which is an estimate (one sampler period past its last sample
 at the end of the recording for the same reason. Silences need no clipping: they are
 bounded by two samples, both inside the span by construction.
 
+**`info`.** The thresholds and throttles it prints are derived from the settings in the
+file, not from a list of event types written into the tool: the line exists to answer
+"did the settings I asked for take effect", and a fixed list answers it only for the
+events someone thought of. The thread count is the threads *seen in events*, which is
+why it moves with the window's activity rather than matching a thread dump, and it is
+labelled as such; the `THREADS` section folds them into families by replacing each run
+of digits with `N`, because that is what a pool varies per worker and what a `--thread`
+glob has to match.
+
 ## 5. Output
 
 Text goes to standard output in fixed-width tables meant for tickets and chat; each

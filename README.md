@@ -100,7 +100,7 @@ jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N
 ```
 
 `GLOB` is a comma-separated list of shell globs on thread names: `'event-loop-*'`,
-`'nioEventLoopGroup-*,worker-?'`. `jfrq info` lists the names in a file. Durations take
+`'nioEventLoopGroup-*,worker-?'`. `jfrq info` lists them, folded into families (`milo-shared-thread-pool-N* ×33`). Durations take
 a unit (`50ms`, `1.5s`, `2m`); options belong to their command, so a `stalls` option on
 `locks` is an error rather than silently ignored.
 

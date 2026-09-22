@@ -3,10 +3,12 @@
 
 package dev.jfrq.cli;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -58,6 +60,46 @@ class TextTest {
                 Map.of("worker", 1070L, "short-lived", 500L), Map.of(), Map.of(), Map.of(), Map.of());
         final String text = Text.alloc(r, 15, false);
         assertTrue(text.contains("the estimate for those is 1.07 KB (+7%), 68.2% of the estimate above"), text);
+    }
+
+    @Test
+    void waiterListsAreCappedAndCounted() {
+        final List<Wait> many = new ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            many.add(new Wait(new Interval((1_000 + i) * MS, (1_010 + i) * MS), new ThreadRef(i, "worker-" + i),
+                    REGISTRY, HOLDER, Stack.EMPTY));
+        }
+        final String text = Text.locks(new ContentionReport(window(), many), 15);
+        // The lock's Waiters cell names four and counts the rest; the threads still have
+        // their own rows in THREADS BY TIME BLOCKED, which --top governs.
+        assertTrue(text.contains("worker-0, worker-1, worker-2, worker-3 (+16 more)"), text);
+    }
+
+    @Test
+    void infoListsThreadFamiliesAndDerivesTheThresholdLine() {
+        final RecordingInfo info = new RecordingInfo(Path.of("a.jfr"), new Interval(0, 1_000 * MS), 1,
+                Map.of("jdk.SocketWrite", 3L),
+                Map.of("jdk.SocketWrite", Map.of("enabled", "true", "threshold", "1 ms"),
+                        "jdk.ObjectAllocationSample", Map.of("enabled", "true", "throttle", "1000/s")),
+                Set.of(new ThreadRef(1, "milo-shared-thread-pool-17"), new ThreadRef(2, "milo-shared-thread-pool-3"),
+                        new ThreadRef(3, "main")),
+                List.of());
+        final String text = Text.info(info);
+
+        // SocketWrite is outside the old fixed whitelist, and its 1 ms threshold was in force.
+        assertTrue(text.contains("Thresholds SocketWrite 1.00 ms"), text);
+        assertTrue(text.contains("Throttled  ObjectAllocationSample 1000/s"), text);
+        assertTrue(text.contains("Threads    3 seen in events"), text);
+        assertTrue(text.contains("milo-shared-thread-pool-N*"), text);
+        assertTrue(text.contains("main"), text);
+    }
+
+    @Test
+    void threadFamiliesFoldEveryNumberAPoolVaries() {
+        assertEquals("pool-N-thread-N", Text.family("pool-36-thread-2"));
+        assertEquals("milo-shared-thread-pool-N", Text.family("milo-shared-thread-pool-17"));
+        assertEquals("main", Text.family("main"));
+        assertEquals("RMI TCP Connection(N)-N.N.N.N", Text.family("RMI TCP Connection(1)-192.168.1.120"));
     }
 
     @Test
