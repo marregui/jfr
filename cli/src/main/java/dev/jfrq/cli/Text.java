@@ -229,10 +229,13 @@ final class Text {
 
         if (sites) {
             sb.append("\nBY SITE\n");
+            final Map<Stack, Integer> variants = new java.util.HashMap<>();
             int n = 1;
-            for (final AllocationReport.Row<Stack> row : r.sites(top)) {
-                sb.append(String.format(Locale.ROOT, "  %2d  %10s  %10s  %6s%n", n++, Bytes.format(row.bytes()),
-                        Bytes.rate(r.rate(row.bytes())), pct(row.share())));
+            for (final AllocationReport.Row<Stack> row : r.foldedSites(top, STACK_FRAMES, variants)) {
+                final int distinct = variants.getOrDefault(row.key(), 1);
+                sb.append(String.format(Locale.ROOT, "  %2d  %10s  %10s  %6s%s%n", n++, Bytes.format(row.bytes()),
+                        Bytes.rate(r.rate(row.bytes())), pct(row.share()),
+                        distinct > 1 ? "  (" + distinct + " stacks that differ only in elided frames)" : ""));
                 sb.append(row.key().pretty("        ", STACK_FRAMES));
             }
         }

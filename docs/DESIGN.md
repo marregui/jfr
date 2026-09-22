@@ -88,6 +88,15 @@ that live and die inside the window, the counted threads can be a third of the e
 while the transient ones did the other two thirds; an unqualified "±2 %" reads as the
 error of the whole report, which it is not.
 
+**Sites are folded by what they print.** `BY SITE` once showed ranks 1, 2 and 3 at
+51.1 %, 10.9 % and 5.3 % with the same six frames, the same culprit line and the same
+`... 12 more`: one site to a reader, three rows to add up by hand, and the sum, 67.3 %,
+was the actual headline. Rows whose *rendering* is identical are now summed into one and
+marked with how many stacks are behind it. The key is the rendering, not the first n
+frames, because `pretty` also prints the culprit when it lies deeper, and two sites that
+differ there are two rows a reader can tell apart. The raw per-stack map is untouched:
+`--baseline` matches sites by full stack and must keep doing so.
+
 **Aggregation.** Bytes by thread name, by allocated class, and by full stack, plus the
 class and stack breakdown per thread. Rates divide by the recording span. Byte units are
 decimal (`1 MB` is 1,000,000 bytes), as in `jfr view`; `jfr print` uses binary units.

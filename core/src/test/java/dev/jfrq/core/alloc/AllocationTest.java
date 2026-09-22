@@ -62,6 +62,34 @@ class AllocationTest {
     }
 
     @Test
+    void sitesThatPrintTheSameAreOneRow() {
+        // Three stacks whose visible frames are identical and whose culprit is the same:
+        // the reader sees one site three times and has to add the shares by hand.
+        final Frame visible = new Frame("java.util.Arrays", "copyOf", 3720, "JIT compiled");
+        final Frame culprit = new Frame("dev.app.Browser", "handleBrowseResult", 282, "JIT compiled");
+        // Same depth, so even the "... 1 more" line matches: they differ only in the frame it hides.
+        final Stack a = new Stack(List.of(visible, culprit, new Frame("dev.app.X", "a", 1, "JIT compiled")), false);
+        final Stack b = new Stack(List.of(visible, culprit, new Frame("dev.app.Y", "b", 2, "JIT compiled")), false);
+        final Stack c = new Stack(List.of(visible, culprit, new Frame("dev.app.Z", "c", 3, "JIT compiled")), false);
+        final AllocationReport r = report("a.jfr", 1, Map.of("worker", 600L), Map.of(),
+                Map.of(a, 300L, b, 200L, c, 100L));
+
+        final Map<Stack, Integer> variants = new java.util.HashMap<>();
+        // Folded at two frames, all three render the same: one row carrying the whole 600.
+        final List<AllocationReport.Row<Stack>> folded = r.foldedSites(10, 2, variants);
+        assertEquals(1, folded.size());
+        assertEquals(600, folded.getFirst().bytes());
+        assertEquals(1.0, folded.getFirst().share(), 1e-9);
+        assertEquals(3, variants.get(folded.getFirst().key()));
+        // The raw map still keeps them apart, which is what --baseline matches on.
+        assertEquals(3, r.sites(10).size());
+
+        // Folded deep enough to show the frame that distinguishes them, they are three rows again.
+        final Map<Stack, Integer> deep = new java.util.HashMap<>();
+        assertEquals(3, r.foldedSites(10, 6, deep).size());
+    }
+
+    @Test
     void ranksAndShares() {
         final AllocationReport r = report("a.jfr", 10,
                 Map.of("worker", 800L, "loop", 200L),

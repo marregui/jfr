@@ -51,6 +51,9 @@ public final class Html {
     /** Rows listed in the stalls table; the timeline always shows every stall. */
     static final int MIN_LISTED = 100;
 
+    /** Frames a stack row shows, and therefore the depth allocation sites are folded at. */
+    static final int STACK_FRAMES = 12;
+
     /** Names listed in a cell before the rest become a count. */
     private static final int NAMES_SHOWN = 4;
 
@@ -280,9 +283,12 @@ public final class Html {
 
         p.h2("By site");
         p.tableStart("Site", "Bytes", "Rate", "Share");
-        for (final AllocationReport.Row<Stack> r : report.sites(top)) {
-            p.row(r.key().top().map(Frame::pretty).orElse("<no stack>"), Bytes.format(r.bytes()),
-                    Bytes.rate(report.rate(r.bytes())), pct(r.share()));
+        final Map<Stack, Integer> variants = new LinkedHashMap<>();
+        for (final AllocationReport.Row<Stack> r : report.foldedSites(top, STACK_FRAMES, variants)) {
+            final int distinct = variants.getOrDefault(r.key(), 1);
+            p.row(r.key().top().map(Frame::pretty).orElse("<no stack>")
+                            + (distinct > 1 ? " (" + distinct + " stacks that differ only in elided frames)" : ""),
+                    Bytes.format(r.bytes()), Bytes.rate(report.rate(r.bytes())), pct(r.share()));
             p.stackRow(4, r.key());
         }
         p.tableEnd();
@@ -545,7 +551,7 @@ public final class Html {
 
         void stackRow(final int colspan, final Stack stack) {
             sb.append("<tr class=\"stack\"><td colspan=\"").append(colspan).append("\"><pre>")
-                    .append(escape(stack.pretty("", 12))).append("</pre></td></tr>\n");
+                    .append(escape(stack.pretty("", STACK_FRAMES))).append("</pre></td></tr>\n");
         }
 
         void tableEnd() {

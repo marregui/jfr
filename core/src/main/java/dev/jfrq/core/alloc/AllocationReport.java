@@ -5,6 +5,7 @@ package dev.jfrq.core.alloc;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -133,6 +134,38 @@ public record AllocationReport(
 
     public List<Row<Stack>> sites(final int top) {
         return rank(bySite, top);
+    }
+
+    /**
+     * Allocation sites ranked by bytes, with those that are indistinguishable in the first
+     * {@code frames} frames summed into one row. Three sites that print the same six frames
+     * and the same elision are one site to a reader, and their shares have to be added by
+     * hand to get the number that matters; the raw map keeps them apart, because
+     * {@link AllocationDiff} matches sites by their full stack.
+     *
+     * @param variants filled with the number of distinct stacks behind each returned row
+     */
+    public List<Row<Stack>> foldedSites(final int top, final int frames, final Map<Stack, Integer> variants) {
+        // Keyed by the rendering itself, not by the first n frames: `pretty` also prints the
+        // culprit frame when it lies deeper than n, and two sites that differ there are two
+        // rows a reader can tell apart. Whatever prints the same is one row.
+        final Map<String, Long> bytes = new HashMap<>();
+        final Map<String, Integer> counts = new HashMap<>();
+        final Map<String, Stack> shown = new HashMap<>();
+        for (final Map.Entry<Stack, Long> e : bySite.entrySet()) {
+            final String rendering = e.getKey().pretty("", frames);
+            bytes.merge(rendering, e.getValue(), Long::sum);
+            counts.merge(rendering, 1, Integer::sum);
+            shown.putIfAbsent(rendering, e.getKey());
+        }
+        final List<Row<String>> ranked = rank(bytes, top);
+        final List<Row<Stack>> rows = new ArrayList<>(ranked.size());
+        for (final Row<String> row : ranked) {
+            final Stack representative = shown.get(row.key());
+            rows.add(new Row<>(representative, row.bytes(), row.share()));
+            variants.put(representative, counts.get(row.key()));
+        }
+        return List.copyOf(rows);
     }
 
     public List<Row<String>> classesOf(final String thread, final int top) {
