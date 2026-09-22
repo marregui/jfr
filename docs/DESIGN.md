@@ -149,6 +149,12 @@ thread.
 links is a convoy: the thing the loop waited for was held by a thread that was itself
 waiting. Co-waiters for the same lock are not links; they are already folded into `via`.
 
+**Every row carries a stack.** `LOCKS BY TOTAL WAIT` ranks by total, `LONGEST WAITS`
+by duration, so a lock made of thousands of short waits tops the first and never appears
+in the second: its row was a name and an address with no way to act on it. Each row now
+takes the stack of its own longest wait, listed under `WHERE THEY WAITED`, and `--lock`
+filters the whole report down to one lock by class or by `class@address`.
+
 **Lock identity** is class plus address. Addresses are stable only until a collection
 moves the object, so the class is always shown and the address only disambiguates.
 

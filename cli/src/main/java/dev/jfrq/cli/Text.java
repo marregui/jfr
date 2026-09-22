@@ -218,12 +218,27 @@ final class Text {
         }
 
         sb.append("\nLOCKS BY TOTAL WAIT\n");
+        final List<ContentionReport.LockStats> ranked = r.locks(top);
         final TextTable locks = new TextTable("Lock", "Kind", "Total", "Waits", "Max", "Waiters", "Held by").numeric(2, 3, 4);
-        for (final ContentionReport.LockStats l : r.locks(top)) {
+        for (final ContentionReport.LockStats l : ranked) {
             locks.row(l.lock().pretty(), l.lock().kind().label(), Durations.format(l.totalNanos()), l.count(),
                     Durations.format(l.maxNanos()), names(l.waiters()), names(l.owners()));
         }
         sb.append(locks.render("  "));
+
+        // Without this a row above is a name nobody can act on: a hot lock of many short waits
+        // never reaches LONGEST WAITS, which is where the only other stack is.
+        if (!ranked.isEmpty()) {
+            sb.append("\nWHERE THEY WAITED (the longest wait for each lock above)\n");
+            for (final ContentionReport.LockStats l : ranked) {
+                if (l.longest() == null) {
+                    continue;
+                }
+                sb.append(String.format(Locale.ROOT, "  %s  %s%n", l.lock().pretty(),
+                        Durations.format(l.longest().duration())));
+                sb.append(l.longest().stack().pretty("        ", STACK_FRAMES));
+            }
+        }
 
         sb.append("\nTHREADS BY TIME BLOCKED\n");
         final TextTable threads = new TextTable("Thread", "Total", "Waits", "Max", "Share").numeric(1, 2, 3, 4);

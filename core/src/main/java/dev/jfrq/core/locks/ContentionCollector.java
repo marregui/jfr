@@ -40,6 +40,7 @@ public final class ContentionCollector implements JfrReader.Sink {
     private final long minNanos;
     private final Predicate<String> waiterFilter;
     private final IdleMatcher workWaits;
+    private final Predicate<Wait.LockKey> lockFilter;
     private final ObjList<Wait> waits = new ObjList<>(1024);
     /**
      * One {@link Wait.LockKey} per lock, keyed by address: a recording holds a few locks
@@ -59,11 +60,20 @@ public final class ContentionCollector implements JfrReader.Sink {
         this(minNanos, waiterFilter, IdleMatcher.forWorkWaits());
     }
 
-    /** @param workWaits which parks the report separates out as "no work to do" */
     public ContentionCollector(final long minNanos, final Predicate<String> waiterFilter, final IdleMatcher workWaits) {
+        this(minNanos, waiterFilter, workWaits, _ -> true);
+    }
+
+    /**
+     * @param workWaits  which parks the report separates out as "no work to do"
+     * @param lockFilter which locks are reported at all
+     */
+    public ContentionCollector(final long minNanos, final Predicate<String> waiterFilter, final IdleMatcher workWaits,
+                               final Predicate<Wait.LockKey> lockFilter) {
         this.minNanos = minNanos;
         this.waiterFilter = waiterFilter;
         this.workWaits = workWaits;
+        this.lockFilter = lockFilter;
     }
 
     public ContentionCollector() {
@@ -127,7 +137,7 @@ public final class ContentionCollector implements JfrReader.Sink {
 
     @Override
     public void finish(final RecordingInfo info) {
-        report = new ContentionReport(info, waits.toList(), minNanos, waiterFilter, workWaits);
+        report = new ContentionReport(info, waits.toList(), minNanos, waiterFilter, workWaits, lockFilter);
     }
 
     public ContentionReport report() {

@@ -37,7 +37,7 @@ import dev.jfrq.core.util.Glob;
  * <pre>
  *   jfrq info   recording.jfr
  *   jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--html out.html]
- *   jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--idle REGEX,...] [--top N] [--html out.html]
+ *   jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--top N] [--html out.html]
  *   jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html]
  * </pre>
  */
@@ -72,6 +72,8 @@ public final class Main {
               --idle REGEX   comma-separated regexes naming the frame of a pool waiting for work;
                              those parks are reported apart from contention. 'none' reports every
                              park as contention (default: the JDK pools, Netty, logback)
+              --lock GLOB    only these locks, by class or by 'class@address'
+                             (e.g. 'java.lang.Object@714697020', '*Registry')
 
             stalls:
               --thread GLOB  threads to watch (required; e.g. 'event-loop-*')
@@ -98,7 +100,7 @@ public final class Main {
                 valued.add("baseline");
                 flags.add("sites");
             }
-            case "locks" -> valued.addAll(Set.of("min", "thread", "idle"));
+            case "locks" -> valued.addAll(Set.of("min", "thread", "idle", "lock"));
             case "stalls" -> valued.addAll(Set.of("thread", "gap", "idle"));
             default -> throw new Args.UsageException("unknown command '" + command + "'");
         }
@@ -230,7 +232,12 @@ public final class Main {
         if (threads.isEmpty()) {
             throw new Args.UsageException("--thread must name at least one pattern");
         }
-        final ContentionCollector collector = new ContentionCollector(min, threads, workWaits(args));
+        final Glob locks = args.option("lock").map(Glob::of).orElse(Glob.any());
+        if (locks.isEmpty()) {
+            throw new Args.UsageException("--lock must name at least one pattern");
+        }
+        final ContentionCollector collector = new ContentionCollector(min, threads, workWaits(args),
+                lock -> locks.test(lock.pretty()) || locks.test(lock.prettyClass()));
         JfrReader.read(file, collector);
         phase("read");
         out.print(Text.locks(collector.report(), top));

@@ -30,9 +30,16 @@ import dev.jfrq.core.util.Sorted;
  */
 public final class ContentionReport {
 
-    /** Totals for one lock. */
+    /**
+     * Totals for one lock.
+     *
+     * @param longest the longest single wait for it, whose stack stands for the row: ranking
+     *                by duration means a hot lock of many short waits never reaches
+     *                {@code LONGEST WAITS}, and a row without a stack is a name a reader
+     *                cannot act on
+     */
     public record LockStats(Wait.LockKey lock, long totalNanos, int count, long maxNanos,
-                            Set<ThreadRef> waiters, Set<ThreadRef> owners) {
+                            Set<ThreadRef> waiters, Set<ThreadRef> owners, Wait longest) {
     }
 
     /** Totals for one waiting thread. */
@@ -98,6 +105,17 @@ public final class ContentionReport {
      */
     public ContentionReport(final RecordingInfo info, final List<Wait> waits, final long minNanos,
                             final Predicate<String> waiterFilter, final IdleMatcher workWaits) {
+        this(info, waits, minNanos, waiterFilter, workWaits, _ -> true);
+    }
+
+    /**
+     * @param lockFilter only waits for locks that pass are reported; a lock is named by its
+     *                   class, its address, or both, and the filter runs after holder
+     *                   resolution like the others
+     */
+    public ContentionReport(final RecordingInfo info, final List<Wait> waits, final long minNanos,
+                            final Predicate<String> waiterFilter, final IdleMatcher workWaits,
+                            final Predicate<Wait.LockKey> lockFilter) {
         this.info = info;
         final ObjList<Wait> sorted = new ObjList<>(waits.size());
         for (int i = 0, n = waits.size(); i < n; i++) {
@@ -124,6 +142,9 @@ public final class ContentionReport {
             // inside the window, so the totals and the shares cannot exceed it. Clipping
             // keeps the order: both ends move by a monotone function of themselves.
             final Wait inside = clip(resolved, window);
+            if (!lockFilter.test(w.lock())) {
+                continue;
+            }
             final boolean idle = w.kind() == Wait.Kind.PARK && workWaits.isIdle(w.stack());
             // A worker parked on its own queue holds nothing and blocks nobody, so it is not a
             // convoy link either; the rest stay reachable so a convoy can be followed into any
@@ -297,6 +318,7 @@ public final class ContentionReport {
         final Map<Wait.LockKey, long[]> totals = new LinkedHashMap<>();
         final Map<Wait.LockKey, Set<ThreadRef>> waiters = new HashMap<>();
         final Map<Wait.LockKey, Set<ThreadRef>> owners = new HashMap<>();
+        final Map<Wait.LockKey, Wait> longest = new HashMap<>();
         for (final Wait w : from) {
             final long[] t = totals.computeIfAbsent(w.lock(), _ -> new long[3]);
             t[0] += w.duration();
@@ -306,10 +328,14 @@ public final class ContentionReport {
             if (w.owner() != null) {
                 owners.computeIfAbsent(w.lock(), _ -> new LinkedHashSet<>()).add(w.owner());
             }
+            final Wait best = longest.get(w.lock());
+            if (best == null || w.duration() > best.duration()) {
+                longest.put(w.lock(), w);
+            }
         }
         final List<LockStats> stats = new ArrayList<>();
         totals.forEach((lock, t) -> stats.add(new LockStats(lock, t[0], (int) t[1], t[2],
-                waiters.getOrDefault(lock, Set.of()), owners.getOrDefault(lock, Set.of()))));
+                waiters.getOrDefault(lock, Set.of()), owners.getOrDefault(lock, Set.of()), longest.get(lock))));
         stats.sort(Comparator.comparingLong(LockStats::totalNanos).reversed());
         return limit(stats, top);
     }

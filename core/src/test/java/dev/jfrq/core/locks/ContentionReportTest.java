@@ -275,6 +275,45 @@ class ContentionReportTest {
     }
 
     @Test
+    void everyLockRowCarriesTheStackOfItsLongestWait() {
+        // A hot lock of many short waits: none of them is long enough to reach LONGEST WAITS,
+        // so the row's own stack is the only way to see where it was taken.
+        final Stack cow = stack(new Frame("java.util.concurrent.CopyOnWriteArrayList", "add", 472, "JIT compiled"),
+                new Frame("dev.app.Browser", "handleBrowseResult", 282, "JIT compiled"));
+        final ContentionReport r = new ContentionReport(info(), List.of(
+                new Wait(new Interval(100 * MS, 130 * MS), LOOP1, REGISTRY, HOUSEKEEPER, cow),
+                new Wait(new Interval(200 * MS, 220 * MS), LOOP2, REGISTRY, HOUSEKEEPER, cow),
+                wait(300, 900, HOUSEKEEPER, STORE, FLUSHER)));
+
+        final ContentionReport.LockStats registry = r.locks(10).stream()
+                .filter(l -> l.lock().equals(REGISTRY)).findFirst().orElseThrow();
+        assertEquals(30 * MS, registry.longest().duration());
+        assertEquals(cow, registry.longest().stack());
+        // The store's single wait is the longest in the recording and is its own representative.
+        assertEquals(600 * MS, r.locks(10).getFirst().longest().duration());
+    }
+
+    @Test
+    void theLockFilterSelectsByClassOrByAddress() {
+        final List<Wait> all = List.of(
+                wait(100, 300, LOOP1, REGISTRY, HOUSEKEEPER),
+                wait(400, 900, LOOP2, STORE, HOUSEKEEPER));
+        final ContentionReport byAddress = new ContentionReport(info(), all, 0, _ -> true, IdleMatcher.forWorkWaits(),
+                lock -> lock.pretty().equals("dev.app.Registry@abc"));
+        assertEquals(1, byAddress.waits().size());
+        assertEquals(REGISTRY, byAddress.locks(10).getFirst().lock());
+
+        final ContentionReport byClass = new ContentionReport(info(), all, 0, _ -> true, IdleMatcher.forWorkWaits(),
+                lock -> lock.prettyClass().equals("dev.app.Store"));
+        assertEquals(1, byClass.waits().size());
+        assertEquals(500 * MS, byClass.totalNanos());
+
+        final ContentionReport none = new ContentionReport(info(), all, 0, _ -> true, IdleMatcher.forWorkWaits(),
+                _ -> false);
+        assertTrue(none.isEmpty());
+    }
+
+    @Test
     void lockKeyPrettyPrinting() {
         assertEquals("dev.app.Registry@abc", REGISTRY.pretty());
         assertEquals("dev.app.Registry", REGISTRY.prettyClass());

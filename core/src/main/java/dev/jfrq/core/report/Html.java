@@ -149,6 +149,9 @@ public final class Html {
         for (final ContentionReport.LockStats l : report.locks(top)) {
             p.row(l.lock().pretty(), l.lock().kind().label(), Durations.format(l.totalNanos()), l.count(),
                     Durations.format(l.maxNanos()), names(l.waiters()), names(l.owners()));
+            if (l.longest() != null && !l.longest().stack().isEmpty()) {
+                p.stackRow(7, l.longest().stack());
+            }
         }
         p.tableEnd();
 
