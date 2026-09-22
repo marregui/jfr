@@ -177,7 +177,7 @@ public record AllocationReport(
      * Allocation sites ranked by bytes, every stack that {@code key} names the same summed
      * into one row. A logical site reaches the sampler down many paths, and one row per path
      * turns a fifth of the heap into a dozen rows of two percent; the raw map keeps them
-     * apart, because {@link AllocationDiff} matches sites by their full stack.
+     * apart, because {@link AllocationDiff#sites(int)} compares them one stack at a time.
      *
      * <p>The samples are summed with the bytes. A row whose bytes are the sum of ten stacks
      * and whose support is one of them says the most important row in the report rests on

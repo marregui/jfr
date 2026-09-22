@@ -335,6 +335,13 @@ public final class Html {
         p.tableEnd();
 
         p.h2("By site: " + key.description());
+        final StringBuilder packages = new StringBuilder();
+        for (final AllocationReport.Row<String> root : report.packageRoots(4)) {
+            packages.append(packages.isEmpty() ? "" : ", ").append(root.key()).append(' ').append(pct(root.share()));
+        }
+        if (!packages.isEmpty()) {
+            p.kv("Packages", packages + " — --app PREFIX ranks by the innermost frame in one of them instead");
+        }
         p.tableStart("Site", "Bytes", "Rate", "Share", "Samples");
         for (final AllocationReport.SiteRow r : report.sites(key, top)) {
             p.row(r.label() + (r.stacks() > 1 ? " (" + r.stacks() + " stacks, the biggest below)" : ""),
@@ -367,7 +374,7 @@ public final class Html {
         return p.finish();
     }
 
-    public static String allocDiff(final AllocationDiff diff, final int top) {
+    public static String allocDiff(final AllocationDiff diff, final int top, final SiteKey key) {
         final Page p = new Page("jfrq alloc diff", diff.current().info());
         p.kv("Baseline", diff.baseline().info().file().toString() + " (" + Bytes.rate(diff.baseline().rate()) + ")");
         final List<String> baselineWarnings = new ArrayList<>();
@@ -382,13 +389,13 @@ public final class Html {
         deltaTable(p, diff.threads(top), k -> k);
         p.h2("By class");
         deltaTable(p, diff.classes(top), ClassNames::pretty);
-        // The diff matches sites by their full stack, so its rows are stacks, not folded sites.
-        p.h2("By site");
-        p.tableStart("Site", "Before", "After", "Change");
-        for (final AllocationDiff.Delta<Stack> d : diff.sites(top)) {
-            p.row(d.key().top().map(Frame::pretty).orElse("<no stack>"), Bytes.rate(d.beforeRate()),
-                    Bytes.rate(d.afterRate()), Bytes.signedRate(d.delta()) + " (" + ratio(d.ratio()) + ")");
-            p.stackRow(4, d.key());
+        p.h2("By site: " + key.description());
+        p.tableStart("Site", "Before", "After", "Change", "Samples");
+        for (final AllocationDiff.Delta<AllocationDiff.Site> d : diff.sites(key, top)) {
+            p.row(d.key().label(), Bytes.rate(d.beforeRate()), Bytes.rate(d.afterRate()),
+                    Bytes.signedRate(d.delta()) + " (" + ratio(d.ratio()) + ")",
+                    d.key().beforeSamples() + " -> " + d.key().afterSamples());
+            p.stackRow(5, d.key().stack());
         }
         p.tableEnd();
         return p.finish();

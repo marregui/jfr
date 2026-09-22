@@ -271,7 +271,7 @@ final class Text {
         return sb.append("  (--app PREFIX ranks by the innermost frame in one of them instead)\n").toString();
     }
 
-    static String allocDiff(final AllocationDiff d, final int top, final boolean sites) {
+    static String allocDiff(final AllocationDiff d, final int top, final boolean sites, final SiteKey key) {
         final StringBuilder sb = new StringBuilder();
         sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s%n", "Baseline", d.baseline().info().file().getFileName(),
                 Durations.format(d.baseline().info().duration()), Bytes.rate(d.baseline().rate())));
@@ -308,12 +308,13 @@ final class Text {
         sb.append(classes.render("  "));
 
         if (sites) {
-            sb.append("\nBY SITE\n");
+            sb.append("\nBY SITE (").append(key.description()).append("; every path through it is one row)\n");
             int n = 1;
-            for (final AllocationDiff.Delta<Stack> x : d.sites(top)) {
-                sb.append(String.format(Locale.ROOT, "  %2d  %10s -> %-10s %10s (%s)%n", n++, Bytes.rate(x.beforeRate()),
-                        Bytes.rate(x.afterRate()), Bytes.signedRate(x.delta()), ratio(x.ratio())));
-                sb.append(x.key().pretty("        ", STACK_FRAMES));
+            for (final AllocationDiff.Delta<AllocationDiff.Site> x : d.sites(key, top)) {
+                sb.append(String.format(Locale.ROOT, "  %2d  %10s -> %-10s %10s (%s)  %d -> %d samples  %s%n", n++,
+                        Bytes.rate(x.beforeRate()), Bytes.rate(x.afterRate()), Bytes.signedRate(x.delta()),
+                        ratio(x.ratio()), x.key().beforeSamples(), x.key().afterSamples(), x.key().label()));
+                sb.append(x.key().stack().pretty("        ", STACK_FRAMES));
             }
         }
         return sb.toString();

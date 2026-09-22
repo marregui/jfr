@@ -6,6 +6,8 @@ package dev.jfrq.core.alloc;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -15,8 +17,9 @@ import dev.jfrq.core.model.Stack;
 /**
  * Compares two allocation reports, a baseline and a candidate, by <em>rate</em>
  * (bytes per second) rather than by total, so that recordings of different lengths are
- * comparable. Threads are matched by name, classes by name, sites by full stack; a key
- * present on one side only is reported against zero on the other.
+ * comparable. Threads are matched by name, classes by name, and sites either by full stack
+ * ({@link #sites(int)}) or by the fold a reader is shown ({@link #sites(SiteKey, int)}); a
+ * key present on one side only is reported against zero on the other.
  *
  * @param baseline the "before" report
  * @param current  the "after" report
@@ -44,6 +47,14 @@ public record AllocationDiff(AllocationReport baseline, AllocationReport current
         }
     }
 
+    /**
+     * A site as it is compared: the name both sides were folded under, a stack that stands
+     * for it, and the samples behind each side. A change of several hundred percent on a
+     * handful of samples is noise, and only the counts say so.
+     */
+    public record Site(String label, Stack stack, long beforeSamples, long afterSamples) {
+    }
+
     public Delta<String> total() {
         return new Delta<>("total", baseline.rate(), current.rate());
     }
@@ -58,6 +69,43 @@ public record AllocationDiff(AllocationReport baseline, AllocationReport current
 
     public List<Delta<Stack>> sites(final int top) {
         return compare(baseline.bySite(), current.bySite(), top);
+    }
+
+    /**
+     * Sites compared after each side is folded by {@code key}, which is what a reader is
+     * shown. Matched per stack, one site moving appears once per path it was sampled down:
+     * a diff of two loaded windows opened with the same six frames twice, at 302 MB/s and
+     * 216 MB/s, and neither number was the change. Folded, the row is the site and its rate
+     * is the site's.
+     *
+     * <p>{@link #sites(int)} keeps the per-stack comparison underneath.
+     */
+    public List<Delta<Site>> sites(final SiteKey key, final int top) {
+        final Map<String, AllocationReport.SiteRow> before = byLabel(baseline.sites(key, Integer.MAX_VALUE));
+        final Map<String, AllocationReport.SiteRow> after = byLabel(current.sites(key, Integer.MAX_VALUE));
+        final Set<String> labels = new LinkedHashSet<>(after.keySet());
+        labels.addAll(before.keySet());
+        final List<Delta<Site>> deltas = new ArrayList<>(labels.size());
+        for (final String label : labels) {
+            final AllocationReport.SiteRow b = before.get(label);
+            final AllocationReport.SiteRow a = after.get(label);
+            // The stack under the row comes from the side that still has the site.
+            final Site site = new Site(label, a != null ? a.stack() : b.stack(),
+                    b == null ? 0 : b.samples(), a == null ? 0 : a.samples());
+            deltas.add(new Delta<>(site, b == null ? 0 : baseline.rate(b.bytes()),
+                    a == null ? 0 : current.rate(a.bytes())));
+        }
+        deltas.sort(Comparator.<Delta<Site>>comparingDouble(d -> Math.abs(d.delta())).reversed()
+                .thenComparing(d -> d.key().label()));
+        return deltas.size() > top ? List.copyOf(deltas.subList(0, top)) : List.copyOf(deltas);
+    }
+
+    private static Map<String, AllocationReport.SiteRow> byLabel(final List<AllocationReport.SiteRow> rows) {
+        final Map<String, AllocationReport.SiteRow> byLabel = new LinkedHashMap<>();
+        for (final AllocationReport.SiteRow row : rows) {
+            byLabel.put(row.label(), row);
+        }
+        return byLabel;
     }
 
     /** Sorted by absolute rate change, largest first. */

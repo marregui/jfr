@@ -195,7 +195,7 @@ class HtmlTest {
                 Map.of("worker", 500L), Map.of("[B", 500L), Map.of(STACK, 500L),
                 Map.of(), Map.of(), new AllocationReport.Support(Map.of("worker", 3L), Map.of("[B", 3L),
                 Map.of(STACK, 3L)));
-        final String diff = Html.allocDiff(new AllocationDiff(a, b), 10);
+        final String diff = Html.allocDiff(new AllocationDiff(a, b), 10, SiteKey.culpritMethod());
         assertTrue(diff.contains("<title>jfrq alloc diff"));
         assertTrue(diff.contains("Baseline"));
         assertTrue(diff.contains("-50%"));

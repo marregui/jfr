@@ -96,7 +96,7 @@ rows of about 2 % each — noise to any reader — when the method was 20.8 % of
 the JVM allocated. The key is now the **culprit method**: the innermost frame outside the
 JDK, without its line number. Every path through it is one row, the row says how many
 stacks it summed, and the stack printed under it is the biggest of them. The raw per-stack
-map is untouched: `--baseline` matches sites by full stack and must keep doing so.
+map is untouched underneath, and so is the per-stack comparison `--baseline` is built on.
 
 **`--app` when the culprit is a library.** The culprit rule stops at the innermost non-JDK
 frame, which for `NodeId.parse` is a third-party class the reader cannot change; what they
@@ -122,8 +122,14 @@ class and stack breakdown per thread. Rates divide by the recording span. Byte u
 decimal (`1 MB` is 1,000,000 bytes), as in `jfr view`; `jfr print` uses binary units.
 
 **Diff.** `--baseline` compares rates, not totals, so recordings of different length are
-comparable; threads match by name, classes by name, sites by full stack. A key missing
-on one side is reported against zero. Sorting is by absolute change in rate.
+comparable; threads match by name, classes by name, sites by the same fold the single
+report is ranked by, so `--app` groups a diff exactly as it groups one recording. Matched
+per stack instead, one site that moved appeared once per path it had been sampled down: a
+diff of two loaded windows opened with the same six frames twice, at 302 MB/s and
+216 MB/s, and neither number was the change — the site had moved 628 MB/s. Each row also
+carries the samples behind both sides, because several hundred percent on a handful of
+them is noise. A key missing on one side is reported against zero. Sorting is by absolute
+change in rate.
 
 **Limits.** The estimate is statistical; at the JDK's default 150-300 samples per second
 it ranks threads and classes reliably and gets shares within a few percent, but it will

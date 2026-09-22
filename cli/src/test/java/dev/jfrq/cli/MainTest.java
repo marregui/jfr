@@ -144,10 +144,6 @@ class MainTest {
         assertEquals(2, run("locks", recording.toString(), "--min", "abc").status());
         assertEquals(2, run("locks", recording.toString(), "--thread", "").status());
         assertEquals(2, run("alloc", recording.toString(), "--sites", "--app", " ,").status());
-        final Run withBaseline = run("alloc", recording.toString(), "--baseline", recording.toString(),
-                "--app", "dev.jfrq");
-        assertEquals(2, withBaseline.status());
-        assertTrue(withBaseline.err().contains("--app does not apply to --baseline"), withBaseline.err());
         // Each command's grouping option belongs to it alone.
         assertEquals(2, run("locks", recording.toString(), "--app", "dev.jfrq").status());
         assertEquals(2, run("alloc", recording.toString(), "--by-site").status());
@@ -274,6 +270,13 @@ class MainTest {
                 html.toString());
         assertEquals(0, r.status(), r.err());
         assertTrue(r.out().contains("Baseline   cli.jfr"));
+        // A recording against itself: every site is unchanged, and both sides carry the same
+        // samples, which is what says the row is a real comparison and not one side only.
+        assertTrue(r.out().contains("BY SITE ("), r.out());
+        // --app groups the diff the same way it groups a single report.
+        final Run byApp = run("alloc", recording.toString(), "--baseline", recording.toString(), "--app", "dev.jfrq");
+        assertEquals(0, byApp.status(), byApp.err());
+        assertTrue(byApp.out().contains("dev.jfrq."), byApp.out());
         assertFalse(r.out().contains("WARNING"), r.out());
 
         // A damaged baseline is said so on the diff, text and HTML.

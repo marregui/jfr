@@ -212,4 +212,38 @@ class AllocationTest {
         assertEquals(before, diff.baseline());
         assertEquals(after, diff.current());
     }
+
+    @Test
+    void aSiteThatMovedIsOneRowOfTheDiff() {
+        // The same method sampled down two paths, gone by the second recording. Compared per
+        // stack it is two rows and neither is the change; compared by the fold it is one.
+        final Stack viaSubstring = parsePath("java.lang.String", "substring", 453);
+        final Stack viaCopy = parsePath("java.util.Arrays", "copyOfRange", 454);
+        final AllocationReport before = report("before.jfr", 1, Map.of("worker", 900L), Map.of(),
+                Map.of(viaSubstring, 600L, viaCopy, 300L));
+        final AllocationReport after = report("after.jfr", 1, Map.of("worker", 0L), Map.of(), Map.of());
+        final AllocationDiff diff = new AllocationDiff(before, after);
+
+        assertEquals(2, diff.sites(10).size());
+        final List<AllocationDiff.Delta<AllocationDiff.Site>> folded = diff.sites(SiteKey.culpritMethod(), 10);
+        assertEquals(1, folded.size());
+        final AllocationDiff.Delta<AllocationDiff.Site> row = folded.getFirst();
+        assertEquals("org.lib.NodeId.parse", row.key().label());
+        assertEquals(900.0, row.beforeRate(), 1e-9);
+        assertEquals(0.0, row.afterRate(), 1e-9);
+        assertEquals(-1.0, row.ratio(), 1e-9);
+        // Both sides' support, so a change on three samples cannot read as a change on 900.
+        assertEquals(2, row.key().beforeSamples());
+        assertEquals(0, row.key().afterSamples());
+        // The stack under the row comes from the side that still has the site; here only one does.
+        assertEquals(viaSubstring, row.key().stack());
+
+        // A site only the current recording has is compared against zero and keeps its stack.
+        final AllocationDiff appeared = new AllocationDiff(after, before);
+        final AllocationDiff.Delta<AllocationDiff.Site> grown = appeared.sites(SiteKey.culpritMethod(), 10).getFirst();
+        assertEquals(0.0, grown.beforeRate(), 1e-9);
+        assertEquals(900.0, grown.afterRate(), 1e-9);
+        assertEquals(Double.POSITIVE_INFINITY, grown.ratio());
+        assertEquals(viaSubstring, grown.key().stack());
+    }
 }

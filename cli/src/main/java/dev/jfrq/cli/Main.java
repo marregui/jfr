@@ -232,24 +232,19 @@ public final class Main {
         final boolean sites = args.flag("sites") || args.option("app").isPresent();
         final AllocationCollector current = new AllocationCollector();
 
+        final SiteKey key = siteKey(args);
         if (args.option("baseline").isPresent()) {
-            if (args.option("app").isPresent()) {
-                // Silently ignoring it would be the one thing this parser refuses to do.
-                throw new Args.UsageException("--app does not apply to --baseline: a diff matches sites "
-                        + "by their full stack, not by the frame they are grouped under");
-            }
             final Path baselineFile = existing(Path.of(args.option("baseline").orElseThrow()));
             final AllocationCollector baseline = new AllocationCollector();
             readBoth(file, current, baselineFile, baseline);
             phase("read");
             final AllocationDiff diff = new AllocationDiff(baseline.report(), current.report());
-            out.print(Text.allocDiff(diff, top, sites));
-            html(args, () -> Html.allocDiff(diff, top));
+            out.print(Text.allocDiff(diff, top, sites, key));
+            html(args, () -> Html.allocDiff(diff, top, key));
         } else {
             JfrReader.read(file, current);
             phase("read");
             final AllocationReport report = current.report();
-            final SiteKey key = siteKey(args);
             out.print(Text.alloc(report, top, sites, key));
             html(args, () -> Html.alloc(report, top, key));
         }
