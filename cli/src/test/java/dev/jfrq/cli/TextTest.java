@@ -57,7 +57,8 @@ class TextTest {
         final AllocationReport r = new AllocationReport(new RecordingInfo(Path.of("a.jfr"),
                 new Interval(0, 1_000 * MS), 1, Map.of(), Map.of(), Set.of(), List.of()),
                 "jdk.ObjectAllocationSample", 1570, 100, 100, Map.of("worker", 1000L),
-                Map.of("worker", 1070L, "short-lived", 500L), Map.of(), Map.of(), Map.of(), Map.of());
+                Map.of("worker", 1070L, "short-lived", 500L), Map.of(), Map.of(), Map.of(), Map.of(),
+                AllocationReport.Support.NONE);
         final String text = Text.alloc(r, 15, false);
         assertTrue(text.contains("the estimate for those is 1.07 KB (+7%), 68.2% of the estimate above"), text);
     }

@@ -260,7 +260,7 @@ public final class Html {
         }
 
         p.h2("By thread");
-        p.tableStart("Thread", "Bytes", "Counted", "Rate", "Share", "Top classes");
+        p.tableStart("Thread", "Bytes", "Counted", "Rate", "Share", "Samples", "Top classes");
         for (final AllocationReport.Row<String> r : report.threads(top)) {
             final StringBuilder classes = new StringBuilder();
             for (final AllocationReport.Row<String> c : report.classesOf(r.key(), 3)) {
@@ -270,26 +270,28 @@ public final class Html {
                 classes.append(ClassNames.simple(c.key())).append(' ').append(pct(c.bytes(), r.bytes()));
             }
             p.row(r.key(), Bytes.format(r.bytes()), report.counted(r.key()).map(Bytes::format).orElse(""),
-                    Bytes.rate(report.rate(r.bytes())), pct(r.share()), classes);
+                    Bytes.rate(report.rate(r.bytes())), pct(r.share()), report.support().thread(r.key()), classes);
         }
         p.tableEnd();
 
         p.h2("By class");
-        p.tableStart("Class", "Bytes", "Rate", "Share");
+        p.tableStart("Class", "Bytes", "Rate", "Share", "Samples");
         for (final AllocationReport.Row<String> r : report.classes(top)) {
-            p.row(ClassNames.pretty(r.key()), Bytes.format(r.bytes()), Bytes.rate(report.rate(r.bytes())), pct(r.share()));
+            p.row(ClassNames.pretty(r.key()), Bytes.format(r.bytes()), Bytes.rate(report.rate(r.bytes())),
+                    pct(r.share()), report.support().className(r.key()));
         }
         p.tableEnd();
 
         p.h2("By site");
-        p.tableStart("Site", "Bytes", "Rate", "Share");
+        p.tableStart("Site", "Bytes", "Rate", "Share", "Samples");
         final Map<Stack, Integer> variants = new LinkedHashMap<>();
         for (final AllocationReport.Row<Stack> r : report.foldedSites(top, STACK_FRAMES, variants)) {
             final int distinct = variants.getOrDefault(r.key(), 1);
             p.row(r.key().top().map(Frame::pretty).orElse("<no stack>")
                             + (distinct > 1 ? " (" + distinct + " stacks that differ only in elided frames)" : ""),
-                    Bytes.format(r.bytes()), Bytes.rate(report.rate(r.bytes())), pct(r.share()));
-            p.stackRow(4, r.key());
+                    Bytes.format(r.bytes()), Bytes.rate(report.rate(r.bytes())), pct(r.share()),
+                    report.support().site(r.key()));
+            p.stackRow(5, r.key());
         }
         p.tableEnd();
         return p.finish();

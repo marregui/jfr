@@ -97,6 +97,14 @@ frames, because `pretty` also prints the culprit when it lies deeper, and two si
 differ there are two rows a reader can tell apart. The raw per-stack map is untouched:
 `--baseline` matches sites by full stack and must keep doing so.
 
+**Support.** Every row also carries the number of samples behind it. The estimate weights
+each sample by the bytes it stands for, so two rows of equal size can rest on 2 000
+samples and on 3, and only the count says which; a `--baseline` between two quiet windows
+once reported `+397 %` and `+469 %` on a base of 143 samples, which reads as a finding and
+is noise. The counts cost three more table probes per allocation event: on a 1.3 MB
+recording of a loaded node the read went from 54.3 ms to 57.2 ms and the analysis from
+0.62 ms to 1.00 ms, measured with `--timing`.
+
 **Aggregation.** Bytes by thread name, by allocated class, and by full stack, plus the
 class and stack breakdown per thread. Rates divide by the recording span. Byte units are
 decimal (`1 MB` is 1,000,000 bytes), as in `jfr view`; `jfr print` uses binary units.

@@ -33,6 +33,8 @@ import dev.jfrq.core.model.Stack;
  * @param bySite     estimated bytes per allocation stack
  * @param classByThread per thread name, bytes per class
  * @param siteByThread  per thread name, bytes per stack
+ * @param support    how many samples stand behind each row: a rate built on a handful of
+ *                   them is noise, and a percentage printed next to it reads as a finding
  */
 public record AllocationReport(
         RecordingInfo info,
@@ -45,7 +47,29 @@ public record AllocationReport(
         Map<String, Long> byClass,
         Map<Stack, Long> bySite,
         Map<String, Map<String, Long>> classByThread,
-        Map<String, Map<Stack, Long>> siteByThread) {
+        Map<String, Map<Stack, Long>> siteByThread,
+        Support support) {
+
+    /**
+     * Samples per key, alongside the bytes. The estimate weights every sample by the bytes
+     * it stands for, so two rows of equal size can rest on 2 000 samples and on 3; only the
+     * count says which.
+     */
+    public record Support(Map<String, Long> byThread, Map<String, Long> byClass, Map<Stack, Long> bySite) {
+        public static final Support NONE = new Support(Map.of(), Map.of(), Map.of());
+
+        public long thread(final String name) {
+            return byThread.getOrDefault(name, 0L);
+        }
+
+        public long className(final String name) {
+            return byClass.getOrDefault(name, 0L);
+        }
+
+        public long site(final Stack stack) {
+            return bySite.getOrDefault(stack, 0L);
+        }
+    }
 
     /** A ranked row: key, bytes and share of the report total. */
     public record Row<K>(K key, long bytes, double share) {

@@ -204,7 +204,8 @@ final class Text {
         }
 
         sb.append("\nBY THREAD\n");
-        final TextTable threads = new TextTable("Thread", "Bytes", "Counted", "Rate", "Share", "Top classes").numeric(1, 2, 3, 4);
+        final TextTable threads = new TextTable("Thread", "Bytes", "Counted", "Rate", "Share", "Samples", "Top classes")
+                .numeric(1, 2, 3, 4, 5);
         for (final AllocationReport.Row<String> row : r.threads(top)) {
             final StringBuilder classes = new StringBuilder();
             for (final AllocationReport.Row<String> c : r.classesOf(row.key(), 3)) {
@@ -215,15 +216,15 @@ final class Text {
                         .append(String.format(Locale.ROOT, "%.0f%%", 100.0 * c.bytes() / Math.max(1, row.bytes())));
             }
             threads.row(row.key(), Bytes.format(row.bytes()), r.counted(row.key()).map(Bytes::format).orElse(""),
-                    Bytes.rate(r.rate(row.bytes())), pct(row.share()), classes);
+                    Bytes.rate(r.rate(row.bytes())), pct(row.share()), r.support().thread(row.key()), classes);
         }
         sb.append(threads.render("  "));
 
         sb.append("\nBY CLASS\n");
-        final TextTable classes = new TextTable("Class", "Bytes", "Rate", "Share").numeric(1, 2, 3);
+        final TextTable classes = new TextTable("Class", "Bytes", "Rate", "Share", "Samples").numeric(1, 2, 3, 4);
         for (final AllocationReport.Row<String> row : r.classes(top)) {
             classes.row(ClassNames.pretty(row.key()), Bytes.format(row.bytes()), Bytes.rate(r.rate(row.bytes())),
-                    pct(row.share()));
+                    pct(row.share()), r.support().className(row.key()));
         }
         sb.append(classes.render("  "));
 
@@ -233,8 +234,9 @@ final class Text {
             int n = 1;
             for (final AllocationReport.Row<Stack> row : r.foldedSites(top, STACK_FRAMES, variants)) {
                 final int distinct = variants.getOrDefault(row.key(), 1);
-                sb.append(String.format(Locale.ROOT, "  %2d  %10s  %10s  %6s%s%n", n++, Bytes.format(row.bytes()),
-                        Bytes.rate(r.rate(row.bytes())), pct(row.share()),
+                sb.append(String.format(Locale.ROOT, "  %2d  %10s  %10s  %6s  %d samples%s%n", n++,
+                        Bytes.format(row.bytes()), Bytes.rate(r.rate(row.bytes())), pct(row.share()),
+                        r.support().site(row.key()),
                         distinct > 1 ? "  (" + distinct + " stacks that differ only in elided frames)" : ""));
                 sb.append(row.key().pretty("        ", STACK_FRAMES));
             }
@@ -256,21 +258,25 @@ final class Text {
         }
         sb.append(String.format(Locale.ROOT, "%-10s %s (%s)%n", "Change", Bytes.signedRate(d.total().delta()),
                 ratio(d.total().ratio())));
-        sb.append("Rates are bytes/second so recordings of different length compare.\n");
+        sb.append("Rates are bytes/second so recordings of different length compare. The sample counts are the "
+                + "evidence behind each\nchange: a few hundred percent on a handful of samples is noise, not a "
+                + "finding.\n");
 
         sb.append("\nBY THREAD\n");
-        final TextTable threads = new TextTable("Thread", "Before", "After", "Change", "").numeric(1, 2, 3);
+        final TextTable threads = new TextTable("Thread", "Before", "After", "Change", "", "Samples").numeric(1, 2, 3);
         for (final AllocationDiff.Delta<String> x : d.threads(top)) {
             threads.row(x.key(), Bytes.rate(x.beforeRate()), Bytes.rate(x.afterRate()), Bytes.signedRate(x.delta()),
-                    ratio(x.ratio()));
+                    ratio(x.ratio()), d.baseline().support().thread(x.key()) + " -> "
+                            + d.current().support().thread(x.key()));
         }
         sb.append(threads.render("  "));
 
         sb.append("\nBY CLASS\n");
-        final TextTable classes = new TextTable("Class", "Before", "After", "Change", "").numeric(1, 2, 3);
+        final TextTable classes = new TextTable("Class", "Before", "After", "Change", "", "Samples").numeric(1, 2, 3);
         for (final AllocationDiff.Delta<String> x : d.classes(top)) {
             classes.row(ClassNames.pretty(x.key()), Bytes.rate(x.beforeRate()), Bytes.rate(x.afterRate()),
-                    Bytes.signedRate(x.delta()), ratio(x.ratio()));
+                    Bytes.signedRate(x.delta()), ratio(x.ratio()), d.baseline().support().className(x.key()) + " -> "
+                            + d.current().support().className(x.key()));
         }
         sb.append(classes.render("  "));
 

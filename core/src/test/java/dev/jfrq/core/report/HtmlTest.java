@@ -114,7 +114,7 @@ class HtmlTest {
         final RecordingInfo damaged = new RecordingInfo(Path.of("cut.jfr"), new Interval(0, MS), 1, Map.of(), Map.of(), Set.of(),
                 List.of("the file is truncated: <cut>"));
         final AllocationReport a = new AllocationReport(damaged, "jdk.ObjectAllocationSample", 0, 0, 0, Map.of(),
-                Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
+                Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), AllocationReport.Support.NONE);
         assertTrue(Html.alloc(a, 5).contains("<li>the file is truncated: &lt;cut&gt;</li>"));
         assertTrue(Html.locks(new ContentionReport(damaged, List.of()), 5).contains("class=\"warn\""));
         final StallReport r = new StallReport(damaged, MS, List.of(), List.of(), List.of(), List.of());
@@ -152,7 +152,8 @@ class HtmlTest {
     void allocAndDiffPages() {
         final AllocationReport a = new AllocationReport(info(), "jdk.ObjectAllocationSample", 1000, 10, 10, Map.of("worker", 950L),
                 Map.of("worker", 1000L), Map.of("[B", 1000L), Map.of(STACK, 1000L),
-                Map.of("worker", Map.of("[B", 1000L)), Map.of("worker", Map.of(STACK, 1000L)));
+                Map.of("worker", Map.of("[B", 1000L)), Map.of("worker", Map.of(STACK, 1000L)),
+                new AllocationReport.Support(Map.of("worker", 7L), Map.of("[B", 7L), Map.of(STACK, 7L)));
         final String html = Html.alloc(a, 10);
         assertTrue(html.contains("By thread"));
         assertTrue(html.contains("<dt>JVM counters</dt><dd>950 B on 1 threads seen at both ends of the file; "
@@ -165,7 +166,8 @@ class HtmlTest {
 
         final AllocationReport b = new AllocationReport(info(), "jdk.ObjectAllocationSample", 500, 5, 5, Map.of(),
                 Map.of("worker", 500L), Map.of("[B", 500L), Map.of(STACK, 500L),
-                Map.of(), Map.of());
+                Map.of(), Map.of(), new AllocationReport.Support(Map.of("worker", 3L), Map.of("[B", 3L),
+                Map.of(STACK, 3L)));
         final String diff = Html.allocDiff(new AllocationDiff(a, b), 10);
         assertTrue(diff.contains("<title>jfrq alloc diff"));
         assertTrue(diff.contains("Baseline"));

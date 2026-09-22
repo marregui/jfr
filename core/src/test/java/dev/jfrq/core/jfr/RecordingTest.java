@@ -194,6 +194,17 @@ class RecordingTest {
         // Without the first sample per thread the estimate is close; with it, this thread's whole test-suite
         // history (hundreds of MB) would land in the window.
         assertTrue(Math.abs(report.estimateError()) < 0.25, "estimate off by " + report.estimateError());
+
+        // Every row says how many samples it rests on, and the counts survive the drop of each
+        // thread's first sample: they sum to the report's own sample count, not to one more.
+        long perClass = 0;
+        for (final long n : report.support().byClass().values()) {
+            perClass += n;
+        }
+        assertEquals(report.samples(), perClass, report.support().byClass().toString());
+        assertTrue(report.support().className("[B") > 0);
+        assertTrue(report.support().thread("alloc-thread") > 0);
+        assertEquals(report.samples(), report.support().byThread().values().stream().mapToLong(Long::longValue).sum());
         assertThrows(IllegalStateException.class, () -> new AllocationCollector().report());
     }
 

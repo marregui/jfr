@@ -140,7 +140,8 @@ public final class AllocationCollector implements JfrReader.Sink {
         final String source = sampled.events > 0 ? SAMPLE : IN_TLAB + " + " + OUTSIDE_TLAB;
         report = new AllocationReport(info, source, chosen.total, chosen.samples, chosen.events, countedByThread(),
                 toMap(chosen.byThread), toMap(chosen.byClass), toMap(chosen.bySite), toMaps(chosen.classByThread),
-                toMaps(chosen.siteByThread));
+                toMaps(chosen.siteByThread), new AllocationReport.Support(toMap(chosen.countByThread),
+                toMap(chosen.countByClass), toMap(chosen.countBySite)));
     }
 
     /**
@@ -201,6 +202,10 @@ public final class AllocationCollector implements JfrReader.Sink {
         final ObjLongHashMap<String> byThread = new ObjLongHashMap<>(64);
         final ObjLongHashMap<String> byClass = new ObjLongHashMap<>(1024);
         final ObjLongHashMap<Stack> bySite = new ObjLongHashMap<>(4096);
+        /** Samples behind each of the three, so a row can say how much evidence it rests on. */
+        final ObjLongHashMap<String> countByThread = new ObjLongHashMap<>(64);
+        final ObjLongHashMap<String> countByClass = new ObjLongHashMap<>(1024);
+        final ObjLongHashMap<Stack> countBySite = new ObjLongHashMap<>(4096);
         final ObjObjHashMap<String, ObjLongHashMap<String>> classByThread = new ObjObjHashMap<>(64);
         final ObjObjHashMap<String, ObjLongHashMap<Stack>> siteByThread = new ObjObjHashMap<>(64);
         /** Per thread, the earliest sample seen (delivery is file order, not time order). */
@@ -261,6 +266,9 @@ public final class AllocationCollector implements JfrReader.Sink {
             byThread.increment(threadName, bytes);
             byClass.increment(cls, bytes);
             bySite.increment(site, bytes);
+            countByThread.increment(threadName, 1);
+            countByClass.increment(cls, 1);
+            countBySite.increment(site, 1);
             perThread(classByThread, threadName).increment(cls, bytes);
             perThread(siteByThread, threadName).increment(site, bytes);
         }
@@ -285,6 +293,9 @@ public final class AllocationCollector implements JfrReader.Sink {
                 subtract(byThread, f.threadName, f.bytes);
                 subtract(byClass, f.cls, f.bytes);
                 subtract(bySite, f.site, f.bytes);
+                subtract(countByThread, f.threadName, 1);
+                subtract(countByClass, f.cls, 1);
+                subtract(countBySite, f.site, 1);
                 // Two threads can share a name (a pool that recycles them); the per-name maps may
                 // already be gone after the first of them.
                 subtract(classByThread.get(f.threadName), f.cls, f.bytes);

@@ -32,7 +32,19 @@ class AllocationTest {
                                    final Map<Stack, Long> bySite) {
         final long total = byThread.values().stream().mapToLong(Long::longValue).sum();
         return new AllocationReport(info(name, seconds), "jdk.ObjectAllocationSample", total, 100, 100, Map.of(), byThread, byClass,
-                bySite, Map.of("worker", byClass), Map.of("worker", bySite));
+                bySite, Map.of("worker", byClass), Map.of("worker", bySite), support(byThread, byClass, bySite));
+    }
+
+    /** One sample per key unless a test says otherwise: enough for the counts to be present. */
+    static AllocationReport.Support support(final Map<String, Long> byThread, final Map<String, Long> byClass,
+                                            final Map<Stack, Long> bySite) {
+        final Map<String, Long> threads = new java.util.HashMap<>();
+        byThread.forEach((k, _) -> threads.put(k, 1L));
+        final Map<String, Long> classes = new java.util.HashMap<>();
+        byClass.forEach((k, _) -> classes.put(k, 1L));
+        final Map<Stack, Long> sites = new java.util.HashMap<>();
+        bySite.forEach((k, _) -> sites.put(k, 1L));
+        return new AllocationReport.Support(threads, classes, sites);
     }
 
     @Test
@@ -43,7 +55,8 @@ class AllocationTest {
         assertTrue(none.counted("worker").isEmpty());
         // Only the counted threads take part in the comparison: the short-lived one is not held against it.
         final AllocationReport some = new AllocationReport(info("a.jfr", 1), "jdk.ObjectAllocationSample", 1570, 100, 100,
-                Map.of("worker", 1000L), Map.of("worker", 1070L, "short-lived", 500L), Map.of(), Map.of(), Map.of(), Map.of());
+                Map.of("worker", 1000L), Map.of("worker", 1070L, "short-lived", 500L), Map.of(), Map.of(), Map.of(), Map.of(),
+                AllocationReport.Support.NONE);
         assertTrue(some.hasCounters());
         assertEquals(1000, some.countedBytes());
         assertEquals(1070, some.estimatedOnCountedThreads());
@@ -56,7 +69,8 @@ class AllocationTest {
         assertEquals(0.0, none.countedCoverage(), 0.0);
         // A counter on a thread that barely allocates says nothing about the estimate.
         final AllocationReport noise = new AllocationReport(info("a.jfr", 1), "jdk.ObjectAllocationSample", 1_000_000, 100, 100,
-                Map.of("main", 20L), Map.of("main", 480L, "worker", 999_520L), Map.of(), Map.of(), Map.of(), Map.of());
+                Map.of("main", 20L), Map.of("main", 480L, "worker", 999_520L), Map.of(), Map.of(), Map.of(), Map.of(),
+                AllocationReport.Support.NONE);
         assertTrue(noise.hasCounters());
         assertFalse(noise.estimateErrorMaterial());
     }
