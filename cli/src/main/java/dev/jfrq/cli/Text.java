@@ -473,15 +473,30 @@ final class Text {
         return sb.toString();
     }
 
-    /** One numbered line per stall with its stack under it. */
+    /**
+     * One numbered line per stall. Each keeps its own row — they are separate occurrences, not
+     * one aggregate — but a stack is printed once: one lock convoying two event loops filled
+     * five consecutive rows with the same six frames.
+     */
     private static String rows(final StallReport r, final List<Stall> stalls) {
         final StringBuilder sb = new StringBuilder();
+        final Map<String, Integer> firstPrinted = new java.util.HashMap<>();
         int n = 1;
         for (final Stall s : stalls) {
-            sb.append(String.format(Locale.ROOT, "  %2d  %-22s %s  %8s  %-15s %s%s%n", n++, s.thread().name(),
+            final int row = n++;
+            sb.append(String.format(Locale.ROOT, "  %2d  %-22s %s  %8s  %-15s %s%s%n", row, s.thread().name(),
                     Durations.offset(s.start() - r.info().startNanos()), Durations.format(s.duration()),
                     s.verdict(), s.detail(), evidence(s)));
-            sb.append(s.stack().pretty("        ", STACK_FRAMES));
+            final String stack = s.stack().pretty("        ", STACK_FRAMES);
+            if (stack.isEmpty()) {
+                continue;
+            }
+            final Integer seen = firstPrinted.putIfAbsent(stack, row);
+            if (seen == null) {
+                sb.append(stack);
+            } else {
+                sb.append(String.format(Locale.ROOT, "        same stack as #%d%n", seen));
+            }
         }
         return sb.toString();
     }

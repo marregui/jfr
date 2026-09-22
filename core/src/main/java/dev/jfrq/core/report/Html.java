@@ -5,6 +5,7 @@ package dev.jfrq.core.report;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -117,14 +118,23 @@ public final class Html {
         return p.finish();
     }
 
+    /** One row per stall, and one copy of each distinct stack: see {@code Text.rows}. */
     private static void stallTable(final Page p, final StallReport report, final List<Stall> stalls) {
         p.tableStart("#", "Thread", "At", "Duration", "Verdict", "Detail", "Evidence");
+        final Map<String, Integer> firstPrinted = new HashMap<>();
         int n = 1;
         for (final Stall s : stalls) {
-            p.row(n++, s.thread().name(), Durations.offset(s.start() - report.info().startNanos()),
+            final int row = n++;
+            p.row(row, s.thread().name(), Durations.offset(s.start() - report.info().startNanos()),
                     Durations.format(s.duration()), s.verdict(), s.detail(), s.evidence().name().toLowerCase(Locale.ROOT));
-            if (!s.stack().isEmpty()) {
+            if (s.stack().isEmpty()) {
+                continue;
+            }
+            final Integer seen = firstPrinted.putIfAbsent(s.stack().pretty("", STACK_FRAMES), row);
+            if (seen == null) {
                 p.stackRow(7, s.stack());
+            } else {
+                p.noteRow(7, "same stack as #" + seen);
             }
         }
         p.tableEnd();
@@ -575,6 +585,12 @@ public final class Html {
         void stackRow(final int colspan, final Stack stack) {
             sb.append("<tr class=\"stack\"><td colspan=\"").append(colspan).append("\"><pre>")
                     .append(escape(stack.pretty("", STACK_FRAMES))).append("</pre></td></tr>\n");
+        }
+
+        /** A line in a stack's place, for a stack that is already on the page. */
+        void noteRow(final int colspan, final String text) {
+            sb.append("<tr class=\"stack\"><td colspan=\"").append(colspan).append("\"><pre>")
+                    .append(escape(text)).append("</pre></td></tr>\n");
         }
 
         void tableEnd() {

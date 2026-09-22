@@ -355,7 +355,12 @@ glob has to match.
 ## 5. Output
 
 Text goes to standard output in fixed-width tables meant for tickets and chat; each
-stall line ends with `[samples]` or `[silence]` unless it came from an event. `--html`
+stall line ends with `[samples]` or `[silence]` unless it came from an event. A stall
+list prints each distinct stack once and later rows say `same stack as #n`: every stall
+keeps its own row, because they are separate occurrences and not one aggregate, but one
+lock convoying two event loops filled fifteen rows with the same seven lines — 138 lines
+of report where 54 say the same thing. Both renderers do it, each keyed on its own
+rendering, since the text list elides at six frames and the HTML table at twelve. `--html`
 writes one self-contained file: no scripts, no external resources, inline SVG
 timelines with a box per stall (or per wait) and a tooltip with the detail. A timeline
 row draws at most 2,000 boxes, the longest ones: a recording with a 1 ms threshold can

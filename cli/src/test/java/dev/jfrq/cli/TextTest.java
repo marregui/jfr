@@ -166,6 +166,32 @@ class TextTest {
     }
 
     @Test
+    void stallsPrintARepeatedStackOnceAndPointAtIt() {
+        // One lock convoying two event loops is several stalls and one stack: the demo printed
+        // the same six frames five times down the list.
+        final ThreadRef loop1 = new ThreadRef(1, "event-loop-1");
+        final ThreadRef loop2 = new ThreadRef(2, "event-loop-2");
+        final Stack touch = new Stack(List.of(new Frame("dev.app.Registry", "touch", 29, "JIT compiled")), false);
+        final Stack flush = new Stack(List.of(new Frame("dev.app.Persistence", "flush", 15, "JIT compiled")), false);
+        final Stall a = new Stall(loop1, new Interval(1_000 * MS, 1_176 * MS), Stall.Verdict.BLOCKED_MONITOR,
+                "blocked on dev.app.Registry", touch, Stall.Evidence.EVENT, 2);
+        final Stall b = new Stall(loop2, new Interval(1_000 * MS, 1_175 * MS), Stall.Verdict.BLOCKED_MONITOR,
+                "blocked on dev.app.Registry", touch, Stall.Evidence.EVENT, 2);
+        final Stall c = new Stall(loop1, new Interval(1_300 * MS, 1_400 * MS), Stall.Verdict.BLOCKED_MONITOR,
+                "blocked on dev.app.Store", flush, Stall.Evidence.EVENT, 1);
+        final StallReport r = new StallReport(window(), 50 * MS,
+                List.of(new StallReport.ThreadSummary(loop1, 10, MS, MS, 2, 276 * MS, 176 * MS)),
+                List.of(a, b, c), List.of(), List.of());
+        final String listed = section(Text.stalls(r, 15), "STALLS >=");
+
+        // Every stall keeps its own row: they are separate occurrences, not one aggregate.
+        assertEquals(3, occurrences(listed, "BLOCKED_MONITOR"), listed);
+        assertEquals(1, occurrences(listed, "Registry.touch"), listed);
+        assertTrue(listed.contains("same stack as #1"), listed);
+        assertEquals(1, occurrences(listed, "Persistence.flush"), listed);
+    }
+
+    @Test
     void stallsRanksUnexplainedGapsApartFromTheStallsItCanExplain() {
         final ThreadRef worker = new ThreadRef(1, "browse-1");
         final Stall gap = new Stall(worker, new Interval(1_000 * MS, 1_474 * MS), Stall.Verdict.UNEXPLAINED,

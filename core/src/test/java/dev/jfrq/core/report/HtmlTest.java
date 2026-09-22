@@ -136,6 +136,18 @@ class HtmlTest {
     }
 
     @Test
+    void aStackIsOnThePageOnceHoweverManyStallsShareIt() {
+        final Stall first = new Stall(LOOP, new Interval(0, 176 * MS), Stall.Verdict.BLOCKED_MONITOR, "a", STACK,
+                Stall.Evidence.EVENT, 2);
+        final Stall second = new Stall(HOLDER, new Interval(0, 175 * MS), Stall.Verdict.BLOCKED_MONITOR, "b", STACK,
+                Stall.Evidence.EVENT, 2);
+        final StallReport r = new StallReport(info(), 50 * MS, List.of(), List.of(first, second), List.of(), List.of());
+        final String html = Html.stalls(r, 10);
+        assertEquals(1, html.split("dev.app.A.b").length - 1, html);
+        assertTrue(html.contains("same stack as #1"), html);
+    }
+
+    @Test
     void stallsPageWithoutPausesOrWarnings() {
         final StallReport r = new StallReport(info(), 50 * MS, List.of(), List.of(), List.of(), List.of());
         final String html = Html.stalls(r, 10);
