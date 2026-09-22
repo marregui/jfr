@@ -333,9 +333,21 @@ final class Text {
         if (!ranked.isEmpty()) {
             sb.append("\nWHERE THEY WAITED (the longest wait for each lock above)\n");
             for (final ContentionReport.StackGroup g : r.lockStacks(top, STACK_FRAMES)) {
-                sb.append(String.format(Locale.ROOT, "  %s  %s%s%n", lockNames(g.locks()),
-                        Durations.format(g.longest().duration()),
-                        g.locks().size() > 1 ? "  (" + g.locks().size() + " locks with this stack)" : ""));
+                // Lock names are long (a fully qualified class and an address), so several of
+                // them go one per line under a count rather than end to end across the page.
+                if (g.locks().size() == 1) {
+                    sb.append(String.format(Locale.ROOT, "  %s  %s%n", g.locks().getFirst().pretty(),
+                            Durations.format(g.longest().duration())));
+                } else {
+                    sb.append(String.format(Locale.ROOT, "  %d locks with this stack, longest %s%n",
+                            g.locks().size(), Durations.format(g.longest().duration())));
+                    for (final Wait.LockKey lock : shown(g.locks())) {
+                        sb.append("    ").append(lock.pretty()).append('\n');
+                    }
+                    if (g.locks().size() > NAMES_SHOWN) {
+                        sb.append("    (+").append(g.locks().size() - NAMES_SHOWN).append(" more)\n");
+                    }
+                }
                 sb.append(g.longest().stack().pretty("        ", STACK_FRAMES));
             }
         }
@@ -557,13 +569,9 @@ final class Text {
         return capped(names);
     }
 
-    /** The locks one stack stands for, under the same cap: the count is the information. */
-    static String lockNames(final List<Wait.LockKey> locks) {
-        final List<String> names = new ArrayList<>(locks.size());
-        for (final Wait.LockKey l : locks) {
-            names.add(l.pretty());
-        }
-        return capped(names);
+    /** The head of a list under the same cap every other name list uses. */
+    static <T> List<T> shown(final List<T> all) {
+        return all.size() > NAMES_SHOWN ? all.subList(0, NAMES_SHOWN) : all;
     }
 
     private static String capped(final List<String> names) {

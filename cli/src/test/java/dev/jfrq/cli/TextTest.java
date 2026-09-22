@@ -160,9 +160,11 @@ class TextTest {
         }
         final String where = section(Text.locks(new ContentionReport(window(), waits), 15), "WHERE THEY WAITED");
         assertEquals(1, occurrences(where, "DefaultMailbox.awaitNextMessage"), where);
-        assertTrue(where.contains("(3 locks with this stack)"), where);
-        // The locks it stands for are named, so a --lock glob can still be aimed at one of them.
-        assertTrue(where.contains("dev.app.DefaultMailbox@10") && where.contains("dev.app.DefaultMailbox@12"), where);
+        assertTrue(where.contains("3 locks with this stack, longest 120 ms"), where);
+        // The locks it stands for are named, one per line because a name is a class and an
+        // address, so a --lock glob can still be aimed at one of them.
+        assertTrue(where.contains("\n    dev.app.DefaultMailbox@10\n"), where);
+        assertTrue(where.contains("\n    dev.app.DefaultMailbox@12\n"), where);
     }
 
     @Test

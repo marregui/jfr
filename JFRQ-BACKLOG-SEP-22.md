@@ -25,8 +25,16 @@ fixed; this page is what is left.
   spread is the likeliest discriminator: a poll with a fixed timeout piles up at exactly that
   timeout, a starved consumer produces a few long irregular parks. If nothing separates them, the
   answer is not inference but printing the signature next to each lock and keeping the name list.
-  **Blocked on:** whether the round-2 `.jfr` still exists in `~/edge_zulu`. A fixture built here
-  would only prove something about the fixture.
+  **It is not only `locks`.** `stalls` on the same file, `--thread 'protocol-adapter-dispatcher-*'
+  --gap 500ms`, reports **832 stalls** whose top four are the same mailbox parks (`1m55s`, `1m35s`,
+  `1m27s`, `32.7 s`, all `[silence]`). Whatever classifies them has to serve both commands, which
+  is where the existing `--idle` list already sits.
+  **The data exists.** The round-2 dumps are in the other session's scratchpad:
+  `/tmp/claude-502/-Users-miguel-arregui-edge-zulu/d0aaa084-59fb-4f6e-99c5-5e8202b0251d/scratchpad/r2/`
+  — `v2load.jfr` (2m22s, the v2 load), `v1load.jfr` (59.9 s), `gap.jfr`, `preidle.jfr`,
+  `idle0.jfr`, `idle1.jfr` (10m31s idle), 28 MB in all, plus an earlier set one directory up in
+  `scratchpad/jfr/`. **They are under `/tmp` and a reboot takes them**; copy them somewhere durable
+  before starting N2.
 - **`--min` and `--gap` now apply to the in-window part of a wait or a block** (T3). `USAGE`
   (`Main.java:70`) and `README.md` still describe `--min` as "ignore waits shorter than D" without
   the qualifier. Still Miguel's call: the report already prints `Note 13 waits began before the
