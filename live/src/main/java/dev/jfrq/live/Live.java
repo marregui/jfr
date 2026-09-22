@@ -21,6 +21,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -263,10 +264,48 @@ public final class Live {
         }
         out.println(jvmLine(jvm));
         out.println(recordingLine(recording(fr, id)));
+        out.println(settingsLine(settings));
         if (!bounded) {
             out.println(unboundedWarning(jvm));
         }
         return 0;
+    }
+
+    /**
+     * What the recording was actually configured with. The operator is at the keyboard now
+     * and this is the cheapest moment to answer "did my settings take effect"; the only
+     * other way is {@code jfrq info} on the first dump, one dump later.
+     */
+    static String settingsLine(final String settings) {
+        if (settings.endsWith(".jfc")) {
+            return String.format(Locale.ROOT, "Settings   %s, taken as it is", settings);
+        }
+        final List<String> thresholds = new ArrayList<>();
+        final List<String> throttlesOff = new ArrayList<>();
+        final List<String> periods = new ArrayList<>();
+        final List<String> throttles = new ArrayList<>();
+        for (final Map.Entry<String, String> e : new TreeMap<>(RECOMMENDED).entrySet()) {
+            final int hash = e.getKey().indexOf('#');
+            final String event = e.getKey().substring("jdk.".length(), hash);
+            switch (e.getKey().substring(hash + 1)) {
+                case "threshold" -> thresholds.add(event + " " + e.getValue());
+                case "period" -> periods.add(event + " " + e.getValue());
+                case "throttle" -> {
+                    if ("off".equals(e.getValue())) {
+                        throttlesOff.add(event);
+                    } else {
+                        throttles.add(event + " " + e.getValue());
+                    }
+                }
+                default -> throw new IllegalStateException(e.getKey());
+            }
+        }
+        final StringBuilder sb = new StringBuilder(String.format(Locale.ROOT, "Settings   %s profile, then: ", settings));
+        sb.append("thresholds ").append(String.join(", ", thresholds));
+        sb.append("; throttle off for ").append(String.join(", ", throttlesOff));
+        sb.append("; ").append(String.join(", ", throttles));
+        sb.append("; sampling ").append(String.join(", ", periods));
+        return sb.toString();
     }
 
     private int bound(final Jvm jvm, final Args args) throws IOException {

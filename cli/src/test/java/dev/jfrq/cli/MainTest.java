@@ -202,9 +202,12 @@ class MainTest {
 
     @Test
     void timingGoesToStderr() {
-        final Run r = run("info", recording.toString(), "--timing");
+        final Run r = run("stalls", recording.toString(), "--thread", "*", "--timing");
         assertEquals(0, r.status(), r.err());
-        assertTrue(r.err().contains("timing: read"), r.err());
+        // Parsing and analysing are separate numbers: the analysis runs inside the read,
+        // in the sink's finish(), and one number could not say which of the two was slow.
+        assertTrue(r.err().contains("timing: parse"), r.err());
+        assertTrue(r.err().contains("timing: analyse"), r.err());
         assertTrue(r.err().contains("timing: render"), r.err());
         assertFalse(r.out().contains("timing:"));
     }

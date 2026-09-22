@@ -565,20 +565,34 @@ public final class Html {
     }
 
     private static final String CSS = """
-            body { font: 14px/1.4 -apple-system, Segoe UI, Helvetica, Arial, sans-serif; margin: 2em; color: #222; }
-            h1 { font-size: 1.5em; } h2 { font-size: 1.15em; margin-top: 1.6em; border-bottom: 1px solid #ddd; }
+            :root {
+              color-scheme: light dark;
+              --bg: #ffffff; --fg: #222222; --muted: #555555; --faint: #999999;
+              --rule: #dddddd; --cell: #eeeeee; --head: #f5f5f5; --track: #f0f0f0;
+              --warn-bg: #fff7e0; --warn-edge: #e6a700;
+            }
+            @media (prefers-color-scheme: dark) {
+              :root {
+                --bg: #121417; --fg: #e6e6e6; --muted: #b0b0b0; --faint: #808080;
+                --rule: #333a42; --cell: #262b31; --head: #1c2025; --track: #1e2329;
+                --warn-bg: #2e2513; --warn-edge: #b98900;
+              }
+            }
+            body { font: 14px/1.4 -apple-system, Segoe UI, Helvetica, Arial, sans-serif; margin: 2em;
+                   color: var(--fg); background: var(--bg); }
+            h1 { font-size: 1.5em; } h2 { font-size: 1.15em; margin-top: 1.6em; border-bottom: 1px solid var(--rule); }
             dl { display: grid; grid-template-columns: max-content auto; gap: 0.2em 1em; margin: 0.6em 0; }
             dl:empty { display: none; }
             dt { font-weight: 600; } dd { margin: 0; }
             table { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
-            th, td { text-align: left; padding: 0.3em 0.6em; border-bottom: 1px solid #eee; vertical-align: top; }
-            th { background: #f5f5f5; } td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-            tr.stack td { padding: 0 0.6em 0.6em 2em; border-bottom: 1px solid #eee; }
-            pre { margin: 0; font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; color: #555; }
-            ul.warn { background: #fff7e0; border-left: 4px solid #e6a700; padding: 0.6em 1em 0.6em 2em; }
+            th, td { text-align: left; padding: 0.3em 0.6em; border-bottom: 1px solid var(--cell); vertical-align: top; }
+            th { background: var(--head); } td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+            tr.stack td { padding: 0 0.6em 0.6em 2em; border-bottom: 1px solid var(--cell); }
+            pre { margin: 0; font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+            ul.warn { background: var(--warn-bg); border-left: 4px solid var(--warn-edge); padding: 0.6em 1em 0.6em 2em; }
             svg.timeline { width: 100%; height: auto; font: 11px sans-serif; }
-            svg .track { fill: #f0f0f0; } svg .lbl { fill: #333; } svg .axis { fill: #777; text-anchor: middle; }
+            svg .track { fill: var(--track); } svg .lbl { fill: var(--fg); } svg .axis { fill: var(--faint); text-anchor: middle; }
             p.legend span { display: inline-block; width: 12px; height: 12px; margin: 0 4px 0 10px; vertical-align: middle; }
-            p.foot { color: #999; margin-top: 3em; }
+            p.foot { color: var(--faint); margin-top: 3em; }
             """;
 }

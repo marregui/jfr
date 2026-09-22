@@ -88,6 +88,18 @@ public final class JfrReader {
     }
 
     /**
+     * How long the last {@link #read} spent in the sinks' {@code finish()}, which is where
+     * every analysis happens; the rest of the read is parsing. Set per call, read by
+     * {@code --timing} right after it, so a program that reads two recordings concurrently
+     * gets one of the two numbers.
+     */
+    public static long analyseNanos() {
+        return analyseNanos;
+    }
+
+    private static volatile long analyseNanos;
+
+    /**
      * @throws IOException when the file is missing, is not a recording, holds no complete
      *                     chunk, or ends in a chunk that is still being written. The last
      *                     case is refused outright because the JDK parser does not fail on
@@ -143,9 +155,13 @@ public final class JfrReader {
         final long end = Math.max(chunks.endNanos(), Math.max(start, pass.lastEnd));
         final RecordingInfo info = new RecordingInfo(file, new Interval(start, end), chunks.count(), pass.eventCounts(),
                 pass.settings(), pass.threads(), warnings);
+        final long parsed = System.nanoTime();
         for (final Sink s : sinks) {
             s.finish(info);
         }
+        // The analysis runs in finish(), so without this the two are one number and
+        // "where did the time go" cannot be answered from the outside.
+        analyseNanos = System.nanoTime() - parsed;
         return info;
     }
 

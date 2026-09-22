@@ -385,7 +385,9 @@ version; "after" is the current one.
 | `stalls`, 0.6 MB | 0.45 s | 0.15 s |
 | `info`, 0.6 MB | 0.48 s | 0.11 s |
 
-`--timing` prints the read and render phases of any run. What produced the numbers,
+`--timing` prints three phases: `parse`, `analyse` and `render`. The analysis runs
+inside the read, in the sinks' `finish()`, so a single "read" number could not say which
+of the two a change had moved. What produced the numbers,
 in order of effect:
 
 1. **Parse only what is asked for.** `EventStream` with a handler per subscribed type

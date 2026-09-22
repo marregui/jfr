@@ -54,6 +54,12 @@ Cursor     next delta from 14:23:31.078; last window 14:23:21.689 .. 14:23:31.07
 chunks, span. `Window` is what was asked. When they differ by more than a second a line
 says why (section 4). `Cursor` is where the next `delta` starts.
 
+`start` prints what it configured — the profile it started from and every threshold,
+throttle and sample period it overlaid — because the operator is at the keyboard at that
+moment and the only other way to check is `jfrq info` on the first dump, one dump later.
+A `--settings FILE.jfc` is taken as it is and the line says so rather than listing an
+overlay that was not applied.
+
 ## 2. How a dump is taken
 
 This is what `jcmd <pid> JFR.dump` does, driven over JMX instead of a diagnostic command:

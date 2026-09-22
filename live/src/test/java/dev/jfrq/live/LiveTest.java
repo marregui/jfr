@@ -150,6 +150,12 @@ class LiveTest {
         assertTrue(start.out().contains("RUNNING"), start.out());
         assertTrue(start.out().contains("max-age 5m00s"), start.out());
         assertFalse(start.out().contains("WARNING"), start.out());
+        // What it configured, at the moment the operator can still act on it.
+        assertTrue(start.out().contains("Settings   profile profile, then: thresholds "), start.out());
+        assertTrue(start.out().contains("JavaMonitorEnter 1 ms"), start.out());
+        assertTrue(start.out().contains("throttle off for FileRead, FileWrite, SocketRead, SocketWrite"), start.out());
+        assertTrue(start.out().contains("ObjectAllocationSample 1000/s"), start.out());
+        assertTrue(start.out().contains("sampling ExecutionSample 10 ms, NativeMethodSample 10 ms"), start.out());
 
         final Run early = run(concat(new String[] {PID, "delta"}, pick));
         assertEquals(2, early.status());

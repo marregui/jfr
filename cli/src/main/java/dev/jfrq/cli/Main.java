@@ -120,7 +120,14 @@ public final class Main {
     private void phase(final String name) {
         final long now = System.nanoTime();
         if (timing && name != null && phaseStart != 0) {
-            err.printf("timing: %-10s %s%n", name, Durations.format(now - phaseStart));
+            if (name.equals("read")) {
+                // The read includes the analysis, which runs in the sinks' finish(); report both.
+                final long analyse = JfrReader.analyseNanos();
+                err.printf("timing: %-10s %s%n", "parse", Durations.format(now - phaseStart - analyse));
+                err.printf("timing: %-10s %s%n", "analyse", Durations.format(analyse));
+            } else {
+                err.printf("timing: %-10s %s%n", name, Durations.format(now - phaseStart));
+            }
         }
         phaseStart = now;
     }
