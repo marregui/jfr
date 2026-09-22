@@ -364,9 +364,10 @@ final class Text {
         }
 
         if (!r.workWaits().isEmpty()) {
-            sb.append(String.format(Locale.ROOT, "%nWAITING FOR WORK (not contention: %d thread%s parked on their own "
-                            + "queue, %s across %d parks)%n", r.workWaitThreads(), r.workWaitThreads() == 1 ? "" : "s",
-                    Durations.format(r.workWaitNanos()), r.workWaits().size()));
+            sb.append(String.format(Locale.ROOT, "%nWAITING FOR WORK (not contention: %d thread%s parked on an empty "
+                            + "queue, %s across %d park%s)%n", r.workWaitThreads(), r.workWaitThreads() == 1 ? "" : "s",
+                    Durations.format(r.workWaitNanos()), r.workWaits().size(),
+                    r.workWaits().size() == 1 ? "" : "s"));
             final TextTable idle = new TextTable("Queue", "Total", "Parks", "Max", "Threads").numeric(1, 2, 3);
             for (final ContentionReport.LockStats l : r.workWaitLocks(top)) {
                 idle.row(l.lock().pretty(), Durations.format(l.totalNanos()), l.count(),

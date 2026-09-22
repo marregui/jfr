@@ -162,9 +162,10 @@ public final class Html {
         p.tableEnd();
 
         if (!report.workWaits().isEmpty()) {
-            p.h2("Waiting for work: " + report.workWaitThreads() + " threads parked on their own queue");
+            p.h2("Waiting for work: " + report.workWaitThreads()
+                    + (report.workWaitThreads() == 1 ? " thread" : " threads") + " parked on an empty queue");
             p.kv("Not contention", Durations.format(report.workWaitNanos()) + " across " + report.workWaits().size()
-                    + " parks, kept out of the totals above");
+                    + (report.workWaits().size() == 1 ? " park" : " parks") + ", kept out of the totals above");
             p.tableStart("Queue", "Total", "Parks", "Max", "Threads");
             for (final ContentionReport.LockStats l : report.workWaitLocks(top)) {
                 p.row(l.lock().pretty(), Durations.format(l.totalNanos()), l.count(), Durations.format(l.maxNanos()),
