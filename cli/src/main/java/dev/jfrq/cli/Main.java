@@ -67,7 +67,8 @@ public final class Main {
               --sites        list allocation sites with stacks
 
             locks:
-              --min D        ignore waits shorter than D (default 0; e.g. 10ms)
+              --min D        ignore waits shorter than D (default 0; e.g. 10ms); a wait that
+                             crosses an end of the recording counts only the part inside it
               --thread GLOB  only waits by threads matching GLOB (e.g. 'event-loop-*,worker-?')
               --idle REGEX   comma-separated regexes naming the frame of a pool waiting for work;
                              those parks are reported apart from contention, as is any lock one
@@ -79,7 +80,9 @@ public final class Main {
 
             stalls:
               --thread GLOB  threads to watch (required; e.g. 'event-loop-*')
-              --gap D        a stall is at least D without returning to idle (default 50ms)
+              --gap D        a stall is at least D without returning to idle (default 50ms);
+                             a block that crosses an end of the recording counts only the
+                             part inside it
               --idle REGEX   comma-separated regexes that mean "idle", each matching a whole
                              'pkg.Class.method' (so no commas inside one); replaces the defaults
                              (JDK selectors, Netty transports, park, Object.wait). 'none' also

@@ -85,7 +85,9 @@ one, instead of the parser hanging on it.
 
 Put `cli/build/install/jfrq/bin` (and `live/build/install/jfrq-live/bin`) on your `PATH`,
 or call the scripts by path.
-The launcher needs `JAVA_HOME` or a `java` on the `PATH` that is JDK 25. The first run
+The launcher runs the JVM in `JAVA_HOME` when that is set and a `java` from the
+`PATH` only when it is not; either way it must be JDK 25, so an older `JAVA_HOME`
+is not rescued by a newer `java` on the `PATH`. The first run
 writes an AppCDS archive to `lib/jfrq.jsa` next to the jars, which makes every later run
 start in about a tenth of a second; if the directory is not writable nothing is written
 and start-up is merely ordinary.
@@ -102,7 +104,9 @@ jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N
 `GLOB` is a comma-separated list of shell globs on thread names: `'event-loop-*'`,
 `'nioEventLoopGroup-*,worker-?'`. `jfrq info` lists them, folded into families (`milo-shared-thread-pool-N* ×33`). Durations take
 a unit (`50ms`, `1.5s`, `2m`); options belong to their command, so a `stalls` option on
-`locks` is an error rather than silently ignored.
+`locks` is an error rather than silently ignored. A wait or a block that began before the
+recording, or outlived it, is counted only for the part inside it, and that is the part
+`--min` and `--gap` are measured against.
 
 A thread parked on its own empty queue is not contention and is not a stall: `locks` lists
 those apart and `stalls` leaves them out. They are recognised by the frame of a pool
