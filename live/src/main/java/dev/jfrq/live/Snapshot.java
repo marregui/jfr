@@ -5,8 +5,10 @@ package dev.jfrq.live;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
@@ -32,7 +34,7 @@ public record Snapshot(Path file, long bytes, Instant stop) {
 
     /**
      * @throws IOException when the window holds no data, or the file cannot be written; a
-     *                     partial file is removed
+     *                     partial temporary file is removed and an existing target is left alone
      */
     public static Snapshot take(final FlightRecorderMXBean fr, final long recordingId, final Window window, final Path file) throws IOException {
         final long clone = fr.cloneRecording(recordingId, true);
@@ -54,23 +56,48 @@ public record Snapshot(Path file, long bytes, Instant stop) {
                 throw new IOException("the recording holds no data in the window " + Live.describe(window)
                         + " (" + e.getMessage() + ")", e);
             }
-            long bytes = 0;
-            try (final OutputStream out = Files.newOutputStream(file)) {
-                byte[] block;
-                while ((block = fr.readStream(stream)) != null) {
-                    out.write(block);
-                    bytes += block.length;
+            try {
+                final Path temporary = temporary(file);
+                try {
+                    long bytes = 0;
+                    try (final OutputStream out = Files.newOutputStream(temporary)) {
+                        byte[] block;
+                        while ((block = fr.readStream(stream)) != null) {
+                            out.write(block);
+                            bytes += block.length;
+                        }
+                    }
+                    move(temporary, file);
+                    return new Snapshot(file, bytes, stop);
+                } finally {
+                    Files.deleteIfExists(temporary);
                 }
-            } catch (final IOException e) {
-                Files.deleteIfExists(file);
-                throw e;
             } finally {
                 fr.closeStream(stream);
             }
-            return new Snapshot(file, bytes, stop);
         } finally {
             fr.closeRecording(clone);
         }
+    }
+
+    /** Publishes a completed dump in one step where the filesystem supports it. */
+    private static void move(final Path temporary, final Path target) throws IOException {
+        try {
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (final AtomicMoveNotSupportedException e) {
+            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /** A sibling temporary file makes an interrupted dump unable to damage {@code target}. */
+    private static Path temporary(final Path target) throws IOException {
+        final Path absolute = target.toAbsolutePath();
+        final Path parent = absolute.getParent();
+        final Path name = absolute.getFileName();
+        if (parent == null || name == null) {
+            throw new IOException("cannot create a temporary dump next to " + target);
+        }
+        return Files.createTempFile(parent, "." + name + ".", ".part");
     }
 
     private static Instant stopTime(final FlightRecorderMXBean fr, final long clone) throws IOException {

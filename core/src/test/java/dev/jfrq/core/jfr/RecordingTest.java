@@ -117,7 +117,7 @@ class RecordingTest {
     }
 
     @Test
-    void contentionCollectorSeesTheHolder() throws Exception {
+    void contentionCollectorSeesTheMonitorWait() throws Exception {
         final Object lock = new Object();
         final Path file = JfrFixtures.record(dir, "locks", r -> {
             r.enable("jdk.JavaMonitorEnter").withThreshold(Duration.ZERO).withStackTrace();
@@ -138,12 +138,15 @@ class RecordingTest {
 
         final Wait wait = report.waits().stream().filter(w -> w.waiter().name().equals("waiter-thread")).findFirst()
                 .orElseThrow(() -> new AssertionError("no wait recorded: " + report.waits()));
-        assertEquals("holder-thread", wait.owner().name());
+        // JFR may omit previousOwner even for a real contended enter. That limits the diagnosis,
+        // but must not turn a valid wait into a failed read; holder resolution itself is covered
+        // deterministically by ContentionReportTest.
+        assertTrue(wait.owner() == null || wait.owner().name().equals("holder-thread"), wait.toString());
         assertEquals("java.lang.Object", wait.lock().className());
         assertEquals(Wait.Kind.MONITOR_ENTER, wait.kind());
         assertTrue(wait.duration() >= 80_000_000L, "waited " + wait.duration());
         assertFalse(wait.stack().isEmpty());
-        assertTrue(report.locks(5).getFirst().owners().contains(new ThreadRef(wait.owner().id(), "holder-thread")));
+        assertEquals(wait.lock(), report.locks(5).getFirst().lock());
 
         // Filters: by minimum duration and by waiter name.
         final ContentionCollector filtered = new ContentionCollector(10_000_000_000L, _ -> true);

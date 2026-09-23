@@ -203,6 +203,14 @@ class LiveTest {
         assertEquals(i1.endNanos(), i1b.endNanos());
         assertEquals(afterDelta, Cursor.load(dir, PID, jvmStart).next(), "again must not move the cursor");
 
+        // A failed publish must not delete a path the caller already owned. The old direct writer
+        // opened this directory, failed, and then deleted it as though it were its partial file.
+        final Path existingTarget = dir.resolve("existing-output");
+        Files.createDirectory(existingTarget);
+        final Run protectedTarget = run(concat(new String[] {PID, "again", "--out", existingTarget.toString()}, pick));
+        assertEquals(1, protectedTarget.status());
+        assertTrue(Files.isDirectory(existingTarget), "a failed dump removed the existing output target");
+
         final Run bound = run(concat(new String[] {PID, "bound", "--max-age", "0", "--max-size", "64MB"}, pick));
         assertEquals(0, bound.status(), bound.err());
         assertTrue(bound.out().contains("max-size 64.0 MB"), bound.out());
