@@ -465,7 +465,7 @@ class RecordingTest {
                     // it late eats into the wait, and the block is what makes it BLOCKED_MONITOR.
                     JfrFixtures.sleep(400);
                 }
-                JfrFixtures.sleep(150); // see JfrFixtures.contend
+                JfrFixtures.sleep(JfrFixtures.HOLDER_TAIL_MILLIS);
             }, "holder-thread");
             holder.start();
             held.await();
@@ -473,7 +473,9 @@ class RecordingTest {
             synchronized (lock) {
                 lock.notifyAll();
             }
-            holder.join();
+            // Not joined, for the reason JfrFixtures.contend gives: the holder has to outlive the
+            // recording or it is written as an unknown previous owner, and this stall is the one
+            // that names it.
             TestLoop.idle(300);
         }));
     }

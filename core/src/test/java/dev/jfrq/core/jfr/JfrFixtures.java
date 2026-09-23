@@ -16,6 +16,9 @@ import jdk.jfr.Recording;
  */
 public final class JfrFixtures {
 
+    /** How long a lock holder outlives the exchange, so it is still alive when the recording stops. */
+    static final long HOLDER_TAIL_MILLIS = 800;
+
     private JfrFixtures() {
     }
 
@@ -58,7 +61,8 @@ public final class JfrFixtures {
 
     /**
      * Makes {@code waiter} block on {@code lock} for about {@code holdMillis} while
-     * {@code holder} holds it; returns when both are done.
+     * {@code holder} holds it; returns once the waiter has been through the lock, which is
+     * after the holder released it. The holder is still running then, on purpose: see below.
      */
     public static void contend(final Object lock, final String holder, final String waiter, final long holdMillis) throws Exception {
         final CountDownLatch held = new CountDownLatch(1);
@@ -67,9 +71,7 @@ public final class JfrFixtures {
                 held.countDown();
                 sleep(holdMillis);
             }
-            // Stay alive a moment: JFR resolves the previous owner's identity lazily, and a
-            // thread that exits the instant it releases the lock can be recorded as unknown.
-            sleep(150);
+            sleep(HOLDER_TAIL_MILLIS);
         }, holder);
         final Thread w = new Thread(() -> {
             await(held);
@@ -80,7 +82,11 @@ public final class JfrFixtures {
         }, waiter);
         h.start();
         w.start();
-        h.join();
+        // The waiter only gets through the lock once the holder has released it, so this join
+        // alone orders the whole exchange. The holder is deliberately not joined: JFR writes the
+        // thread constant pool when the recording stops, and a thread that has already exited is
+        // written as an unknown previous owner, which is the holder this fixture exists to name.
+        // Its tail sleep keeps it alive across the stop, and it ends on its own.
         w.join();
     }
 
