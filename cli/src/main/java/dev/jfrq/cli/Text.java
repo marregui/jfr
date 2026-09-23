@@ -326,8 +326,18 @@ final class Text {
         final StringBuilder sb = new StringBuilder(header(r.info()));
         sb.append(settingsLine(r.info(), "Thresholds", "jdk.JavaMonitorEnter", "jdk.ThreadPark"));
         if (r.isEmpty()) {
+            if (!r.workWaits().isEmpty()) {
+                // Every wait that got this far was a worker waiting for its own queue, and that
+                // is the answer rather than an empty report: an idle node has no contention. The
+                // section below is all there is to say about it, so it is what gets said — and
+                // the filter sentence is not, since an idle node reaches here having set none.
+                sb.append("\nNo contention: every wait was a worker waiting for work, not a thread held up "
+                        + "by another.\n");
+                sb.append(waitingForWork(r, top));
+                return sb.toString();
+            }
             sb.append(r.filtered()
-                    ? "\nNo contended monitor enters or parks match the filters (--thread, --min); "
+                    ? "\nNo contended monitor enters or parks match the filters (--thread, --min, --lock); "
                             + r.unfilteredCount() + " in the recording.\n"
                     : "\nNo contended monitor enters or parks in the recording (at or above the thresholds above).\n");
             return sb.toString();
@@ -408,24 +418,7 @@ final class Text {
             }
         }
 
-        if (!r.workWaits().isEmpty()) {
-            sb.append(String.format(Locale.ROOT, "\nWAITING FOR WORK (not contention: %d thread%s parked on an empty "
-                            + "queue, %s across %d park%s)\n", r.workWaitThreads(), r.workWaitThreads() == 1 ? "" : "s",
-                    Durations.format(r.workWaitNanos()), r.workWaits().size(),
-                    r.workWaits().size() == 1 ? "" : "s"));
-            if (r.perchCount() > 0) {
-                sb.append(String.format(Locale.ROOT, "  %d of these lock%s recognised by shape rather than by name: "
-                                + "one thread, no holder,\n  most of the recording parked there — or the same stack "
-                                + "as a lock like that. Pass --idle none to see them all.\n",
-                        r.perchCount(), r.perchCount() == 1 ? " was" : "s were"));
-            }
-            final TextTable idle = new TextTable("Queue", "Total", "Parks", "Max", "Threads").numeric(1, 2, 3);
-            for (final ContentionReport.LockStats l : r.workWaitLocks(top)) {
-                idle.row(l.lock().pretty(), Durations.format(l.totalNanos()), l.count(),
-                        Durations.format(l.maxNanos()), names(l.waiters()));
-            }
-            sb.append(idle.render("  "));
-        }
+        sb.append(waitingForWork(r, top));
 
         sb.append("\nLONGEST WAITS\n");
         int n = 1;
@@ -436,6 +429,34 @@ final class Text {
             sb.append(w.stack().pretty("        ", STACK_FRAMES));
         }
         return sb.toString();
+    }
+
+    /**
+     * The parks that are a worker waiting for its own queue: not contention, and on an idle
+     * process the only thing the recording has to say. Empty when nothing was classified that
+     * way, so both the ordinary report and the no-contention one can simply append it.
+     */
+    private static String waitingForWork(final ContentionReport r, final int top) {
+        if (r.workWaits().isEmpty()) {
+            return "";
+        }
+        final StringBuilder sb = new StringBuilder();
+        sb.append(String.format(Locale.ROOT, "\nWAITING FOR WORK (not contention: %d thread%s parked on an empty "
+                        + "queue, %s across %d park%s)\n", r.workWaitThreads(), r.workWaitThreads() == 1 ? "" : "s",
+                Durations.format(r.workWaitNanos()), r.workWaits().size(),
+                r.workWaits().size() == 1 ? "" : "s"));
+        if (r.perchCount() > 0) {
+            sb.append(String.format(Locale.ROOT, "  %d of these lock%s recognised by shape rather than by name: "
+                            + "one thread, no holder,\n  most of the recording parked there — or the same stack "
+                            + "as a lock like that. Pass --idle none to see them all.\n",
+                    r.perchCount(), r.perchCount() == 1 ? " was" : "s were"));
+        }
+        final TextTable idle = new TextTable("Queue", "Total", "Parks", "Max", "Threads").numeric(1, 2, 3);
+        for (final ContentionReport.LockStats l : r.workWaitLocks(top)) {
+            idle.row(l.lock().pretty(), Durations.format(l.totalNanos()), l.count(),
+                    Durations.format(l.maxNanos()), names(l.waiters()));
+        }
+        return sb.append(idle.render("  ")).toString();
     }
 
     /**

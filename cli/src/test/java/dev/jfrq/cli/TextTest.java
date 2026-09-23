@@ -169,6 +169,30 @@ class TextTest {
     }
 
     @Test
+    void anIdleProcessIsToldItIsIdle() {
+        // A node doing nothing: every park is a worker on its own queue. The report has no
+        // contention in it, and the old answer blamed --thread and --min, which nothing had
+        // set, and then dropped the one section that held the whole window's content.
+        final Stack noWork = new Stack(List.of(
+                new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
+                new Frame("java.util.concurrent.locks.LockSupport", "park", 341, "JIT compiled"),
+                new Frame("java.util.concurrent.LinkedBlockingQueue", "take", 435, "JIT compiled"),
+                new Frame("java.util.concurrent.ThreadPoolExecutor", "getTask", 1070, "JIT compiled"),
+                new Frame("java.util.concurrent.ThreadPoolExecutor", "runWorker", 1130, "JIT compiled")), false);
+        final List<Wait> parks = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            parks.add(new Wait(new Interval(1_000 * MS, 2_000 * MS), new ThreadRef(i, "worker-" + i),
+                    new Wait.LockKey("java.util.concurrent.LinkedBlockingQueue", 0x20 + i, Wait.Kind.PARK),
+                    null, noWork));
+        }
+        final String text = Text.locks(new ContentionReport(window(), parks), 15, false);
+        assertTrue(text.contains("No contention: every wait was a worker waiting for work"), text);
+        assertFalse(text.contains("--thread"), text);
+        assertTrue(text.contains("WAITING FOR WORK (not contention: 3 threads parked on an empty queue"), text);
+        assertTrue(text.contains("LinkedBlockingQueue"), text);
+    }
+
+    @Test
     void locksBySiteRankOneRowPerStackWithItsInstanceCount() {
         final Stack mailbox = new Stack(List.of(new Frame("dev.app.DefaultMailbox", "awaitNextMessage", 92, "JIT compiled"),
                 new Frame("dev.app.Dispatcher", "run", 31, "JIT compiled")), false);
