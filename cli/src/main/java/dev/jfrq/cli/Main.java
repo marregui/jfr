@@ -136,16 +136,24 @@ public final class Main {
         this.err = err;
     }
 
+    /**
+     * Writes one line ending in {@code '\n'}, never the platform separator: a report is text
+     * that gets diffed, pasted and compared across machines, so it reads the same on all of them.
+     */
+    private static void line(final PrintStream stream, final String text) {
+        stream.print(text + '\n');
+    }
+
     private void phase(final String name) {
         final long now = System.nanoTime();
         if (timing && name != null && phaseStart != 0) {
             if (name.equals("read")) {
                 // The read includes the analysis, which runs in the sinks' finish(); report both.
                 final long analyse = JfrReader.analyseNanos();
-                err.printf("timing: %-10s %s%n", "parse", Durations.format(now - phaseStart - analyse));
-                err.printf("timing: %-10s %s%n", "analyse", Durations.format(analyse));
+                err.printf("timing: %-10s %s\n", "parse", Durations.format(now - phaseStart - analyse));
+                err.printf("timing: %-10s %s\n", "analyse", Durations.format(analyse));
             } else {
-                err.printf("timing: %-10s %s%n", name, Durations.format(now - phaseStart));
+                err.printf("timing: %-10s %s\n", name, Durations.format(now - phaseStart));
             }
         }
         phaseStart = now;
@@ -171,7 +179,7 @@ public final class Main {
                 return 0;
             }
             if (argv[0].equals("--version")) {
-                out.println("jfrq " + VERSION);
+                line(out, "jfrq " + VERSION);
                 return 0;
             }
             final String command = argv[0];
@@ -182,7 +190,7 @@ public final class Main {
                 return 0;
             }
             if (args.flag("version")) {
-                out.println("jfrq " + VERSION);
+                line(out, "jfrq " + VERSION);
                 return 0;
             }
             timing = args.flag("timing");
@@ -195,21 +203,21 @@ public final class Main {
                 default -> throw new IllegalStateException(command);
             };
         } catch (final Args.UsageException e) {
-            err.println("jfrq: " + e.getMessage());
-            err.println("Run 'jfrq --help' for usage.");
+            line(err, "jfrq: " + e.getMessage());
+            line(err, "Run 'jfrq --help' for usage.");
             return 2;
         } catch (final NoSuchFileException e) {
-            err.println("jfrq: no such file: " + e.getFile());
+            line(err, "jfrq: no such file: " + e.getFile());
             return 1;
         } catch (final HtmlWriteException e) {
-            err.println("jfrq: cannot write HTML report " + e.target + ": " + e.getCause().getMessage());
+            line(err, "jfrq: cannot write HTML report " + e.target + ": " + e.getCause().getMessage());
             return 1;
         } catch (final IOException e) {
-            err.println("jfrq: cannot read recording: " + e.getMessage());
+            line(err, "jfrq: cannot read recording: " + e.getMessage());
             return 1;
         } catch (final RuntimeException e) {
             // The JDK parser signals a damaged file with unchecked exceptions; say so instead of a bare trace.
-            err.println("jfrq: failed while reading the recording (damaged file?): " + e);
+            line(err, "jfrq: failed while reading the recording (damaged file?): " + e);
             e.printStackTrace(err);
             return 1;
         }
@@ -395,7 +403,7 @@ public final class Main {
         } catch (final IOException e) {
             throw new HtmlWriteException(target, e);
         }
-        err.println("HTML report written to " + target);
+        line(err, "HTML report written to " + target);
     }
 
     /** Distinguishes a failed report write from a failed recording read: both are I/O. */

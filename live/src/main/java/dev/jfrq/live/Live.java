@@ -127,6 +127,14 @@ public final class Live {
         System.exit(new Live(System.out, System.err).run(argv));
     }
 
+    /**
+     * Writes one line ending in {@code '\n'}, never the platform separator, so a dump reads the
+     * same on every machine and {@code jfrq}'s own output below it is terminated identically.
+     */
+    private static void line(final PrintStream stream, final String text) {
+        stream.print(text + '\n');
+    }
+
     /** {@code 14:03:07.121 .. 14:05:12.004}, with "start" and "now" for the open ends. */
     static String describe(final Window w) {
         return (w.begin() == null ? "the start" : TIME.format(w.begin())) + " .. "
@@ -141,7 +149,7 @@ public final class Live {
                 return 0;
             }
             if (argv[0].equals("--version")) {
-                out.println("jfrq-live " + Main.VERSION);
+                line(out, "jfrq-live " + Main.VERSION);
                 return 0;
             }
             final String pid = argv[0];
@@ -161,7 +169,7 @@ public final class Live {
                 return 0;
             }
             if (args.flag("version")) {
-                out.println("jfrq-live " + Main.VERSION);
+                line(out, "jfrq-live " + Main.VERSION);
                 return 0;
             }
             if (!args.positional().isEmpty()) {
@@ -184,15 +192,15 @@ public final class Live {
                 };
             }
         } catch (final Args.UsageException e) {
-            err.println("jfrq-live: " + e.getMessage());
-            err.println("Run 'jfrq-live --help' for usage.");
+            line(err, "jfrq-live: " + e.getMessage());
+            line(err, "Run 'jfrq-live --help' for usage.");
             return 2;
         } catch (final IOException e) {
-            err.println("jfrq-live: " + e.getMessage());
+            line(err, "jfrq-live: " + e.getMessage());
             return 1;
         } catch (final IllegalArgumentException | IllegalStateException e) {
             // The recorder's own refusals: a recording in the wrong state, a setting it does not know.
-            err.println("jfrq-live: the JVM refused: " + e.getMessage());
+            line(err, "jfrq-live: the JVM refused: " + e.getMessage());
             return 1;
         }
     }
@@ -226,16 +234,16 @@ public final class Live {
     }
 
     private int status(final Jvm jvm, final Args args) throws IOException {
-        out.println(jvmLine(jvm));
+        line(out, jvmLine(jvm));
         final List<RecordingInfo> recordings = jvm.flightRecorder().getRecordings();
         if (recordings.isEmpty()) {
-            out.println("Recording  none: start one with 'jfrq-live " + jvm.pid()
+            line(out, "Recording  none: start one with 'jfrq-live " + jvm.pid()
                     + " start', or run the JVM with -XX:StartFlightRecording");
         }
         for (final RecordingInfo r : recordings) {
-            out.println(recordingLine(r));
+            line(out, recordingLine(r));
         }
-        out.println(cursorLine(cursor(jvm, args)));
+        line(out, cursorLine(cursor(jvm, args)));
         return 0;
     }
 
@@ -262,11 +270,11 @@ public final class Live {
             fr.closeRecording(id);
             throw e;
         }
-        out.println(jvmLine(jvm));
-        out.println(recordingLine(recording(fr, id)));
-        out.println(settingsLine(settings));
+        line(out, jvmLine(jvm));
+        line(out, recordingLine(recording(fr, id)));
+        line(out, settingsLine(settings));
         if (!bounded) {
-            out.println(unboundedWarning(jvm));
+            line(out, unboundedWarning(jvm));
         }
         return 0;
     }
@@ -316,7 +324,7 @@ public final class Live {
         final FlightRecorderMXBean fr = jvm.flightRecorder();
         final RecordingInfo r = pick(jvm, args);
         fr.setRecordingOptions(r.getId(), options);
-        out.println(recordingLine(recording(fr, r.getId())));
+        line(out, recordingLine(recording(fr, r.getId())));
         return 0;
     }
 
@@ -325,7 +333,7 @@ public final class Live {
         final RecordingInfo r = pick(jvm, args);
         fr.stopRecording(r.getId());
         fr.closeRecording(r.getId());
-        out.println(String.format(Locale.ROOT, "Stopped    %d  %s  and closed it; the JVM discards its data", r.getId(),
+        line(out, String.format(Locale.ROOT, "Stopped    %d  %s  and closed it; the JVM discards its data", r.getId(),
                 r.getName()));
         return 0;
     }
@@ -358,11 +366,11 @@ public final class Live {
             cursor.advance(window, snapshot.stop());
         }
         check(snapshot, window, command, r, jvm);
-        out.println(cursorLine(cursor));
+        line(out, cursorLine(cursor));
         if (question.length == 0) {
             return 0;
         }
-        out.println();
+        line(out, "");
         final List<String> argv = new ArrayList<>(question.length + 1);
         argv.add(question[0]);
         argv.add(file.toString());
@@ -375,37 +383,37 @@ public final class Live {
         final dev.jfrq.core.jfr.RecordingInfo info = JfrReader.read(snapshot.file());
         final Instant start = Instant.ofEpochSecond(0, info.startNanos());
         final Instant end = Instant.ofEpochSecond(0, info.endNanos());
-        out.println(String.format(Locale.ROOT, "Dumped     %s  %s, %d chunk%s, %s .. %s (%s)", snapshot.file(),
+        line(out, String.format(Locale.ROOT, "Dumped     %s  %s, %d chunk%s, %s .. %s (%s)", snapshot.file(),
                 Bytes.format(snapshot.bytes()), info.chunks(), info.chunks() == 1 ? "" : "s", TIME.format(start),
                 TIME.format(end), Durations.format(info.duration())));
         for (final String w : info.warnings()) {
-            out.println("WARNING    " + w);
+            line(out, "WARNING    " + w);
         }
         final String why = switch (command) {
             case "full" -> "everything the recording kept";
             case "delta" -> "since the previous dump";
             default -> "the previous window again";
         };
-        out.println(String.format(Locale.ROOT, "Window     %s (%s)", describe(window), why));
+        line(out, String.format(Locale.ROOT, "Window     %s (%s)", describe(window), why));
         if (window.begin() != null) {
             final Duration early = Duration.between(start, window.begin());
             if (early.compareTo(SLACK) > 0) {
-                out.println("Note       the file starts " + Durations.format(early)
+                line(out, "Note       the file starts " + Durations.format(early)
                         + " before the window: the JVM hands over whole chunks");
             } else if (early.negated().compareTo(SLACK) > 0) {
-                out.println("WARNING    the file starts " + Durations.format(early.negated())
+                line(out, "WARNING    the file starts " + Durations.format(early.negated())
                         + " after the window: the JVM had already discarded that data (" + bounds(r) + ")");
             }
         }
         if (window.end() != null) {
             final Duration late = Duration.between(window.end(), end);
             if (late.compareTo(SLACK) > 0) {
-                out.println("Note       the file ends " + Durations.format(late)
+                line(out, "Note       the file ends " + Durations.format(late)
                         + " after the window: the JVM hands over whole chunks");
             }
         }
         if (command.equals("full") && r.getMaxAge() == 0 && r.getMaxSize() == 0) {
-            out.println(unboundedWarning(jvm));
+            line(out, unboundedWarning(jvm));
         }
     }
 

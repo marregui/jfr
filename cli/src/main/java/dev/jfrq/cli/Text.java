@@ -39,7 +39,7 @@ final class Text {
     }
 
     static String header(final RecordingInfo info) {
-        final StringBuilder sb = new StringBuilder(String.format(Locale.ROOT, "Recording  %s  %s  starting %s%n",
+        final StringBuilder sb = new StringBuilder(String.format(Locale.ROOT, "Recording  %s  %s  starting %s\n",
                 info.file().getFileName(), Durations.format(info.duration()), info.start()));
         for (final String w : info.warnings()) {
             sb.append("WARNING    ").append(w).append('\n');
@@ -49,7 +49,7 @@ final class Text {
 
     static String settingsLine(final RecordingInfo info, final String label, final String... types) {
         if (!info.hasSettings()) {
-            return String.format(Locale.ROOT, "%-10s unknown: the recording has no jdk.ActiveSetting events%n", label);
+            return String.format(Locale.ROOT, "%-10s unknown: the recording has no jdk.ActiveSetting events\n", label);
         }
         final StringBuilder sb = new StringBuilder();
         for (final String t : types) {
@@ -65,13 +65,13 @@ final class Text {
             }
             sb.append(t.substring("jdk.".length())).append(' ').append(value);
         }
-        return sb.isEmpty() ? "" : String.format(Locale.ROOT, "%-10s %s%n", label, sb);
+        return sb.isEmpty() ? "" : String.format(Locale.ROOT, "%-10s %s\n", label, sb);
     }
 
     static String info(final RecordingInfo info) {
         final StringBuilder sb = new StringBuilder(header(info));
-        sb.append(String.format(Locale.ROOT, "%-10s %d seen in events%n", "Threads", info.threads().size()));
-        sb.append(String.format(Locale.ROOT, "%-10s %d%n", "Chunks", info.chunks()));
+        sb.append(String.format(Locale.ROOT, "%-10s %d seen in events\n", "Threads", info.threads().size()));
+        sb.append(String.format(Locale.ROOT, "%-10s %d\n", "Chunks", info.chunks()));
         sb.append(settingsLine(info, "Sampling", "jdk.ExecutionSample", "jdk.NativeMethodSample"));
         // Derived, not a whitelist: this line exists to answer "did the settings I asked for
         // take effect", and a fixed list answers it for the events someone thought of in 2026.
@@ -181,12 +181,12 @@ final class Text {
 
     static String alloc(final AllocationReport r, final int top, final boolean sites, final SiteKey key) {
         final StringBuilder sb = new StringBuilder(header(r.info()));
-        sb.append(String.format(Locale.ROOT, "%-10s %s (%d samples)%n", "Source", r.source(), r.samples()));
-        sb.append(String.format(Locale.ROOT, "%-10s %s over %s = %s%n", "Estimate", Bytes.format(r.totalBytes()),
+        sb.append(String.format(Locale.ROOT, "%-10s %s (%d samples)\n", "Source", r.source(), r.samples()));
+        sb.append(String.format(Locale.ROOT, "%-10s %s over %s = %s\n", "Estimate", Bytes.format(r.totalBytes()),
                 Durations.format(r.info().duration()), Bytes.rate(r.rate())));
         if (r.hasCounters()) {
             sb.append(String.format(Locale.ROOT, "%-10s %s by the JVM's own counters on the %d threads seen at both ends "
-                    + "of the file; the estimate for those is %s%s%s%n", "Counted", Bytes.format(r.countedBytes()),
+                    + "of the file; the estimate for those is %s%s%s\n", "Counted", Bytes.format(r.countedBytes()),
                     r.countedByThread().size(), Bytes.format(r.estimatedOnCountedThreads()), errorNote(r),
                     coverageNote(r)));
         }
@@ -244,7 +244,7 @@ final class Text {
             sb.append(packages(r));
             int n = 1;
             for (final AllocationReport.SiteRow row : r.sites(key, top)) {
-                sb.append(String.format(Locale.ROOT, "  %2d  %10s  %10s  %6s  %d sample%s  %s%s%n", n++,
+                sb.append(String.format(Locale.ROOT, "  %2d  %10s  %10s  %6s  %d sample%s  %s%s\n", n++,
                         Bytes.format(row.bytes()), Bytes.rate(r.rate(row.bytes())), pct(row.share()),
                         row.samples(), row.samples() == 1 ? "" : "s", row.label(),
                         row.stacks() > 1 ? "  (" + row.stacks() + " stacks, the biggest below)" : ""));
@@ -275,17 +275,17 @@ final class Text {
 
     static String allocDiff(final AllocationDiff d, final int top, final boolean sites, final SiteKey key) {
         final StringBuilder sb = new StringBuilder();
-        sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s%n", "Baseline", d.baseline().info().file().getFileName(),
+        sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s\n", "Baseline", d.baseline().info().file().getFileName(),
                 Durations.format(d.baseline().info().duration()), Bytes.rate(d.baseline().rate())));
         for (final String w : d.baseline().info().warnings()) {
             sb.append("WARNING    baseline: ").append(w).append('\n');
         }
-        sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s%n", "Current", d.current().info().file().getFileName(),
+        sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s\n", "Current", d.current().info().file().getFileName(),
                 Durations.format(d.current().info().duration()), Bytes.rate(d.current().rate())));
         for (final String w : d.current().info().warnings()) {
             sb.append("WARNING    current: ").append(w).append('\n');
         }
-        sb.append(String.format(Locale.ROOT, "%-10s %s (%s)%n", "Change", Bytes.signedRate(d.total().delta()),
+        sb.append(String.format(Locale.ROOT, "%-10s %s (%s)\n", "Change", Bytes.signedRate(d.total().delta()),
                 ratio(d.total().ratio())));
         sb.append("Rates are bytes/second so recordings of different length compare. The sample counts are the "
                 + "evidence behind each\nchange: a few hundred percent on a handful of samples is noise, not a "
@@ -313,7 +313,7 @@ final class Text {
             sb.append("\nBY SITE (").append(key.description()).append("; every path through it is one row)\n");
             int n = 1;
             for (final AllocationDiff.Delta<AllocationDiff.Site> x : d.sites(key, top)) {
-                sb.append(String.format(Locale.ROOT, "  %2d  %10s -> %-10s %10s (%s)  %d -> %d samples  %s%n", n++,
+                sb.append(String.format(Locale.ROOT, "  %2d  %10s -> %-10s %10s (%s)  %d -> %d samples  %s\n", n++,
                         Bytes.rate(x.beforeRate()), Bytes.rate(x.afterRate()), Bytes.signedRate(x.delta()),
                         ratio(x.ratio()), x.key().beforeSamples(), x.key().afterSamples(), x.key().label()));
                 sb.append(x.key().stack().pretty("        ", STACK_FRAMES));
@@ -332,11 +332,11 @@ final class Text {
                     : "\nNo contended monitor enters or parks in the recording (at or above the thresholds above).\n");
             return sb.toString();
         }
-        sb.append(String.format(Locale.ROOT, "%-10s %s across %d waits%n", "Blocked", Durations.format(r.totalNanos()),
+        sb.append(String.format(Locale.ROOT, "%-10s %s across %d waits\n", "Blocked", Durations.format(r.totalNanos()),
                 r.waits().size()));
         if (r.clippedCount() > 0) {
             sb.append(String.format(Locale.ROOT, "%-10s %d wait%s began before the recording or outlived it; "
-                            + "only the part inside it is counted%n", "Note", r.clippedCount(),
+                            + "only the part inside it is counted\n", "Note", r.clippedCount(),
                     r.clippedCount() == 1 ? "" : "s"));
         }
 
@@ -361,10 +361,10 @@ final class Text {
                     // Lock names are long (a fully qualified class and an address), so several of
                     // them go one per line under a count rather than end to end across the page.
                     if (g.locks().size() == 1) {
-                        sb.append(String.format(Locale.ROOT, "  %s  %s%n", g.locks().getFirst().pretty(),
+                        sb.append(String.format(Locale.ROOT, "  %s  %s\n", g.locks().getFirst().pretty(),
                                 Durations.format(g.longest().duration())));
                     } else {
-                        sb.append(String.format(Locale.ROOT, "  %d locks with this stack, longest %s%n",
+                        sb.append(String.format(Locale.ROOT, "  %d locks with this stack, longest %s\n",
                                 g.locks().size(), Durations.format(g.longest().duration())));
                         for (final Wait.LockKey lock : shown(g.locks())) {
                             sb.append("    ").append(lock.pretty()).append('\n');
@@ -409,14 +409,14 @@ final class Text {
         }
 
         if (!r.workWaits().isEmpty()) {
-            sb.append(String.format(Locale.ROOT, "%nWAITING FOR WORK (not contention: %d thread%s parked on an empty "
-                            + "queue, %s across %d park%s)%n", r.workWaitThreads(), r.workWaitThreads() == 1 ? "" : "s",
+            sb.append(String.format(Locale.ROOT, "\nWAITING FOR WORK (not contention: %d thread%s parked on an empty "
+                            + "queue, %s across %d park%s)\n", r.workWaitThreads(), r.workWaitThreads() == 1 ? "" : "s",
                     Durations.format(r.workWaitNanos()), r.workWaits().size(),
                     r.workWaits().size() == 1 ? "" : "s"));
             if (r.perchCount() > 0) {
                 sb.append(String.format(Locale.ROOT, "  %d of these lock%s recognised by shape rather than by name: "
-                                + "one thread, no holder,%n  most of the recording parked there — or the same stack "
-                                + "as a lock like that. Pass --idle none to see them all.%n",
+                                + "one thread, no holder,\n  most of the recording parked there — or the same stack "
+                                + "as a lock like that. Pass --idle none to see them all.\n",
                         r.perchCount(), r.perchCount() == 1 ? " was" : "s were"));
             }
             final TextTable idle = new TextTable("Queue", "Total", "Parks", "Max", "Threads").numeric(1, 2, 3);
@@ -430,7 +430,7 @@ final class Text {
         sb.append("\nLONGEST WAITS\n");
         int n = 1;
         for (final Wait w : r.longest(top)) {
-            sb.append(String.format(Locale.ROOT, "  %2d  %s  %8s  %s waited for %s%s%n", n++,
+            sb.append(String.format(Locale.ROOT, "  %2d  %s  %8s  %s waited for %s%s\n", n++,
                     Durations.offset(w.start() - r.info().startNanos()), Durations.format(w.duration()),
                     w.waiter().name(), w.lock().pretty(), w.owner() == null ? "" : " " + w.heldBy()));
             sb.append(w.stack().pretty("        ", STACK_FRAMES));
@@ -448,10 +448,10 @@ final class Text {
                 "\nLOCK SITES BY TOTAL WAIT (one row per stack; without --by-site each instance has its own row)\n");
         int n = 1;
         for (final ContentionReport.SiteStats s : r.lockSites(top, STACK_FRAMES)) {
-            sb.append(String.format(Locale.ROOT, "  %2d  %-8s %10s across %d wait%s, %d lock instance%s, longest %s%n",
+            sb.append(String.format(Locale.ROOT, "  %2d  %-8s %10s across %d wait%s, %d lock instance%s, longest %s\n",
                     n++, s.kind().label(), Durations.format(s.totalNanos()), s.count(), s.count() == 1 ? "" : "s",
                     s.locks().size(), s.locks().size() == 1 ? "" : "s", Durations.format(s.maxNanos())));
-            sb.append(String.format(Locale.ROOT, "      waited by %s%s%n", names(s.waiters()),
+            sb.append(String.format(Locale.ROOT, "      waited by %s%s\n", names(s.waiters()),
                     s.owners().isEmpty() ? "" : ", held by " + names(s.owners())));
             if (s.locks().size() == 1) {
                 sb.append("      ").append(s.locks().getFirst().pretty()).append('\n');
@@ -466,7 +466,7 @@ final class Text {
         sb.append(settingsLine(r.info(), "Sampling", "jdk.ExecutionSample", "jdk.NativeMethodSample"));
         sb.append(settingsLine(r.info(), "Thresholds", "jdk.JavaMonitorEnter", "jdk.ThreadPark", "jdk.ThreadSleep",
                 "jdk.SocketRead", "jdk.FileRead"));
-        sb.append(String.format(Locale.ROOT, "%-10s %s%n", "Gap", Durations.format(r.gapNanos())));
+        sb.append(String.format(Locale.ROOT, "%-10s %s\n", "Gap", Durations.format(r.gapNanos())));
         if (r.threads().isEmpty()) {
             sb.append("\nNo thread matched. Use `jfrq info` to list the threads in the recording.\n");
             return sb.toString();
@@ -480,14 +480,14 @@ final class Text {
                     .append(Durations.format(t.javaCadenceNanos())).append(" java / ")
                     .append(Durations.format(t.nativeCadenceNanos())).append(" native)");
         }
-        sb.append(String.format(Locale.ROOT, "%-10s %d matched: %s%n", "Threads", r.threads().size(), threads));
+        sb.append(String.format(Locale.ROOT, "%-10s %d matched: %s\n", "Threads", r.threads().size(), threads));
         for (final String w : r.warnings()) {
             sb.append("WARNING    ").append(w).append('\n');
         }
 
         final List<Stall> explained = r.explained();
         final List<Stall> shown = StallReport.top(explained, top);
-        sb.append(String.format(Locale.ROOT, "%nSTALLS >= %s: %d found%s, longest first%n",
+        sb.append(String.format(Locale.ROOT, "\nSTALLS >= %s: %d found%s, longest first\n",
                 Durations.format(r.gapNanos()), explained.size(),
                 shown.size() < explained.size() ? ", showing " + shown.size() : ""));
         if (explained.isEmpty()) {
@@ -500,7 +500,7 @@ final class Text {
         final List<Stall> gaps = r.unexplained();
         if (!gaps.isEmpty()) {
             final List<Stall> shownGaps = StallReport.top(gaps, top);
-            sb.append(String.format(Locale.ROOT, "%nUNEXPLAINED GAPS >= %s: %d found%s, longest first%n",
+            sb.append(String.format(Locale.ROOT, "\nUNEXPLAINED GAPS >= %s: %d found%s, longest first\n",
                     Durations.format(r.gapNanos()), gaps.size(),
                     shownGaps.size() < gaps.size() ? ", showing " + shownGaps.size() : ""));
             sb.append(blindSpotNote(r.info()));
@@ -530,7 +530,7 @@ final class Text {
             final List<Pause> pauses = r.pauses();
             for (int i = 0; i < Math.min(top, pauses.size()); i++) {
                 final Pause p = pauses.get(i);
-                sb.append(String.format(Locale.ROOT, "  %s  %8s  %s: %s%n", Durations.offset(p.interval().start()
+                sb.append(String.format(Locale.ROOT, "  %s  %8s  %s: %s\n", Durations.offset(p.interval().start()
                         - r.info().startNanos()), Durations.format(p.length()), p.kind().label(), p.detail()));
             }
             if (pauses.size() > top) {
@@ -551,7 +551,7 @@ final class Text {
         int n = 1;
         for (final Stall s : stalls) {
             final int row = n++;
-            sb.append(String.format(Locale.ROOT, "  %2d  %-22s %s  %8s  %-15s %s%s%n", row, s.thread().name(),
+            sb.append(String.format(Locale.ROOT, "  %2d  %-22s %s  %8s  %-15s %s%s\n", row, s.thread().name(),
                     Durations.offset(s.start() - r.info().startNanos()), Durations.format(s.duration()),
                     s.verdict(), s.detail(), evidence(s)));
             final String stack = s.stack().pretty("        ", STACK_FRAMES);
@@ -562,7 +562,7 @@ final class Text {
             if (seen == null) {
                 sb.append(stack);
             } else {
-                sb.append(String.format(Locale.ROOT, "        same stack as #%d%n", seen));
+                sb.append(String.format(Locale.ROOT, "        same stack as #%d\n", seen));
             }
         }
         return sb.toString();
@@ -576,9 +576,9 @@ final class Text {
      */
     static String blindSpotNote(final RecordingInfo info) {
         final long writes = info.eventCounts().getOrDefault("jdk.SocketWrite", 0L);
-        return String.format(Locale.ROOT, "  No blocking event and too few samples to say what the thread was doing.%n"
-                        + "  This recording holds %d jdk.SocketWrite event%s in %s: some HTTP stacks produce none, so a%n"
-                        + "  response being written is invisible here.%n", writes, writes == 1 ? "" : "s",
+        return String.format(Locale.ROOT, "  No blocking event and too few samples to say what the thread was doing.\n"
+                        + "  This recording holds %d jdk.SocketWrite event%s in %s: some HTTP stacks produce none, so a\n"
+                        + "  response being written is invisible here.\n", writes, writes == 1 ? "" : "s",
                 Durations.format(info.duration()));
     }
 

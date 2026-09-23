@@ -126,7 +126,11 @@ class RecordingTest {
             // holder into the file's thread pool before it exits; without one, previousOwner is
             // occasionally left unresolved on a loaded machine.
             r.enable("jdk.ThreadSleep").withThreshold(Duration.ZERO);
-        }, () -> JfrFixtures.contend(lock, "holder-thread", "waiter-thread", 150));
+        }, () -> JfrFixtures.contend(lock, "holder-thread", "waiter-thread",
+                // The waiter reaches the monitor 20 ms in, so it waits nearly the whole hold.
+                // Held this long because a scheduler that wakes it 82 ms late — seen once on a
+                // loaded CI machine — must still leave the wait above the floor asserted below.
+                400));
 
         final ContentionCollector collector = new ContentionCollector();
         JfrReader.read(file, collector);
@@ -242,58 +246,38 @@ class RecordingTest {
     @Test
     void stallCollectorFindsSleepBusyAndMonitorStalls() throws Exception {
         final Object lock = new Object();
-        final Path file = JfrFixtures.record(dir, "stalls", r -> {
-            r.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(10));
-            r.enable("jdk.NativeMethodSample").withPeriod(Duration.ofMillis(10));
-            r.enable("jdk.ThreadSleep").withThreshold(Duration.ZERO).withStackTrace();
-            r.enable("jdk.JavaMonitorEnter").withThreshold(Duration.ZERO).withStackTrace();
-            r.enable("jdk.GCPhasePause").withThreshold(Duration.ZERO);
-            r.enable("jdk.SafepointBegin").withThreshold(Duration.ZERO);
-            r.enable("jdk.SafepointEnd").withThreshold(Duration.ZERO);
-        }, () -> JfrFixtures.onThread("loop-test", () -> {
-            TestLoop.idle(400);
-            JfrFixtures.sleep(250);
-            TestLoop.idle(400);
-            JfrFixtures.burn(250);
-            TestLoop.idle(400);
-            // Block this very thread on the lock while a holder sleeps inside it.
-            final java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1);
-            final Thread holder = new Thread(() -> {
-                synchronized (lock) {
-                    held.countDown();
-                    JfrFixtures.sleep(250);
-                }
-                JfrFixtures.sleep(150); // see JfrFixtures.contend
-            }, "holder-thread");
-            holder.start();
-            held.await();
-            JfrFixtures.sleep(20);
-            synchronized (lock) {
-                lock.notifyAll();
-            }
-            holder.join();
-            TestLoop.idle(300);
-        }));
-
-        final StallCollector collector = new StallCollector(Glob.of("loop-*"),
-                IdleMatcher.of(".*RecordingTest\\$TestLoop\\.idle"), 50_000_000L);
-        final RecordingInfo info = JfrReader.read(file, collector);
-        final StallReport report = collector.report();
+        // Sleep and the monitor block are events, so they are exact. BUSY is the one verdict here
+        // that rests on samples alone: a loaded machine can leave the whole burn unsampled, and the
+        // same window then reads as an unexplained silence (docs/DESIGN.md section 4.3). Record
+        // again rather than assert on one roll of the dice; three starved recordings is a failure.
+        Path file = null;
+        StallReport report = null;
+        for (int attempt = 0; attempt < 3 && !has(report, Verdict.BUSY); attempt++) {
+            file = recordStalls("stalls" + attempt, lock);
+            final StallCollector collector = new StallCollector(Glob.of("loop-*"),
+                    IdleMatcher.of(".*RecordingTest\\$TestLoop\\.idle"), 50_000_000L);
+            final RecordingInfo info = JfrReader.read(file, collector);
+            report = collector.report();
+            assertEquals(info, report.info());
+        }
 
         assertEquals(1, report.threads().size(), report.threads().toString());
         assertEquals("loop-test", report.threads().getFirst().thread().name());
         assertTrue(report.threads().getFirst().samples() > 20, "samples " + report.threads().getFirst().samples());
         assertEquals(50_000_000L, report.gapNanos());
-        assertEquals(info, report.info());
 
         final Stall sleep = find(report, Verdict.SLEEP);
         assertTrue(sleep.duration() >= 200_000_000L, sleep.toString());
         assertEquals(Stall.Evidence.EVENT, sleep.evidence());
 
+        // A busy stretch is bounded by the samples that saw it, so its length is a property of the
+        // sampler, not of the burn: under load a 500 ms burn has come back as 143 ms of samples.
+        // What the recording does prove is the verdict, the frame it names, that more than one
+        // observation backs it, and that it cleared the gap a stall is measured against.
         final Stall busy = find(report, Verdict.BUSY);
         assertTrue(busy.detail().contains("JfrFixtures.burn"), busy.detail());
-        assertTrue(busy.duration() >= 150_000_000L, busy.toString());
-        assertTrue(busy.samples() >= 5, busy.toString());
+        assertTrue(busy.duration() >= report.gapNanos(), busy.toString());
+        assertTrue(busy.samples() >= 2, busy.toString());
 
         final Stall monitor = find(report, Verdict.BLOCKED_MONITOR);
         assertTrue(monitor.detail().contains("held by holder-thread"), monitor.detail());
@@ -444,6 +428,54 @@ class RecordingTest {
     private static Stall find(final StallReport report, final Verdict verdict) {
         return report.stalls().stream().filter(s -> s.verdict() == verdict).findFirst()
                 .orElseThrow(() -> new AssertionError("no " + verdict + " in " + report.stalls()));
+    }
+
+    /** Whether a verdict is present at all; {@code null} is "nothing recorded yet". */
+    private static boolean has(final StallReport report, final Verdict verdict) {
+        return report != null && report.stalls().stream().anyMatch(s -> s.verdict() == verdict);
+    }
+
+    /**
+     * A loop thread that idles, sleeps, burns CPU, blocks on a monitor another thread holds,
+     * and idles again: one recording holding one of each stall this analysis names.
+     */
+    private Path recordStalls(final String name, final Object lock) throws Exception {
+        return JfrFixtures.record(dir, name, r -> {
+            r.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(10));
+            r.enable("jdk.NativeMethodSample").withPeriod(Duration.ofMillis(10));
+            r.enable("jdk.ThreadSleep").withThreshold(Duration.ZERO).withStackTrace();
+            r.enable("jdk.JavaMonitorEnter").withThreshold(Duration.ZERO).withStackTrace();
+            r.enable("jdk.GCPhasePause").withThreshold(Duration.ZERO);
+            r.enable("jdk.SafepointBegin").withThreshold(Duration.ZERO);
+            r.enable("jdk.SafepointEnd").withThreshold(Duration.ZERO);
+        }, () -> JfrFixtures.onThread("loop-test", () -> {
+            TestLoop.idle(400);
+            JfrFixtures.sleep(250);
+            TestLoop.idle(400);
+            // Long enough that the sampler has to miss half a second in a row to lose the burn.
+            JfrFixtures.burn(500);
+            TestLoop.idle(400);
+            // Block this very thread on the lock while a holder sleeps inside it.
+            final java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1);
+            final Thread holder = new Thread(() -> {
+                synchronized (lock) {
+                    held.countDown();
+                    // This thread reaches the monitor 20 ms in, so it blocks for nearly the whole
+                    // hold. Held well past the floor asserted on it: a loaded scheduler that wakes
+                    // it late eats into the wait, and the block is what makes it BLOCKED_MONITOR.
+                    JfrFixtures.sleep(400);
+                }
+                JfrFixtures.sleep(150); // see JfrFixtures.contend
+            }, "holder-thread");
+            holder.start();
+            held.await();
+            JfrFixtures.sleep(20);
+            synchronized (lock) {
+                lock.notifyAll();
+            }
+            holder.join();
+            TestLoop.idle(300);
+        }));
     }
 
     /**
