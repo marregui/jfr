@@ -208,5 +208,4 @@ recordings made in the test suite.
 
 ## License
 
-GNU Affero General Public License v3.0 ([LICENSE](LICENSE)). Copyright remains with the
-author, who can offer other terms for commercial use; ask.
+Apache License 2.0 ([LICENSE](LICENSE)). Copyright 2026 Miguel Arregui.
