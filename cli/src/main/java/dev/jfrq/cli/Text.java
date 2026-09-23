@@ -471,16 +471,9 @@ final class Text {
             sb.append("\nNo thread matched. Use `jfrq info` to list the threads in the recording.\n");
             return sb.toString();
         }
-        final StringBuilder threads = new StringBuilder();
-        for (final StallReport.ThreadSummary t : r.threads()) {
-            if (!threads.isEmpty()) {
-                threads.append(", ");
-            }
-            threads.append(t.thread().name()).append(" (").append(t.samples()).append(" samples, cadence ")
-                    .append(Durations.format(t.javaCadenceNanos())).append(" java / ")
-                    .append(Durations.format(t.nativeCadenceNanos())).append(" native)");
-        }
-        sb.append(String.format(Locale.ROOT, "%-10s %d matched: %s\n", "Threads", r.threads().size(), threads));
+        // A count, not the roll call: thirteen dispatchers made this one line 1200 characters wide,
+        // and every name on it is in the PER THREAD table below, with the same samples and cadence.
+        sb.append(String.format(Locale.ROOT, "%-10s %d matched\n", "Threads", r.threads().size()));
         for (final String w : r.warnings()) {
             sb.append("WARNING    ").append(w).append('\n');
         }
@@ -516,11 +509,14 @@ final class Text {
             sb.append(verdicts.render("  "));
         }
 
-        sb.append("\nPER THREAD\n");
-        final TextTable summary = new TextTable("Thread", "Stalls", "Stalled", "Share", "Worst").numeric(1, 2, 3, 4);
+        sb.append("\nPER THREAD (cadence: median interval between samples, which bounds what can be seen)\n");
+        final TextTable summary = new TextTable("Thread", "Samples", "Java cadence", "Native cadence",
+                "Stalls", "Stalled", "Share", "Worst").numeric(1, 2, 3, 4, 5, 6, 7);
         final double span = Math.max(1, r.info().span().length());
         for (final StallReport.ThreadSummary t : r.threads()) {
-            summary.row(t.thread().name(), t.stalls(), Durations.format(t.stalledNanos()), pct(t.stalledNanos() / span),
+            summary.row(t.thread().name(), t.samples(), Durations.formatOrDash(t.javaCadenceNanos()),
+                    Durations.formatOrDash(t.nativeCadenceNanos()), t.stalls(),
+                    Durations.format(t.stalledNanos()), pct(t.stalledNanos() / span),
                     Durations.format(t.worstNanos()));
         }
         sb.append(summary.render("  "));

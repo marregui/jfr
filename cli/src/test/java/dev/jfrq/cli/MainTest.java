@@ -320,7 +320,11 @@ class MainTest {
         final Run r = run("stalls", recording.toString(), "--thread", "loop-*", "--gap", "50ms",
                 "--idle", ".*MainTest\\$Loop\\.idle", "--top", "10", "--html", html.toString());
         assertEquals(0, r.status(), r.err());
-        assertTrue(r.out().contains("Threads    1 matched: loop-cli"), r.out());
+        assertTrue(r.out().contains("Threads    1 matched"), r.out());
+        // The names, samples and cadence are the PER THREAD table's job, not a header line's.
+        assertTrue(r.out().contains("PER THREAD (cadence"), r.out());
+        assertTrue(r.out().contains("Native cadence"), r.out());
+        assertTrue(r.out().contains("loop-cli"), r.out());
         assertTrue(r.out().contains("SLEEP"), r.out());
         assertTrue(r.out().contains("BLOCKED_MONITOR"), r.out());
         // Event-based stalls carry no evidence tag; the less exact kinds do.

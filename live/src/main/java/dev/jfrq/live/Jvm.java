@@ -47,6 +47,11 @@ public final class Jvm implements AutoCloseable {
         // RMI names this side's endpoint by resolving the machine's own hostname, which on a Mac
         // whose name does not resolve costs five seconds per connection. The local connector
         // only ever talks over loopback, so the name is irrelevant; say so before RMI asks.
+        //
+        // The target resolves too, and that side cannot be set from here: RuntimeMXBean.getName()
+        // is VMManagementImpl.getVmId(), which calls InetAddress.getLocalHost() on every single
+        // call, uncached. Against a Mac whose name does not resolve that is a five-second answer,
+        // measured, with the target's own thread dump in the lookup. Nothing here calls getName().
         if (System.getProperty(RMI_HOSTNAME) == null) {
             System.setProperty(RMI_HOSTNAME, "127.0.0.1");
         }
@@ -83,11 +88,6 @@ public final class Jvm implements AutoCloseable {
 
     public String pid() {
         return pid;
-    }
-
-    /** {@code pid@host}, as the JVM names itself. */
-    public String name() {
-        return runtime.getName();
     }
 
     /** Epoch milliseconds: with the pid, this identifies one JVM incarnation (pids are reused). */

@@ -64,7 +64,10 @@ public final class Durations {
     }
 
     /**
-     * Formats nanoseconds compactly for tables: {@code 312 ms}, {@code 1.42 s}, {@code 850 µs}.
+     * Formats nanoseconds compactly for tables: {@code 312 ms}, {@code 1.42 s}, {@code 850 µs},
+     * {@code 2m18s}, {@code 13h11m}, {@code 3d04h}. Each tier carries two units, so the number
+     * is read rather than divided: a warning that says {@code 790m55s} is one the reader has to
+     * convert, and the durations that reach these tiers are exactly the ones in the warnings.
      * Negative values are formatted with a leading minus.
      */
     public static String format(final long nanos) {
@@ -87,12 +90,29 @@ public final class Durations {
             return trim(nanos / 1_000_000_000.0) + " s";
         }
         final long seconds = nanos / 1_000_000_000L;
-        return String.format(Locale.ROOT, "%dm%02ds", seconds / 60, seconds % 60);
+        if (seconds < 3_600L) {
+            return String.format(Locale.ROOT, "%dm%02ds", seconds / 60, seconds % 60);
+        }
+        final long minutes = seconds / 60;
+        if (minutes < 1_440L) {
+            return String.format(Locale.ROOT, "%dh%02dm", minutes / 60, minutes % 60);
+        }
+        final long hours = minutes / 60;
+        return String.format(Locale.ROOT, "%dd%02dh", hours / 24, hours % 24);
     }
 
     /** {@link #format(long)} for a {@link Duration}. */
     public static String format(final Duration duration) {
         return format(duration.toNanos());
+    }
+
+    /**
+     * {@link #format(long)}, except that a zero is the "not measured" zero rather than a
+     * duration: a sampling cadence needs two samples, and a thread with fewer has none. A
+     * column that answers {@code 0 ns} claims a measurement that was never taken.
+     */
+    public static String formatOrDash(final long nanos) {
+        return nanos == 0 ? "—" : format(nanos);
     }
 
     /** Formats an offset from the recording start as {@code +3.412s}. */

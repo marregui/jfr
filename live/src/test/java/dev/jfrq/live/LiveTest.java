@@ -137,7 +137,8 @@ class LiveTest {
 
         final Run status = run(PID, "status", "--state", dir.toString());
         assertEquals(0, status.status(), status.err());
-        assertTrue(status.out().contains("JVM        " + PID + "@"), status.out());
+        // The pid, not pid@host: asking the target for its name costs a hostname lookup (Jvm.attach).
+        assertTrue(status.out().contains("JVM        " + PID + ","), status.out());
         assertTrue(status.out().contains("Cursor     none"), status.out());
 
         final Run missing = run(concat(new String[] {PID, "full"}, pick));

@@ -83,7 +83,7 @@ class UtilTest {
             assertEquals("-850 B", Bytes.format(-850));
             // Long.MIN_VALUE has no positive counterpart; it must not recurse forever.
             assertEquals("-9223372 TB", Bytes.format(Long.MIN_VALUE));
-            assertEquals("-153722867m16s", Durations.format(Long.MIN_VALUE));
+            assertEquals("-106751d23h", Durations.format(Long.MIN_VALUE));
         }
 
         @Test

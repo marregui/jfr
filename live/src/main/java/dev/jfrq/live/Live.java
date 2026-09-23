@@ -509,7 +509,9 @@ public final class Live {
     }
 
     private static String jvmLine(final Jvm jvm) {
-        return String.format(Locale.ROOT, "JVM        %s, started %s, %s", jvm.name(),
+        // The pid, not RuntimeMXBean.getName(): see Jvm.attach for what asking for the name costs.
+        // The host it would add is always this machine, since the command takes a local pid.
+        return String.format(Locale.ROOT, "JVM        %s, started %s, %s", jvm.pid(),
                 DATE_TIME.format(Instant.ofEpochMilli(jvm.startTime())), jvm.vmVersion());
     }
 

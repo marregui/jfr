@@ -73,9 +73,27 @@ class DurationsTest {
             "59900000000, 59.9 s",
             "67000000000, 1m07s",
             "-312000000, -312 ms",
+            // Above an hour the minutes tier stops being readable: a warning that said 790m55s
+            // is a number the reader has to divide before it means anything.
+            "3599000000000, 59m59s",
+            "3600000000000, 1h00m",
+            "47455000000000, 13h10m",
+            "86399000000000, 23h59m",
+            "86400000000000, 1d00h",
+            "273600000000000, 3d04h",
+            "-47455000000000, -13h10m",
     })
     void formatsCompactly(final long nanos, final String expected) {
         assertEquals(expected, Durations.format(nanos));
+    }
+
+    @Test
+    void anUnmeasuredCadenceIsADashRatherThanZero() {
+        // A cadence needs two samples; a thread with fewer has none, and "0 ns" would claim a
+        // measurement that was never taken. Every other zero is still a duration.
+        assertEquals("—", Durations.formatOrDash(0));
+        assertEquals("12.6 ms", Durations.formatOrDash(12_600_000));
+        assertEquals("0 ns", Durations.format(0));
     }
 
     @Test

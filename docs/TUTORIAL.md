@@ -61,7 +61,7 @@ something is wrong, and it does not say what. That is the gap this tool fills.
 
 ```
 $ jfrq info demo-lock.jfr
-Recording  demo-lock.jfr  15.2 s  starting 2026-09-18T11:02:11.875063Z
+Recording  demo-lock.jfr  15.2 s  starting 2026-09-23T10:57:11.824130Z
 Threads    31 seen in events
 Chunks     1
 Sampling   ExecutionSample 10.0 ms, NativeMethodSample 10.0 ms
@@ -70,8 +70,8 @@ Throttled  JavaExceptionThrow 300/s, ObjectAllocationSample 1000/s
 Allocation ObjectAllocationSample 1000/s
 
 Event type                         Count  Enabled  Threshold  Period
-jdk.ThreadPark                     17966  yes      1.00 ms
-jdk.NativeMethodSample              1265  yes                 10.0 ms
+jdk.ThreadPark                     18423  yes      1.00 ms
+jdk.NativeMethodSample              1273  yes                 10.0 ms
 ...
 ```
 
@@ -95,35 +95,34 @@ written.
 
 ```
 $ jfrq stalls demo-lock.jfr --thread 'event-loop-*' --gap 50ms
-Recording  demo-lock.jfr  15.2 s  starting 2026-09-18T11:02:11.875063Z
+Recording  demo-lock.jfr  15.2 s  starting 2026-09-23T10:57:11.824130Z
 Sampling   ExecutionSample 10.0 ms, NativeMethodSample 10.0 ms
 Thresholds JavaMonitorEnter 1.00 ms, ThreadPark 1.00 ms, ThreadSleep 1.00 ms, SocketRead 1.00 ms, FileRead 1.00 ms
 Gap        50.0 ms
-Threads    2 matched: event-loop-3-1 (302 samples, cadence 10.4 ms java / 36.8 ms native), event-loop-3-2 (280 samples, ...)
-WARNING    event-loop-3-1: samples routinely up to 50.1 ms apart; unexplained silences shorter than ~150 ms cannot be seen, only ones a blocking event or a JVM pause explains
-WARNING    event-loop-3-2: samples routinely up to 65.2 ms apart; unexplained silences shorter than ~196 ms cannot be seen, only ones a blocking event or a JVM pause explains
+Threads    2 matched
+WARNING    event-loop-3-1: samples routinely up to 57.6 ms apart; unexplained silences shorter than ~173 ms cannot be seen, only ones a blocking event or a JVM pause explains
+WARNING    event-loop-3-2: samples routinely up to 60.3 ms apart; unexplained silences shorter than ~181 ms cannot be seen, only ones a blocking event or a JVM pause explains
 
 STALLS >= 50.0 ms: 46 found, showing 2, longest first
-   1  event-loop-3-2         +0.492s    173 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@82c34db20 held by housekeeper (handed on through event-loop-3-1)
-        at dev.jfrq.demo.SessionRegistry.touch(SessionRegistry.java:26)
-        at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:51)
-        at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:22)
+   1  event-loop-3-2         +11.044s    173 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@90ca24380 held by housekeeper (handed on through event-loop-3-1)
+        at dev.jfrq.demo.SessionRegistry.touch(SessionRegistry.java:29)
+        at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:56)
+        at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:25)
         at io.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:99)
         at io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
         at io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:107)
         ... 20 more
-   2  event-loop-3-1         +0.492s    173 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@82c34db20 held by housekeeper
-        at dev.jfrq.demo.SessionRegistry.touch(SessionRegistry.java:26)
-        ...
+   2  event-loop-3-1         +11.044s    173 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@90ca24380 held by housekeeper
+        same stack as #1
 
 BY VERDICT
   Verdict          Stalls  Stalled   Worst
-  BLOCKED_MONITOR      46   7.09 s  173 ms
+  BLOCKED_MONITOR      46   7.14 s  173 ms
 
-PER THREAD
-  Thread          Stalls  Stalled  Share   Worst
-  event-loop-3-1      23   3.54 s  23.3%  173 ms
-  event-loop-3-2      23   3.55 s  23.4%  173 ms
+PER THREAD (cadence: median interval between samples, which bounds what can be seen)
+  Thread          Samples  Java cadence  Native cadence  Stalls  Stalled  Share   Worst
+  event-loop-3-1      306       36.5 ms         36.7 ms      23   3.57 s  23.5%  173 ms
+  event-loop-3-2      289       23.9 ms         37.1 ms      23   3.57 s  23.5%  173 ms
 ```
 
 Three things to read off this:
@@ -139,8 +138,8 @@ Three things to read off this:
 3. **The warnings.** The idle event loop sits in `kqueue`/`epoll`, which is native code,
    and the JFR sampler visits only one native thread per period, round-robin. With eight
    client threads also in native socket reads, an idle loop is routinely unseen for
-   50–65 ms, and on a busier machine for far longer. So a silence shorter than about
-   150–200 ms is not evidence of anything by itself. That does not weaken this result:
+   55–60 ms, and on a busier machine for far longer. So a silence shorter than about
+   170–180 ms is not evidence of anything by itself. That does not weaken this result:
    every `BLOCKED_MONITOR` above comes from a `jdk.JavaMonitorEnter` event, which is
    exact.
 
@@ -148,24 +147,25 @@ Now the other side of the same story:
 
 ```
 $ jfrq locks demo-lock.jfr --top 3
-Recording  demo-lock.jfr  15.2 s  starting 2026-09-18T11:02:11.875063Z
+Recording  demo-lock.jfr  15.2 s  starting 2026-09-23T10:57:11.824130Z
 Thresholds JavaMonitorEnter 1.00 ms, ThreadPark 1.00 ms
-Blocked    7.14 s across 52 waits
+Blocked    7.20 s across 53 waits
 
 LOCKS BY TOTAL WAIT
   Lock                                     Kind       Total  Waits      Max  Waiters                         Held by
-  dev.jfrq.demo.SessionRegistry@82c34db20  monitor   7.09 s     46   173 ms  event-loop-3-1, event-loop-3-2  housekeeper
-  dev.jfrq.demo.Persistence@82c86fb80      monitor  54.2 ms      6  19.8 ms  housekeeper                     persistence-flusher
+  dev.jfrq.demo.SessionRegistry@90ca24380  monitor   7.14 s     46   173 ms  event-loop-3-1, event-loop-3-2  housekeeper
+  dev.jfrq.demo.Persistence@90aed0540      monitor  63.8 ms      6  20.1 ms  housekeeper                     persistence-flusher
+  int[]@90ca0e060                          monitor  1.07 ms      1  1.07 ms  event-loop-3-1                  event-loop-3-2
 
 THREADS BY TIME BLOCKED
   Thread            Total  Waits      Max  Share
-  event-loop-3-2   3.55 s     23   173 ms  23.4%
-  event-loop-3-1   3.54 s     23   173 ms  23.3%
-  housekeeper     54.2 ms      6  19.8 ms   0.4%
+  event-loop-3-1   3.57 s     24   173 ms  23.5%
+  event-loop-3-2   3.57 s     23   173 ms  23.5%
+  housekeeper     63.8 ms      6  20.1 ms   0.4%
 
 CONVOYS (the holder was itself blocked)
-  +0.492s  event-loop-3-2 waited 173 ms for dev.jfrq.demo.SessionRegistry@82c34db20 held by housekeeper (handed on through event-loop-3-1)
-              -> housekeeper waited 19.8 ms for dev.jfrq.demo.Persistence@82c86fb80 held by persistence-flusher
+  +11.044s  event-loop-3-2 waited 173 ms for dev.jfrq.demo.SessionRegistry@90ca24380 held by housekeeper (handed on through event-loop-3-1)
+              -> housekeeper waited 20.1 ms for dev.jfrq.demo.Persistence@90aed0540 held by persistence-flusher
   ...
 ```
 

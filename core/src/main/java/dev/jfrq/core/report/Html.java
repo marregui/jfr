@@ -71,8 +71,8 @@ public final class Html {
         p.h2("Threads");
         p.tableStart("Thread", "Samples", "Java cadence", "Native cadence", "Stalls", "Stalled", "Worst");
         for (final StallReport.ThreadSummary t : report.threads()) {
-            p.row(t.thread().name(), t.samples(), Durations.format(t.javaCadenceNanos()),
-                    Durations.format(t.nativeCadenceNanos()), t.stalls(), Durations.format(t.stalledNanos()),
+            p.row(t.thread().name(), t.samples(), Durations.formatOrDash(t.javaCadenceNanos()),
+                    Durations.formatOrDash(t.nativeCadenceNanos()), t.stalls(), Durations.format(t.stalledNanos()),
                     Durations.format(t.worstNanos()));
         }
         p.tableEnd();
