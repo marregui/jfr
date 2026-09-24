@@ -16,8 +16,10 @@ import dev.jfrq.core.util.Durations;
 /**
  * Command-line arguments: positionals plus {@code --name value} / {@code --name=value}
  * options and {@code --flag} switches. Small enough that a library is not worth the
- * dependency. Unknown options are an error, so typos never pass silently. Public because
- * {@code jfrq-live} parses its own command line with it.
+ * dependency. Unknown options are an error, so typos never pass silently, and so are an
+ * option given twice (which of the two was meant is a guess), an empty value, and a
+ * single-dash token such as {@code -x}; {@code -h} is {@code --help} where that flag
+ * exists. Public because {@code jfrq-live} parses its own command line with it.
  */
 public final class Args {
 
@@ -30,7 +32,15 @@ public final class Args {
         final Args a = new Args(flags);
         for (int i = 0; i < argv.length; i++) {
             final String arg = argv[i];
+            if (arg.equals("-h") && flags.contains("help")) {
+                a.put("help", "true");
+                continue;
+            }
             if (!arg.startsWith("--")) {
+                if (arg.length() > 1 && arg.charAt(0) == '-') {
+                    // A lone '-' could be a file name; '-x' is a mistyped option, not a recording.
+                    throw new UsageException("unknown option " + arg);
+                }
                 a.positional.add(arg);
                 continue;
             }
@@ -45,7 +55,7 @@ public final class Args {
                 if (value != null) {
                     throw new UsageException("--" + name + " takes no value");
                 }
-                a.options.put(name, "true");
+                a.put(name, "true");
             } else if (valued.contains(name)) {
                 if (value == null) {
                     if (i + 1 >= argv.length) {
@@ -53,7 +63,10 @@ public final class Args {
                     }
                     value = argv[++i];
                 }
-                a.options.put(name, value);
+                if (value.isEmpty()) {
+                    throw new UsageException("--" + name + " needs a value");
+                }
+                a.put(name, value);
             } else {
                 throw new UsageException("unknown option --" + name);
             }
@@ -63,6 +76,12 @@ public final class Args {
 
     private Args(final Set<String> flags) {
         this.flags = flags;
+    }
+
+    private void put(final String name, final String value) {
+        if (options.putIfAbsent(name, value) != null) {
+            throw new UsageException("--" + name + " given twice");
+        }
     }
 
     public List<String> positional() {
@@ -104,7 +123,11 @@ public final class Args {
 
     public long durationOption(final String name, final String fallback, final boolean zeroAllowed) {
         final String v = options.getOrDefault(name, fallback);
-        if (!v.isEmpty() && Character.isDigit(v.charAt(v.length() - 1)) && !v.trim().equals("0")) {
+        if (!v.equals(v.strip())) {
+            // The parser would forgive the space and read the rest; a quoted "50 " is a slip, not a value.
+            throw new UsageException("--" + name + " has spaces around it: '" + v + "'");
+        }
+        if (Character.isDigit(v.charAt(v.length() - 1)) && !v.equals("0")) {
             // A bare number would be nanoseconds, which nobody means on a command line.
             throw new UsageException("--" + name + " needs a unit: " + v + "ms, " + v + "s ...");
         }

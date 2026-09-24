@@ -8,8 +8,12 @@ import java.util.Arrays;
 /**
  * {@code long}-keyed map of references (G-1.3): safepoint ids, event-type ids, lock
  * addresses. Open addressing over a power-of-two {@code long[]} with the
- * {@link #keyIndex} sign convention (G-1.5). The no-entry key marks a free slot and can
- * therefore never be stored; it is {@code -1} unless the constructor says otherwise.
+ * {@link #keyIndex} sign convention (G-1.5). The no-entry key marks a free slot; it is
+ * {@code -1} unless the constructor says otherwise. Keys come from the recording, so any
+ * {@code long} must be storable (G-5.5): an entry whose key equals the no-entry key lives
+ * in one extra slot past the probed range, at index {@link #slots()}{@code - 1}, and is
+ * found, iterated and rehashed like any other. Choosing a no-entry key the data rarely
+ * holds keeps that slot empty; correctness does not depend on the choice.
  *
  * @param <V> the value type
  */
@@ -17,29 +21,32 @@ public final class LongObjHashMap<V> implements Mutable {
 
     private static final long DEFAULT_NO_ENTRY_KEY = -1L;
 
+    // A field added below that holds contents must be reset in clear() too (G-3.2).
     private final long noEntryKey;
+    /** {@code capacity + 1} slots: the probed range, then the no-entry key's own slot. */
     private long[] keys;
     private Object[] values;
     private int mask;
     private int free;
     private int size;
+    private boolean hasNoEntryKey;
 
     public LongObjHashMap() {
-        this(Hashing.MIN_CAPACITY);
+        this(Hashes.MIN_CAPACITY);
     }
 
     public LongObjHashMap(final int initialCapacity) {
         this(initialCapacity, DEFAULT_NO_ENTRY_KEY);
     }
 
-    /** @param noEntryKey the key value that marks a free slot; a key equal to it cannot be stored */
+    /** @param noEntryKey the key value that marks a free slot; a key equal to it is stored in a slot of its own */
     public LongObjHashMap(final int initialCapacity, final long noEntryKey) {
         this.noEntryKey = noEntryKey;
-        final int capacity = Hashing.capacityFor(initialCapacity);
-        this.keys = new long[capacity];
-        this.values = new Object[capacity];
+        final int capacity = Hashes.capacityFor(initialCapacity);
+        this.keys = new long[capacity + 1];
+        this.values = new Object[capacity + 1];
         this.mask = capacity - 1;
-        this.free = Hashing.freeFor(capacity);
+        this.free = Hashes.freeFor(capacity);
         Arrays.fill(keys, noEntryKey);
     }
 
@@ -47,8 +54,9 @@ public final class LongObjHashMap<V> implements Mutable {
     public void clear() {
         Arrays.fill(keys, noEntryKey);
         Arrays.fill(values, null);
-        free = Hashing.freeFor(keys.length);
+        free = Hashes.freeFor(mask + 1);
         size = 0;
+        hasNoEntryKey = false;
     }
 
     public boolean contains(final long key) {
@@ -67,22 +75,24 @@ public final class LongObjHashMap<V> implements Mutable {
 
     /** Whether {@code slot} (see {@link #slots()}) holds an entry. */
     public boolean hasKeyAtSlot(final int slot) {
-        return keys[slot] != noEntryKey;
+        return slot > mask ? hasNoEntryKey : keys[slot] != noEntryKey;
     }
 
     public boolean isEmpty() {
         return size == 0;
     }
 
-    /** The key at {@code slot}, or the no-entry key for a free slot. */
+    /** The key at {@code slot}; the no-entry key for a free slot, so test {@link #hasKeyAtSlot} first. */
     public long keyAtSlot(final int slot) {
         return keys[slot];
     }
 
     /** See {@link ObjObjHashMap#keyIndex}: negative means present at {@code -index - 1}. */
     public int keyIndex(final long key) {
-        assert key != noEntryKey;
-        final int index = Hashing.spread(key) & mask;
+        if (key == noEntryKey) {
+            return hasNoEntryKey ? -(mask + 1) - 1 : mask + 1;
+        }
+        final int index = Hashes.spread(key) & mask;
         final long k = keys[index];
         if (k == noEntryKey) {
             return index;
@@ -116,9 +126,15 @@ public final class LongObjHashMap<V> implements Mutable {
      */
     public V putAt(final int index, final long key, final V value) {
         assert index >= 0 && keys[index] == noEntryKey;
-        keys[index] = key;
         values[index] = value;
         size++;
+        if (index > mask) {
+            // The no-entry key's own slot: outside the probed range, so it uses no free slot.
+            assert key == noEntryKey;
+            hasNoEntryKey = true;
+            return value;
+        }
+        keys[index] = key;
         if (--free == 0) {
             rehash();
         }
@@ -129,7 +145,7 @@ public final class LongObjHashMap<V> implements Mutable {
         return size;
     }
 
-    /** The number of slots to scan when iterating. */
+    /** The number of slots to scan when iterating, the no-entry key's own slot included. */
     public int slots() {
         return keys.length;
     }
@@ -171,13 +187,15 @@ public final class LongObjHashMap<V> implements Mutable {
     private void rehash() {
         final long[] oldKeys = keys;
         final Object[] oldValues = values;
-        final int capacity = oldKeys.length << 1;
-        keys = new long[capacity];
-        values = new Object[capacity];
+        final int oldCapacity = mask + 1;
+        final int capacity = Hashes.grow(oldCapacity);
+        keys = new long[capacity + 1];
+        values = new Object[capacity + 1];
         Arrays.fill(keys, noEntryKey);
+        values[capacity] = oldValues[oldCapacity];
         mask = capacity - 1;
-        free = Hashing.freeFor(capacity) - size;
-        for (int i = 0; i < oldKeys.length; i++) {
+        free = Hashes.freeFor(capacity) - (size - (hasNoEntryKey ? 1 : 0));
+        for (int i = 0; i < oldCapacity; i++) {
             final long k = oldKeys[i];
             if (k != noEntryKey) {
                 final int index = keyIndex(k);

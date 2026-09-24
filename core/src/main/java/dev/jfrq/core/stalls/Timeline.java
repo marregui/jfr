@@ -5,6 +5,7 @@ package dev.jfrq.core.stalls;
 
 import java.util.List;
 
+import dev.jfrq.core.coll.Nulls;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
@@ -23,12 +24,12 @@ public final class Timeline {
      *
      * @param time    when the sample was taken
      * @param stack   what the thread was executing
-     * @param idle    whether the stack shows the thread at its idle point
-     * @param inNative true for {@code jdk.NativeMethodSample} (thread in native code), false
+     * @param isIdle    whether the stack shows the thread at its idle point
+     * @param isInNative true for {@code jdk.NativeMethodSample} (thread in native code), false
      *                for {@code jdk.ExecutionSample} (thread executing Java). The two are
      *                sampled at different rates, so cadence is tracked per kind.
      */
-    public record Sample(long time, Stack stack, boolean idle, boolean inNative) {
+    public record Sample(long time, Stack stack, boolean isIdle, boolean isInNative) {
     }
 
     /** Why a thread was blocked, from an event that says so. */
@@ -66,11 +67,11 @@ public final class Timeline {
      * @param kind     what kind of block
      * @param detail   the lock class, the peer address, the file path
      * @param stack    where the thread was
-     * @param owner    for monitors, the thread that held the lock for the bulk of the wait;
-     *                 otherwise {@code null}
-     * @param via      for monitors, threads that held the lock briefly between {@code owner}
-     *                 and this thread (JFR records only the last holder; the collector walks
-     *                 back through their own waits to find who really held it)
+     * @param owner    for monitors, the thread that held the lock longest during the wait
+     *                 ({@link Holders}); otherwise {@code null}
+     * @param via      for monitors, the other threads that held the lock during the wait, in
+     *                 the order they held it (JFR records only the last holder; the chain
+     *                 before it comes from their own waits)
      * @param bytes    for socket and file operations, the bytes moved; kept apart from
      *                 {@code detail} so that repeated reads from one peer group together
      */
@@ -92,8 +93,8 @@ public final class Timeline {
             return interval.start();
         }
 
-        public long length() {
-            return interval.length();
+        public long duration() {
+            return interval.duration();
         }
     }
 
@@ -118,22 +119,37 @@ public final class Timeline {
             return interval.start();
         }
 
-        public long length() {
-            return interval.length();
+        public long duration() {
+            return interval.duration();
         }
     }
 
     /**
      * Everything known about one thread.
      *
-     * @param thread  the thread
-     * @param samples sampler observations in time order
-     * @param blocks  blocking events in start order
+     * @param thread    the thread
+     * @param samples   sampler observations in time order
+     * @param blocks    blocking events in start order
+     * @param lifeStart when the thread's life inside the recording began: the span's start, or
+     *                  its {@code jdk.ThreadStart} when that is later; {@link Nulls#LONG_NULL}
+     *                  when the recording cannot say, and then the stretches before the first
+     *                  sample and after the last are not judged
+     * @param lifeEnd   when it ended, likewise
      */
-    public record ThreadTimeline(ThreadRef thread, List<Sample> samples, List<Block> blocks) {
+    public record ThreadTimeline(ThreadRef thread, List<Sample> samples, List<Block> blocks, long lifeStart,
+                                 long lifeEnd) {
         public ThreadTimeline {
             samples = List.copyOf(samples);
             blocks = List.copyOf(blocks);
+        }
+
+        /** A thread whose life inside the recording is not known. */
+        public ThreadTimeline(final ThreadRef thread, final List<Sample> samples, final List<Block> blocks) {
+            this(thread, samples, blocks, Nulls.LONG_NULL, Nulls.LONG_NULL);
+        }
+
+        public boolean isLifeKnown() {
+            return lifeStart != Nulls.LONG_NULL && lifeEnd != Nulls.LONG_NULL;
         }
     }
 }

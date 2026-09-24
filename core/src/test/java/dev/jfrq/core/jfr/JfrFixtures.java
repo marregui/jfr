@@ -5,7 +5,9 @@ package dev.jfrq.core.jfr;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import jdk.jfr.Recording;
@@ -18,6 +20,13 @@ public final class JfrFixtures {
 
     /** How long a lock holder outlives the exchange, so it is still alive when the recording stops. */
     static final long HOLDER_TAIL_MILLIS = 800;
+
+    /**
+     * The longest any fixture waits on a latch or a thread. Generous, so a loaded machine
+     * never trips it; finite, so a fixture that goes wrong fails the test instead of hanging
+     * the build.
+     */
+    static final Duration WAIT_LIMIT = Duration.ofSeconds(60);
 
     private JfrFixtures() {
     }
@@ -53,7 +62,7 @@ public final class JfrFixtures {
             }
         }, name);
         t.start();
-        t.join();
+        join(t);
         if (failure[0] != null) {
             throw new AssertionError("thread " + name + " failed", failure[0]);
         }
@@ -73,21 +82,19 @@ public final class JfrFixtures {
             }
             sleep(HOLDER_TAIL_MILLIS);
         }, holder);
-        final Thread w = new Thread(() -> {
+        h.start();
+        // The waiter only gets through the lock once the holder has released it, so joining it
+        // alone orders the whole exchange. The holder is deliberately not joined: JFR writes the
+        // thread constant pool when the recording stops, and a thread that has already exited is
+        // written as an unknown previous owner, which is the holder this fixture exists to name.
+        // Its tail sleep keeps it alive across the stop, and it ends on its own.
+        onThread(waiter, () -> {
             await(held);
             sleep(20); // let the holder settle inside the critical section
             synchronized (lock) {
                 lock.notifyAll();
             }
-        }, waiter);
-        h.start();
-        w.start();
-        // The waiter only gets through the lock once the holder has released it, so this join
-        // alone orders the whole exchange. The holder is deliberately not joined: JFR writes the
-        // thread constant pool when the recording stops, and a thread that has already exited is
-        // written as an unknown previous owner, which is the holder this fixture exists to name.
-        // Its tail sleep keeps it alive across the stop, and it ends on its own.
-        w.join();
+        });
     }
 
     /** Burns CPU on the calling thread for about {@code millis}; sampled as Java execution. */
@@ -113,9 +120,28 @@ public final class JfrFixtures {
         }
     }
 
-    private static void await(final CountDownLatch latch) {
+    /** Waits for {@code latch}, at most {@link #WAIT_LIMIT}; running out of time is a test failure. */
+    static void await(final CountDownLatch latch) {
         try {
-            latch.await();
+            if (!latch.await(WAIT_LIMIT.toMillis(), TimeUnit.MILLISECONDS)) {
+                throw new AssertionError("latch still at " + latch.getCount() + " after " + WAIT_LIMIT);
+            }
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * Waits for {@code t} to end, at most {@link #WAIT_LIMIT}; running out of time is a test
+     * failure, and the thread is interrupted so it does not outlive the test by much.
+     */
+    static void join(final Thread t) {
+        try {
+            if (!t.join(WAIT_LIMIT)) {
+                t.interrupt();
+                throw new AssertionError("thread " + t.getName() + " still running after " + WAIT_LIMIT);
+            }
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(e);

@@ -38,9 +38,17 @@ with the file inserted for you, so `-- stalls --thread 'x'` becomes
 | `stop` | Stops and closes the recording; the JVM discards its data. | |
 
 `--recording ID\|NAME` picks the recording when the JVM runs several; with one running
-recording nothing needs saying. `--out FILE` names the dump (default
-`<pid>-<command>-<HHmmss>.jfr` in the current directory). `--state DIR` is where cursors
-live (default `~/.jfrq/live`).
+recording nothing needs saying. A name two recordings share is a usage error that lists
+their ids, and `start` refuses a name the JVM already has. `--out FILE` names the dump,
+replacing a file of that name; the default, `<pid>-<command>-<HHmmss.SSS>.jfr` in the
+current directory, is stamped to the millisecond and never replaces a file. A dump is
+readable by its owner only (mode 0600): a recording can hold command lines, environment
+variables and system properties. `--state DIR` is where cursors live (default
+`~/.jfrq/live`).
+
+Everything that can be checked without the JVM is checked before attaching: the options,
+and the `jfrq` question after `--` with the dump standing in as its recording. A typo
+there costs no dump and does not move the cursor.
 
 A dump prints three lines before the question's answer:
 
@@ -50,8 +58,8 @@ Window     14:23:21.689 .. now (since the previous dump)
 Cursor     next delta from 14:23:31.078; last window 14:23:21.689 .. 14:23:31.077 (~/.jfrq/live/4242.properties)
 ```
 
-`Dumped` is what the file holds, read back with the same code as `jfrq info`: size,
-chunks, span. `Window` is what was asked. When they differ by more than a second a line
+`Dumped` is what the file holds, read from its chunk headers (the ones `jfrq info`
+starts from; the events are not parsed): size, chunks, span. `Window` is what was asked. When they differ by more than a second a line
 says why (section 4). `Cursor` is where the next `delta` starts.
 
 `start` prints what it configured — the profile it started from and every threshold,
@@ -71,7 +79,17 @@ This is what `jcmd <pid> JFR.dump` does, driven over JMX instead of a diagnostic
 2. **Stream the clone's chunks that overlap the window** into the file, in 1 MB blocks
    over the local JMX connector. The JVM selects whole chunks: every chunk whose
    `[start, end]` touches `[begin, end]` of the window. Events are never cut.
-3. **Close the clone.** Nothing is left behind in the JVM.
+3. **Close the clone.** Nothing is left behind in the JVM, and a dump cut short by
+   Ctrl-C or `SIGTERM` leaves nothing either: a shutdown hook, in place from before the
+   clone exists until it is closed, removes the partial `.part` file and closes the clone.
+   The hook waits for the JVM at most five seconds, so a target that does not answer
+   (stopped with `SIGSTOP`, hung) cannot keep `jfrq-live` from exiting; the clone it still
+   holds is then named on standard error with the command that closes it. A stop that lands
+   while the JVM is still making the clone waits for its answer the same way, then closes
+   the clone; if no answer comes, the line names the recording being cloned instead. Only `SIGKILL`,
+   or a JVM that does not answer, can leave a stopped clone, which pins its chunks until
+   the JVM exits; `status` lists it and `stop --recording <id>` closes it (a recording that
+   is not running is closed, not stopped).
 
 The stop instant `T` is the clone's stop time, which the JVM reports in milliseconds,
 and it is the exact end of the last chunk in the file. `full` and `delta` record it.
@@ -88,13 +106,16 @@ chunk ended.
 **`again`** re-asks the last window, `[begin, T]`, from the current state of the
 recording: the same chunks, unless the JVM has since discarded some of them (section 3).
 The chunk that started at `T` is excluded by the same millisecond argument in reverse.
+After a `full`, `begin` is where the full dump's file began, so the span check of an
+`again` can tell when the JVM has discarded part of it since.
 
 ## 3. Bounds: `--max-age` and `--max-size`
 
 Without a bound a recording keeps every chunk since it started. Each `full` dump is then
 bigger than the last, and a JVM left recording overnight has hours of chunks on disk.
 `jfrq-live` prints a `WARNING` on `start` and on every `full` dump while the recording
-is unbounded, and `bound` fixes it without restarting anything:
+is unbounded, judged by the bounds the JVM reports, so `start --max-age 0` warns as a
+`start` without bounds does. `bound` fixes it without restarting anything:
 
 ```
 jfrq-live 4242 bound --max-age 10m
@@ -111,8 +132,12 @@ since fits in `max-size`: the chunks it needs were sealed after the previous dum
 reports.
 
 Sizes are decimal (`200MB` is 200 000 000 bytes), as every size `jfrq` prints;
-`--max-age` takes a unit (`10m`, `1h`). Ten minutes of `max-age` is enough for a loop
-whose deltas are a minute apart and leaves a `full` dump that answers "what happened
+`--max-age` takes a unit (`10m`, `1h`). `0`, or `--max-age infinity`, removes a bound;
+`bound --max-age 0` on a recording that has no `max-size` makes it unbounded again. The
+JVM keeps the age bound in whole seconds: an age under a second is a usage error (the JVM
+would take it as zero, which means no bound), and a fraction is rounded up to the next
+second with a note saying so. Ten minutes of `max-age` is enough for a loop whose deltas
+are a minute apart and leaves a `full` dump that answers "what happened
 recently" without being a gigabyte.
 
 ## 4. The span check
@@ -123,9 +148,10 @@ After every dump the file is read back and its span compared with the window:
 |---|---|
 | `Note  the file starts D before the window` | The first chunk that overlaps the window started earlier than the window did. Expected for a window that did not begin at a dump boundary; a dump boundary is where every `delta` begins, so a delta never says this. |
 | `WARNING  the file starts D after the window: the JVM had already discarded that data (max-age ..., max-size ...)` | The window's beginning is gone from the JVM. A `delta` older than the bound, or an `again` for a window that has aged out. The answer covers what is left. |
+| `WARNING  the file starts D after the window: the recording started at ..., after the window began` | The recording never held the window's beginning: it was stopped and started again (or another one picked) since the cursor was set. |
 | `Note  the file ends D after the window` | `again` only, and only when a chunk boundary fell inside the last millisecond of the window: the chunk after it was taken too. |
 | `WARNING  the recording has no bound` | `full` on an unbounded recording (section 3). |
-| any `jfrq` file warning | Truncation or a damaged chunk in the dump itself, as `jfrq info` would report it. |
+| `WARNING  the file is truncated` / `its last chunk is not finished` | A damaged dump, as the chunk headers show it; `jfrq` reports the same. |
 
 Differences under a second are chunk granularity and are not reported.
 
@@ -136,12 +162,18 @@ One properties file per pid under the state directory:
 ```
 jvm=1789993351707                    # the JVM's start time: a reused pid after a restart is a new JVM, no cursor
 cursor=2026-09-21T12:23:49.945Z      # where the next delta begins (T + 1 ms)
-begin=2026-09-21T12:23:31.078Z       # the last window, for `again`; empty for a full dump
+begin=2026-09-21T12:23:31.078Z       # the last window, for `again`; after a full dump, where its file began
 end=2026-09-21T12:23:49.944Z
 ```
 
 Times are UTC instants; the tool prints them in local time. Deleting the file resets the
-loop; so does restarting the JVM.
+loop; so does restarting the JVM. A file that cannot be parsed is reported as damaged,
+with the advice to delete it.
+
+A save writes a temporary file beside the cursor and renames it over the old one, so a
+reader sees one cursor or the other, never half of one. Two `jfrq-live` processes dumping
+the same JVM take turns: a dump holds a lock on `<pid>.lock` in the same directory from
+reading the cursor to advancing it, and the second one says it is waiting.
 
 ## 6. Requirements and what can go wrong
 
@@ -162,9 +194,12 @@ loop; so does restarting the JVM.
   dump of one fails with "holds no data in the window" and leaves no file. Recordings
   `start` makes are to disk, as are `-XX:StartFlightRecording` ones by default.
 
-Exit status: 0 on success; 1 when the JVM cannot be attached, refuses the operation, or
-the dump cannot be written or read back; 2 on a usage error. A `jfrq` command after `--`
-sets the status once the dump succeeded.
+Exit status: 0 on success; 1 when the JVM cannot be attached, refuses the operation, the
+connection fails, or the dump cannot be written or read back; 2 on a usage error,
+including an ambiguous `--recording NAME`, a duplicate `start --name` and an invalid
+question after `--`. A `jfrq` command after `--` sets the status once the dump succeeded.
+A connection that does not close cleanly after a successful command is a warning on
+stderr, not a failure.
 
 ## 7. On the demo
 

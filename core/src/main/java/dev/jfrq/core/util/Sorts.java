@@ -11,12 +11,12 @@ import dev.jfrq.core.coll.ObjList;
 /**
  * Window lookups over lists sorted by a start key. Interval lists in this library are
  * sorted by start; to find every element overlapping {@code [from, to)} it is enough to
- * scan from the first element whose start is at least {@code from - maxLength} and stop
+ * scan from the first element whose start is at least {@code from - maxDuration} and stop
  * at the first whose start is at least {@code to}.
  */
-public final class Sorted {
+public final class Sorts {
 
-    private Sorted() {
+    private Sorts() {
     }
 
     /** Index of the first element whose key is at least {@code value}; {@code list.size()} if none. */
@@ -50,7 +50,7 @@ public final class Sorted {
     }
 
     /** The longest {@code length} over the list, or 0 when empty. */
-    public static <T> long maxLength(final List<T> list, final ToLongFunction<T> length) {
+    public static <T> long maxDuration(final List<T> list, final ToLongFunction<T> length) {
         long max = 0;
         for (int i = 0, n = list.size(); i < n; i++) {
             max = Math.max(max, length.applyAsLong(list.get(i)));
@@ -58,8 +58,8 @@ public final class Sorted {
         return max;
     }
 
-    /** {@link #maxLength(List, ToLongFunction)} over an {@link ObjList}. */
-    public static <T> long maxLength(final ObjList<T> list, final ToLongFunction<T> length) {
+    /** {@link #maxDuration(List, ToLongFunction)} over an {@link ObjList}. */
+    public static <T> long maxDuration(final ObjList<T> list, final ToLongFunction<T> length) {
         long max = 0;
         for (int i = 0, n = list.size(); i < n; i++) {
             max = Math.max(max, length.applyAsLong(list.getQuick(i)));

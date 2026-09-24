@@ -23,6 +23,7 @@ import java.util.Arrays;
  */
 public final class ObjObjHashMap<K, V> implements Mutable {
 
+    // A field added below that holds contents must be reset in clear() too (G-3.2).
     private Object[] keys;
     private Object[] values;
     private int mask;
@@ -30,22 +31,22 @@ public final class ObjObjHashMap<K, V> implements Mutable {
     private int size;
 
     public ObjObjHashMap() {
-        this(Hashing.MIN_CAPACITY);
+        this(Hashes.MIN_CAPACITY);
     }
 
     public ObjObjHashMap(final int initialCapacity) {
-        final int capacity = Hashing.capacityFor(initialCapacity);
+        final int capacity = Hashes.capacityFor(initialCapacity);
         keys = new Object[capacity];
         values = new Object[capacity];
         mask = capacity - 1;
-        free = Hashing.freeFor(capacity);
+        free = Hashes.freeFor(capacity);
     }
 
     @Override
     public void clear() {
         Arrays.fill(keys, null);
         Arrays.fill(values, null);
-        free = Hashing.freeFor(keys.length);
+        free = Hashes.freeFor(keys.length);
         size = 0;
     }
 
@@ -84,7 +85,7 @@ public final class ObjObjHashMap<K, V> implements Mutable {
      * is the free slot an insert of this key would take.
      */
     public int keyIndex(final K key) {
-        final int index = Hashing.spread(key.hashCode()) & mask;
+        final int index = Hashes.spread(key.hashCode()) & mask;
         final Object k = keys[index];
         if (k == null) {
             return index;
@@ -147,8 +148,8 @@ public final class ObjObjHashMap<K, V> implements Mutable {
         free++;
         int next = (slot + 1) & mask;
         while (keys[next] != null) {
-            final int home = Hashing.spread(keys[next].hashCode()) & mask;
-            if (Hashing.mayMove(slot, next, home)) {
+            final int home = Hashes.spread(keys[next].hashCode()) & mask;
+            if (Hashes.mayMove(slot, next, home)) {
                 keys[slot] = keys[next];
                 values[slot] = values[next];
                 keys[next] = null;
@@ -205,15 +206,15 @@ public final class ObjObjHashMap<K, V> implements Mutable {
     private void rehash() {
         final Object[] oldKeys = keys;
         final Object[] oldValues = values;
-        final int capacity = oldKeys.length << 1;
+        final int capacity = Hashes.grow(oldKeys.length);
         keys = new Object[capacity];
         values = new Object[capacity];
         mask = capacity - 1;
-        free = Hashing.freeFor(capacity) - size;
+        free = Hashes.freeFor(capacity) - size;
         for (int i = 0; i < oldKeys.length; i++) {
             final Object k = oldKeys[i];
             if (k != null) {
-                int index = Hashing.spread(k.hashCode()) & mask;
+                int index = Hashes.spread(k.hashCode()) & mask;
                 while (keys[index] != null) {
                     index = (index + 1) & mask;
                 }

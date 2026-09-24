@@ -16,6 +16,7 @@ public final class ObjLongHashMap<K> implements Mutable {
 
     private static final long DEFAULT_NO_ENTRY_VALUE = -1L;
 
+    // A field added below that holds contents must be reset in clear() too (G-3.2).
     private final long noEntryValue;
     private Object[] keys;
     private long[] values;
@@ -24,7 +25,7 @@ public final class ObjLongHashMap<K> implements Mutable {
     private int size;
 
     public ObjLongHashMap() {
-        this(Hashing.MIN_CAPACITY);
+        this(Hashes.MIN_CAPACITY);
     }
 
     public ObjLongHashMap(final int initialCapacity) {
@@ -34,18 +35,18 @@ public final class ObjLongHashMap<K> implements Mutable {
     /** @param noEntryValue what {@link #get} answers for an absent key (G-1.2) */
     public ObjLongHashMap(final int initialCapacity, final long noEntryValue) {
         this.noEntryValue = noEntryValue;
-        final int capacity = Hashing.capacityFor(initialCapacity);
+        final int capacity = Hashes.capacityFor(initialCapacity);
         keys = new Object[capacity];
         values = new long[capacity];
         mask = capacity - 1;
-        free = Hashing.freeFor(capacity);
+        free = Hashes.freeFor(capacity);
     }
 
     @Override
     public void clear() {
         // Free slots' values are never read; the keys array is the source of truth.
         Arrays.fill(keys, null);
-        free = Hashing.freeFor(keys.length);
+        free = Hashes.freeFor(keys.length);
         size = 0;
     }
 
@@ -90,7 +91,7 @@ public final class ObjLongHashMap<K> implements Mutable {
 
     /** See {@link ObjObjHashMap#keyIndex}: negative means present at {@code -index - 1}. */
     public int keyIndex(final K key) {
-        final int index = Hashing.spread(key.hashCode()) & mask;
+        final int index = Hashes.spread(key.hashCode()) & mask;
         final Object k = keys[index];
         if (k == null) {
             return index;
@@ -149,8 +150,8 @@ public final class ObjLongHashMap<K> implements Mutable {
         free++;
         int next = (slot + 1) & mask;
         while (keys[next] != null) {
-            final int home = Hashing.spread(keys[next].hashCode()) & mask;
-            if (Hashing.mayMove(slot, next, home)) {
+            final int home = Hashes.spread(keys[next].hashCode()) & mask;
+            if (Hashes.mayMove(slot, next, home)) {
                 keys[slot] = keys[next];
                 values[slot] = values[next];
                 keys[next] = null;
@@ -204,15 +205,15 @@ public final class ObjLongHashMap<K> implements Mutable {
     private void rehash() {
         final Object[] oldKeys = keys;
         final long[] oldValues = values;
-        final int capacity = oldKeys.length << 1;
+        final int capacity = Hashes.grow(oldKeys.length);
         keys = new Object[capacity];
         values = new long[capacity];
         mask = capacity - 1;
-        free = Hashing.freeFor(capacity) - size;
+        free = Hashes.freeFor(capacity) - size;
         for (int i = 0; i < oldKeys.length; i++) {
             final Object k = oldKeys[i];
             if (k != null) {
-                int index = Hashing.spread(k.hashCode()) & mask;
+                int index = Hashes.spread(k.hashCode()) & mask;
                 while (keys[index] != null) {
                     index = (index + 1) & mask;
                 }

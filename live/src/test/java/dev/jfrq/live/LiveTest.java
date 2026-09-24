@@ -10,20 +10,37 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
+import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.lang.management.ManagementFactory;
+import java.lang.reflect.Proxy;
+import java.lang.reflect.UndeclaredThrowableException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import dev.jfrq.cli.Args;
 import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
+import jdk.jfr.Recording;
+import jdk.management.jfr.FlightRecorderMXBean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -81,6 +98,256 @@ class LiveTest {
         assertEquals(2, run(PID, "full", "--").status());
         assertEquals(2, run(PID, "bound").status());
         assertEquals(2, run(PID, "start", "--max-size", "lots").status());
+        // The separator where the command should be is a missing command, not a JVM refusal.
+        final Run noCommand = run(PID, "--", "stalls");
+        assertEquals(2, noCommand.status());
+        assertTrue(noCommand.err().contains("missing command after the pid"), noCommand.err());
+        // JFR keeps max-age in whole seconds: 500ms would go out as "no bound".
+        final Run subSecond = run(PID, "start", "--max-age", "500ms");
+        assertEquals(2, subSecond.status());
+        assertTrue(subSecond.err().contains("whole seconds"), subSecond.err());
+        assertEquals(2, run(PID, "full", "-x").status());
+        assertEquals(2, run(PID, "full", "--out", "a.jfr", "--out", "b.jfr").status());
+        assertEquals(2, run("99999999999999999999", "status").status());
+    }
+
+    @Test
+    void theQuestionIsCheckedBeforeTheDump() throws Exception {
+        final Path file = dir.resolve("never.jfr");
+        final Path state = dir.resolve("state");
+        final Run noThread = run(PID, "full", "--out", file.toString(), "--state", state.toString(), "--", "stalls");
+        assertEquals(2, noThread.status());
+        assertTrue(noThread.err().contains("stalls needs --thread"), noThread.err());
+        final Run badGap = run(PID, "delta", "--out", file.toString(), "--state", state.toString(), "--", "stalls",
+                "--thread", "x", "--gap", "50");
+        assertEquals(2, badGap.status());
+        final Run overDump = run(PID, "full", "--out", file.toString(), "--state", state.toString(), "--", "info",
+                "--html", file.toString());
+        assertEquals(2, overDump.status());
+        assertTrue(overDump.err().contains("is a recording being read"), overDump.err());
+        final Run noBaseline = run(PID, "full", "--out", file.toString(), "--state", state.toString(), "--", "alloc",
+                "--baseline", dir.resolve("t0.jfr").toString());
+        assertEquals(1, noBaseline.status());
+        assertTrue(noBaseline.err().contains("no such file or directory: " + dir.resolve("t0.jfr")), noBaseline.err());
+        // A dump written over its own baseline would replace the file it is compared with.
+        final Path t1 = dir.resolve("t1.jfr");
+        Files.writeString(t1, "an earlier dump");
+        final Run overBaseline = run(PID, "delta", "--out", t1.toString(), "--state", state.toString(), "--", "alloc",
+                "--baseline", t1.toString());
+        assertEquals(2, overBaseline.status());
+        assertTrue(overBaseline.err().contains("is the file the dump is written to"), overBaseline.err());
+        assertEquals("an earlier dump", Files.readString(t1));
+        // Nothing was dumped and no cursor was written.
+        assertFalse(Files.exists(file));
+        assertFalse(Files.exists(state));
+    }
+
+    @Test
+    void theDefaultDumpNameIsUniqueToTheMillisecond() {
+        final Args none = Args.parse(new String[0], Set.of("out"), Set.of());
+        final String name = Live.dumpFile(none, "4242", "delta").toString();
+        assertTrue(name.matches("4242-delta-\\d{6}\\.\\d{3}\\.jfr"), name);
+        final Args named = Args.parse(new String[] {"--out", "t1.jfr"}, Set.of("out"), Set.of());
+        assertEquals(Path.of("t1.jfr"), Live.dumpFile(named, "4242", "delta"));
+    }
+
+    @Test
+    void theSpanCheckSaysWhyTheFileStartsLate() {
+        final Instant begin = Instant.parse("2026-09-24T10:00:00Z");
+        final Instant end = begin.plusSeconds(60);
+        final Window window = new Window(begin, null);
+        assertEquals(List.of(), Live.span(window, begin, end, begin.minusSeconds(600).toEpochMilli(), "max-age 5m00s"));
+        // An 'again' of a full dump whose first chunks have aged out since.
+        final List<String> aged = Live.span(window, begin.plusSeconds(20), end, begin.minusSeconds(600).toEpochMilli(),
+                "max-age 5m00s");
+        assertEquals(1, aged.size());
+        assertTrue(aged.getFirst().contains("20.0 s after the window: the JVM had already discarded that data (max-age 5m00s)"),
+                aged.getFirst());
+        // A delta whose cursor predates the recording: it was stopped and started again.
+        final List<String> restarted = Live.span(window, begin.plusSeconds(20), end, begin.plusSeconds(19).toEpochMilli(),
+                "no bound");
+        assertEquals(1, restarted.size());
+        assertTrue(restarted.getFirst().contains("the recording started at " + TIME.format(begin.plusSeconds(19))),
+                restarted.getFirst());
+        assertFalse(restarted.getFirst().contains("discarded"), restarted.getFirst());
+        assertTrue(Live.span(window, begin.minusSeconds(5), end, 0, "no bound").getFirst().contains("before the window"));
+        assertTrue(Live.span(new Window(begin, end.minusSeconds(5)), begin, end, 0, "no bound").getFirst()
+                .contains("after the window: the JVM hands over whole chunks"));
+    }
+
+    @Test
+    void failuresFromTheConnectionAreMessagesNotTraces() {
+        assertEquals("the connection to the JVM failed: Connection refused",
+                Live.failure(new UndeclaredThrowableException(new IOException("Connection refused"))));
+        assertEquals("failed: java.lang.UnsupportedOperationException: no",
+                Live.failure(new UnsupportedOperationException("no")));
+        // A connection that will not close after a good answer is a warning, not a failure.
+        final ByteArrayOutputStream err = new ByteArrayOutputStream();
+        final Live live = new Live(new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+        live.release(() -> {
+            throw new IOException("reset by peer");
+        }, "4242");
+        assertTrue(err.toString(StandardCharsets.UTF_8).contains("warning: the connection to JVM 4242 did not close cleanly: reset by peer"),
+                err.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void anInterruptedDumpLeavesNothingBehind() throws Exception {
+        final FlightRecorderMXBean fr = ManagementFactory.getPlatformMXBean(FlightRecorderMXBean.class);
+        try (final Recording r = new Recording()) {
+            r.setName("live-cleanup-" + System.nanoTime());
+            r.enable("jdk.ThreadSleep").withThreshold(Duration.ZERO);
+            r.start();
+            Thread.sleep(20);
+            final long clone = fr.cloneRecording(r.getId(), true);
+            try {
+                final Snapshot.Cleanup cleanup = new Snapshot.Cleanup(fr, PID);
+                cleanup.cloned(clone);
+                final Path part = cleanup.temporary(dir.resolve("d.jfr"));
+                assertTrue(Files.exists(part));
+                // What the shutdown hook runs on Ctrl-C or SIGTERM; the JVM answers, so it says nothing.
+                final ByteArrayOutputStream err = new ByteArrayOutputStream();
+                cleanup.abandon(new PrintStream(err, true, StandardCharsets.UTF_8), Duration.ofSeconds(30));
+                assertEquals("", err.toString(StandardCharsets.UTF_8));
+                assertFalse(Files.exists(part));
+                assertTrue(fr.getRecordings().stream().noneMatch(i -> i.getId() == clone), "the clone is still in the JVM");
+                // A dump that reaches its file after the hook ran does not create one.
+                assertThrows(IOException.class, () -> cleanup.temporary(dir.resolve("d.jfr")));
+                try (final var files = Files.list(dir)) {
+                    assertEquals(0, files.count());
+                }
+            } finally {
+                if (fr.getRecordings().stream().anyMatch(i -> i.getId() == clone)) {
+                    fr.closeRecording(clone);
+                }
+            }
+            r.stop();
+        }
+        // A cleanup step that fails is suppressed into the failure that started the cleanup.
+        final IOException primary = new IOException("the dump failed");
+        final Snapshot.Cleanup unknown = new Snapshot.Cleanup(fr, PID);
+        assertThrows(IOException.class, () -> {
+            unknown.close(null);
+            unknown.cloned(Long.MAX_VALUE);
+        });
+        assertEquals(primary, unknown.close(primary));
+        assertEquals(1, primary.getSuppressed().length);
+        final Snapshot.Cleanup again = new Snapshot.Cleanup(fr, PID);
+        again.cloned(Long.MAX_VALUE);
+        assertTrue(again.close(null) instanceof IllegalArgumentException);
+        // Closed once, it has nothing left to close.
+        assertNull(again.close(null));
+    }
+
+    @Test
+    void aJvmThatDoesNotAnswerCannotHoldTheProcess() throws Exception {
+        // A target stopped with SIGSTOP: the JMX call to close the clone never returns.
+        final CountDownLatch never = new CountDownLatch(1);
+        final FlightRecorderMXBean wedged = (FlightRecorderMXBean) Proxy.newProxyInstance(
+                FlightRecorderMXBean.class.getClassLoader(), new Class<?>[] {FlightRecorderMXBean.class},
+                (proxy, method, args) -> {
+                    never.await();
+                    return null;
+                });
+        try {
+            final Snapshot.Cleanup cleanup = new Snapshot.Cleanup(wedged, "4242");
+            cleanup.cloned(17);
+            final Path part = cleanup.temporary(dir.resolve("d.jfr"));
+            final ByteArrayOutputStream err = new ByteArrayOutputStream();
+            final long start = System.nanoTime();
+            cleanup.abandon(new PrintStream(err, true, StandardCharsets.UTF_8), Duration.ofMillis(200));
+            final long took = System.nanoTime() - start;
+            assertTrue(took < TimeUnit.SECONDS.toNanos(10), "the hook waited " + took + " ns");
+            // The partial file goes whatever the JVM does; the clone it keeps is named.
+            assertFalse(Files.exists(part));
+            assertEquals("jfrq-live: JVM 4242 did not answer in 200 ms; the dump's recording clone 17 is still in it:"
+                    + " 'jfrq-live 4242 stop --recording 17' closes it\n", err.toString(StandardCharsets.UTF_8));
+        } finally {
+            never.countDown();
+        }
+    }
+
+    @Test
+    void aStopWhileTheCloneIsBeingMadeWaitsForItAndClosesIt() throws Exception {
+        // The signal lands while cloneRecording is in flight: the hook must not return before
+        // the JVM answers, or the clone it makes is left with nothing to close it.
+        final List<Long> closed = new CopyOnWriteArrayList<>();
+        final FlightRecorderMXBean fr = (FlightRecorderMXBean) Proxy.newProxyInstance(
+                FlightRecorderMXBean.class.getClassLoader(), new Class<?>[] {FlightRecorderMXBean.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("closeRecording")) {
+                        closed.add((Long) args[0]);
+                    }
+                    return null;
+                });
+        final Snapshot.Cleanup cleanup = new Snapshot.Cleanup(fr, "4242");
+        cleanup.cloning(3);
+        final ByteArrayOutputStream err = new ByteArrayOutputStream();
+        final Thread hook = Thread.ofPlatform().start(
+                () -> cleanup.abandon(new PrintStream(err, true, StandardCharsets.UTF_8), Duration.ofSeconds(30)));
+        Thread.sleep(200);
+        assertTrue(hook.isAlive(), "the hook returned while the clone was still being made");
+        // The JVM answers: the dump's own thread registers the clone, finds the dump stopped and closes it.
+        final IOException stopped = assertThrows(IOException.class, () -> cleanup.cloned(17));
+        cleanup.close(stopped);
+        assertTrue(hook.join(Duration.ofSeconds(10)));
+        assertEquals(List.of(17L), closed);
+        assertEquals("", err.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void aCloneRequestTheJvmNeverAnswersIsNamed() throws Exception {
+        final Snapshot.Cleanup cleanup = new Snapshot.Cleanup((FlightRecorderMXBean) Proxy.newProxyInstance(
+                FlightRecorderMXBean.class.getClassLoader(), new Class<?>[] {FlightRecorderMXBean.class},
+                (proxy, method, args) -> null), "4242");
+        cleanup.cloning(3);
+        final ByteArrayOutputStream err = new ByteArrayOutputStream();
+        cleanup.abandon(new PrintStream(err, true, StandardCharsets.UTF_8), Duration.ofMillis(200));
+        assertEquals("jfrq-live: JVM 4242 did not answer the clone request in 200 ms; a clone of recording 3 may be"
+                + " left in it: 'jfrq-live 4242 status' lists it and 'jfrq-live 4242 stop --recording ID' closes it\n",
+                err.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void aStartTheJvmRefusesKeepsTheRefusalWhenTheRollbackFails() {
+        // The profile is refused, and closing the half-made recording fails too: the refusal is the answer.
+        final FlightRecorderMXBean fr = (FlightRecorderMXBean) Proxy.newProxyInstance(
+                FlightRecorderMXBean.class.getClassLoader(), new Class<?>[] {FlightRecorderMXBean.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "newRecording" -> 7L;
+                    case "setPredefinedConfiguration" -> throw new IllegalArgumentException("no-such-profile");
+                    case "closeRecording" -> throw new IOException("the connection went away");
+                    default -> throw new AssertionError(method.getName());
+                });
+        final IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                () -> Live.startRecording(fr, "no-such-profile", Map.of()));
+        assertEquals("no-such-profile", refused.getMessage());
+        assertEquals(1, refused.getSuppressed().length);
+        assertEquals("the connection went away", refused.getSuppressed()[0].getMessage());
+    }
+
+    @Test
+    void aDefaultNamedDumpNeverReplacesAnother() throws Exception {
+        final FlightRecorderMXBean fr = ManagementFactory.getPlatformMXBean(FlightRecorderMXBean.class);
+        try (final Recording r = new Recording()) {
+            r.setName("live-replace-" + System.nanoTime());
+            r.enable("jdk.ThreadSleep").withThreshold(Duration.ZERO);
+            r.start();
+            Thread.sleep(20);
+            final Path taken = dir.resolve("taken.jfr");
+            Files.writeString(taken, "an earlier dump");
+            final IOException refused = assertThrows(IOException.class,
+                    () -> Snapshot.take(fr, PID, r.getId(), Window.EVERYTHING, taken, false));
+            assertTrue(refused.getMessage().contains("already exists"), refused.getMessage());
+            assertEquals("an earlier dump", Files.readString(taken));
+            final Snapshot replaced = Snapshot.take(fr, PID, r.getId(), Window.EVERYTHING, taken, true);
+            assertTrue(replaced.bytes() > 0);
+            try (final var files = Files.list(dir)) {
+                assertEquals(1, files.count(), "a partial file was left behind");
+            }
+            r.stop();
+        }
     }
 
     @Test
@@ -127,7 +394,44 @@ class LiveTest {
         assertEquals(new Window(null, stop.plusSeconds(60)), afterFull.lastWindow());
 
         Files.writeString(dir.resolve("2.properties"), "jvm=100\ncursor=yesterday\n");
-        assertThrows(java.io.IOException.class, () -> Cursor.load(dir, "2", 100));
+        assertThrows(IOException.class, () -> Cursor.load(dir, "2", 100));
+        Files.writeString(dir.resolve("3.properties"), "jvm=100\ncursor=\\uZZZZ\n");
+        final IOException escape = assertThrows(IOException.class, () -> Cursor.load(dir, "3", 100));
+        assertTrue(escape.getMessage().contains("is damaged"), escape.getMessage());
+        // A save is a rename: nothing but the cursor files is left in the directory.
+        try (final var files = Files.list(dir)) {
+            assertEquals(Set.of("1.properties", "2.properties", "3.properties"),
+                    files.map(f -> f.getFileName().toString()).collect(Collectors.toSet()));
+        }
+    }
+
+    @Test
+    void aSecondProcessWaitsForTheCursorLock() throws Exception {
+        final String java = ProcessHandle.current().info().command().orElseThrow();
+        final Process holder = new ProcessBuilder(java, "-cp", System.getProperty("java.class.path"),
+                LockHolder.class.getName(), dir.toString(), "77").redirectError(ProcessBuilder.Redirect.INHERIT).start();
+        try {
+            final BufferedReader fromHolder = new BufferedReader(new InputStreamReader(holder.getInputStream(),
+                    StandardCharsets.UTF_8));
+            assertEquals("locked", fromHolder.readLine());
+            final ByteArrayOutputStream err = new ByteArrayOutputStream();
+            final CompletableFuture<Closeable> mine = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return Cursor.lock(dir, "77", new PrintStream(err, true, StandardCharsets.UTF_8));
+                } catch (final IOException e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+            Thread.sleep(300);
+            assertFalse(mine.isDone(), "took a lock another process holds");
+            assertTrue(err.toString(StandardCharsets.UTF_8).contains("waiting for another jfrq-live on JVM 77"),
+                    err.toString(StandardCharsets.UTF_8));
+            holder.getOutputStream().close();
+            mine.get(30, TimeUnit.SECONDS).close();
+        } finally {
+            holder.destroy();
+            assertTrue(holder.waitFor(30, TimeUnit.SECONDS));
+        }
     }
 
     @Test
@@ -147,12 +451,24 @@ class LiveTest {
 
         final Run start = run(PID, "start", "--name", name, "--max-age", "5m", "--state", dir.toString());
         assertEquals(0, start.status(), start.err());
+        try {
+            loop(name, pick, start);
+        } finally {
+            run(PID, "stop", "--recording", name);
+        }
+    }
+
+    private void loop(final String name, final String[] pick, final Run start) throws Exception {
         assertTrue(start.out().contains(name + " "), start.out());
         assertTrue(start.out().contains("RUNNING"), start.out());
         assertTrue(start.out().contains("max-age 5m00s"), start.out());
         assertFalse(start.out().contains("WARNING"), start.out());
         // What it configured, at the moment the operator can still act on it.
-        assertTrue(start.out().contains("Settings   profile profile, then: thresholds "), start.out());
+        assertTrue(start.out().contains("Settings   the JDK's 'profile' settings, then: thresholds "), start.out());
+        // One name, one recording: --recording NAME must never be a guess.
+        final Run duplicate = run(PID, "start", "--name", name, "--state", dir.toString());
+        assertEquals(2, duplicate.status());
+        assertTrue(duplicate.err().contains("already has a recording named '" + name + "'"), duplicate.err());
         assertTrue(start.out().contains("JavaMonitorEnter 1 ms"), start.out());
         assertTrue(start.out().contains("throttle off for FileRead, FileWrite, SocketRead, SocketWrite"), start.out());
         assertTrue(start.out().contains("ObjectAllocationSample 1000/s"), start.out());
@@ -178,6 +494,13 @@ class LiveTest {
         final Cursor cursor = Cursor.load(dir, PID, jvmStart);
         assertNotNull(cursor.next());
         final RecordingInfo i0 = JfrReader.read(t0);
+        // The full dump's window begins where its file does, so an 'again' of it is span-checked.
+        assertEquals(Instant.ofEpochSecond(0, i0.startNanos()), cursor.lastWindow().begin());
+        // A leading zero is the same process and the same cursor.
+        final Run zero = run("0" + PID, "status", "--state", dir.toString());
+        assertEquals(0, zero.status(), zero.err());
+        assertTrue(zero.out().contains("JVM        " + PID + ","), zero.out());
+        assertTrue(zero.out().contains("Cursor     next delta from"), zero.out());
 
         work();
         final Path t1 = dir.resolve("t1.jfr");
@@ -211,6 +534,17 @@ class LiveTest {
         assertEquals(1, protectedTarget.status());
         assertTrue(Files.isDirectory(existingTarget), "a failed dump removed the existing output target");
 
+        final Run rounded = run(concat(new String[] {PID, "bound", "--max-age", "1500ms"}, pick));
+        assertEquals(0, rounded.status(), rounded.err());
+        // JFR keeps whole seconds: 1.5 s is sent as 2 s, and the line says so.
+        assertTrue(rounded.out().contains(", max-age 2"), rounded.out());
+        assertTrue(rounded.out().contains("rounded up to"), rounded.out());
+
+        // "infinity" keeps everything: the recorder's own "no bound", not a huge count of seconds.
+        final Run forever = run(concat(new String[] {PID, "bound", "--max-age", "infinity"}, pick));
+        assertEquals(0, forever.status(), forever.err());
+        assertFalse(forever.out().contains("max-age"), forever.out());
+
         final Run bound = run(concat(new String[] {PID, "bound", "--max-age", "0", "--max-size", "64MB"}, pick));
         assertEquals(0, bound.status(), bound.err());
         assertTrue(bound.out().contains("max-size 64.0 MB"), bound.out());
@@ -228,6 +562,38 @@ class LiveTest {
     }
 
     @Test
+    void aNameTwoRecordingsShareIsAmbiguousAndAStoppedOneIsClosed() throws Exception {
+        final String name = "live-twin-" + System.nanoTime();
+        try (final Recording a = new Recording(); final Recording b = new Recording()) {
+            a.setName(name);
+            b.setName(name);
+            a.start();
+            b.start();
+            final Run twins = run(PID, "full", "--recording", name, "--state", dir.toString(), "--out",
+                    dir.resolve("t.jfr").toString());
+            assertEquals(2, twins.status());
+            assertTrue(twins.err().contains("names 2 recordings; pick one by id: " + a.getId() + " (RUNNING) " + b.getId()),
+                    twins.err());
+            // An id always picks exactly one.
+            b.stop();
+            final Run closed = run(PID, "stop", "--recording", Long.toString(b.getId()));
+            assertEquals(0, closed.status(), closed.err());
+            assertTrue(closed.out().startsWith("Closed     " + b.getId()), closed.out());
+            final Run stopped = run(PID, "stop", "--recording", name);
+            assertEquals(0, stopped.status(), stopped.err());
+            assertTrue(stopped.out().startsWith("Stopped    " + a.getId()), stopped.out());
+        }
+    }
+
+    @Test
+    void aMissingSettingsFileIsNamed() {
+        final Path jfc = dir.resolve("missing.jfc");
+        final Run r = run(PID, "start", "--name", "live-nojfc-" + System.nanoTime(), "--settings", jfc.toString());
+        assertEquals(1, r.status());
+        assertTrue(r.err().contains("no such file or directory: " + jfc), r.err());
+    }
+
+    @Test
     void startWithAJfcFileAndAnUnboundedWarning() throws Exception {
         final String name = "live-jfc-" + System.nanoTime();
         final Path jfc = dir.resolve("tiny.jfc");
@@ -242,18 +608,45 @@ class LiveTest {
                 """);
         final Run start = run(PID, "start", "--name", name, "--settings", jfc.toString(), "--state", dir.toString());
         assertEquals(0, start.status(), start.err());
-        assertTrue(start.out().contains("WARNING    the recording has no bound"), start.out());
-        assertTrue(start.out().contains("no bound"), start.out());
+        try {
+            assertTrue(start.out().contains("WARNING    the recording has no bound"), start.out());
+            assertTrue(start.out().contains("no bound"), start.out());
 
-        final Run full = run(PID, "full", "--recording", name, "--state", dir.toString(), "--out", dir.resolve("f.jfr").toString());
-        assertEquals(0, full.status(), full.err());
-        assertTrue(full.out().contains("WARNING    the recording has no bound"), full.out());
+            final Run full = run(PID, "full", "--recording", name, "--state", dir.toString(), "--out",
+                    dir.resolve("f.jfr").toString());
+            assertEquals(0, full.status(), full.err());
+            assertTrue(full.out().contains("WARNING    the recording has no bound"), full.out());
 
-        final Run unknownProfile = run(PID, "start", "--name", name + "-x", "--settings", "no-such-profile");
-        assertEquals(1, unknownProfile.status());
-        assertTrue(unknownProfile.err().contains("the JVM refused"), unknownProfile.err());
+            final Run unknownProfile = run(PID, "start", "--name", name + "-x", "--settings", "no-such-profile");
+            assertEquals(1, unknownProfile.status());
+            assertTrue(unknownProfile.err().contains("the JVM refused"), unknownProfile.err());
+        } finally {
+            assertEquals(0, run(PID, "stop", "--recording", name).status());
+        }
+    }
 
-        assertEquals(0, run(PID, "stop", "--recording", name).status());
+    @Test
+    void aStartWhoseBoundIsRemovedWarnsToo() {
+        // 0 and infinity are the recorder's "no bound": asked for explicitly, still unbounded.
+        for (final String[] bound : new String[][] {{"--max-age", "0"}, {"--max-age", "infinity", "--max-size", "0"}}) {
+            final String name = "live-nobound-" + System.nanoTime();
+            final Run start = run(concat(new String[] {PID, "start", "--name", name, "--settings", "default"}, bound));
+            try {
+                assertEquals(0, start.status(), start.err());
+                assertTrue(start.out().contains("no bound"), start.out());
+                assertTrue(start.out().contains("WARNING    the recording has no bound"), start.out());
+            } finally {
+                assertEquals(0, run(PID, "stop", "--recording", name).status());
+            }
+        }
+        final String name = "live-bound-" + System.nanoTime();
+        final Run bounded = run(PID, "start", "--name", name, "--settings", "default", "--max-size", "0", "--max-age", "1m");
+        try {
+            assertEquals(0, bounded.status(), bounded.err());
+            assertFalse(bounded.out().contains("WARNING"), bounded.out());
+        } finally {
+            assertEquals(0, run(PID, "stop", "--recording", name).status());
+        }
     }
 
     @Test
@@ -276,10 +669,10 @@ class LiveTest {
     @Test
     void inMemoryRecordingsHaveNoChunksToDump() throws Exception {
         final String name = "live-mem-" + System.nanoTime();
-        try (final jdk.jfr.Recording r = new jdk.jfr.Recording()) {
+        try (final Recording r = new Recording()) {
             r.setName(name);
             r.setToDisk(false);
-            r.enable("jdk.ThreadSleep").withThreshold(java.time.Duration.ZERO);
+            r.enable("jdk.ThreadSleep").withThreshold(Duration.ZERO);
             r.start();
             Thread.sleep(50);
             final Run full = run(PID, "full", "--recording", name, "--state", dir.toString(), "--out",

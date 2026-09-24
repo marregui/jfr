@@ -9,14 +9,25 @@ import dev.jfrq.core.model.Interner;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
+import jdk.jfr.consumer.RecordedClass;
 import jdk.jfr.consumer.RecordedEvent;
+import jdk.jfr.consumer.RecordedStackTrace;
 import jdk.jfr.consumer.RecordedThread;
 
 /**
- * Field access on {@link RecordedEvent} with the JFR quirks handled in one place: the
- * sampler events name their thread {@code sampledThread} while every other event uses
- * {@code eventThread}; timestamps are exposed as epoch nanoseconds; missing values become
- * {@code null} or a sentinel rather than an exception.
+ * Field access on {@link RecordedEvent} with the JFR quirks handled in one place:
+ * timestamps are exposed as epoch nanoseconds; missing values become {@code null} or a
+ * sentinel rather than an exception. (The other quirk, sampler events naming their thread
+ * {@code sampledThread} where every other event says {@code eventThread}, is resolved once
+ * per event type by {@link Interner#thread(RecordedEvent)}.) No method keeps the event.
+ *
+ * <p>Fields are named by {@link Fields} tag. Whether the event's type has one is a bit of
+ * a mask resolved once per type ({@link Interner#fields}), not a by-name scan per event.
+ * The consumer API offers no access by index, so reading the value is still one by-name
+ * scan ({@code getValue}); the typed getters ({@code getThread}, {@code getClass},
+ * {@code getString}, {@code getStackTrace}) would scan twice, once to check the declared
+ * type and once to read, so they are called only when {@code getValue} returns
+ * {@code null} or an unexpected type, which keeps their result and their exceptions.
  */
 public final class Events {
 
@@ -27,72 +38,78 @@ public final class Events {
         return instant.getEpochSecond() * 1_000_000_000L + instant.getNano();
     }
 
-    public static long startNanos(final RecordedEvent e) {
+    public static long startNanos(@Transient final RecordedEvent e) {
         return nanos(e.getStartTime());
     }
 
-    public static long endNanos(final RecordedEvent e) {
+    public static long endNanos(@Transient final RecordedEvent e) {
         return nanos(e.getEndTime());
     }
 
-    public static Interval interval(final RecordedEvent e) {
+    public static Interval interval(@Transient final RecordedEvent e) {
         final long start = startNanos(e);
         final long end = endNanos(e);
         return new Interval(start, Math.max(start, end));
     }
 
-    /** The thread an event belongs to, or {@code null} for VM-level events without one. */
-    public static ThreadRef thread(final RecordedEvent e) {
-        final RecordedThread t = e.hasField("sampledThread") ? e.getThread("sampledThread") : e.getThread();
-        return ThreadRef.of(t);
-    }
-
-    /** A thread-valued field such as {@code previousOwner}, or {@code null}. */
-    public static ThreadRef thread(final RecordedEvent e, final String field) {
-        if (!e.hasField(field)) {
+    /**
+     * A thread-valued field such as {@link Fields#PREVIOUS_OWNER} resolved through the interner's
+     * identity cache, or {@code null}. The event's own thread is {@link Interner#thread(RecordedEvent)}.
+     */
+    public static ThreadRef thread(@Transient final RecordedEvent e, final int field, final Interner interner) {
+        if (!has(e, field, interner)) {
             return null;
         }
-        return ThreadRef.of(e.getThread(field));
-    }
-
-    /** {@link #thread(RecordedEvent, String)} resolved through the interner's identity cache. */
-    public static ThreadRef thread(final RecordedEvent e, final String field, final Interner interner) {
-        if (!e.hasField(field)) {
-            return null;
-        }
-        return interner.thread(e.getThread(field));
-    }
-
-    /** The event's stack without interning; collectors use {@link #stack(RecordedEvent, Interner)}. */
-    public static Stack stack(final RecordedEvent e) {
-        return Stack.of(e.getStackTrace());
+        final String name = Fields.nameOf(field);
+        final Object v = e.getValue(name);
+        return interner.thread(v instanceof RecordedThread t ? t : e.getThread(name));
     }
 
     /** The event's stack, canonicalised through {@code interner}. */
-    public static Stack stack(final RecordedEvent e, final Interner interner) {
-        return interner.stack(e.getStackTrace());
+    public static Stack stack(@Transient final RecordedEvent e, final Interner interner) {
+        if (!has(e, Fields.STACK_TRACE, interner)) {
+            return interner.stack(null);
+        }
+        final Object v = e.getValue(Fields.nameOf(Fields.STACK_TRACE));
+        return interner.stack(v instanceof RecordedStackTrace t ? t : e.getStackTrace());
     }
 
     /**
      * The JVM name of a class-valued field ({@code [B}, {@code java.lang.Object}) resolved
      * through the interner's identity cache, or {@code null}.
      */
-    public static String className(final RecordedEvent e, final String field, final Interner interner) {
-        if (!e.hasField(field)) {
+    public static String className(@Transient final RecordedEvent e, final int field, final Interner interner) {
+        if (!has(e, field, interner)) {
             return null;
         }
-        return interner.className(e.getClass(field));
+        final String name = Fields.nameOf(field);
+        final Object v = e.getValue(name);
+        return interner.className(v instanceof RecordedClass c ? c : e.getClass(name));
     }
 
-    public static long longOr(final RecordedEvent e, final String field, final long fallback) {
-        return e.hasField(field) ? e.getLong(field) : fallback;
+    public static long longOr(@Transient final RecordedEvent e, final int field, final long fallback,
+            final Interner interner) {
+        return has(e, field, interner) ? e.getLong(Fields.nameOf(field)) : fallback;
     }
 
-    public static String stringOr(final RecordedEvent e, final String field, final String fallback) {
-        if (!e.hasField(field)) {
+    public static boolean booleanOr(@Transient final RecordedEvent e, final int field, final boolean fallback,
+            final Interner interner) {
+        return has(e, field, interner) ? e.getBoolean(Fields.nameOf(field)) : fallback;
+    }
+
+    public static String stringOr(@Transient final RecordedEvent e, final int field, final String fallback,
+            final Interner interner) {
+        if (!has(e, field, interner)) {
             return fallback;
         }
-        final String v = e.getString(field);
-        return v == null ? fallback : v;
+        final String name = Fields.nameOf(field);
+        final Object v = e.getValue(name);
+        final String s = v instanceof String str ? str : e.getString(name);
+        return s == null ? fallback : s;
+    }
+
+    /** Presence comes from the interner's per-type mask, not a by-name scan per event. */
+    private static boolean has(@Transient final RecordedEvent e, final int field, final Interner interner) {
+        return (interner.fields(e) & Fields.bit(field)) != 0;
     }
 }

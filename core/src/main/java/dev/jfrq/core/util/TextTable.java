@@ -46,7 +46,7 @@ public final class TextTable {
         return rows.size();
     }
 
-    /** Renders with the given indent on every line. The last column is never padded. */
+    /** Renders with the given indent on every line. A left-aligned last column carries no trailing spaces. */
     public String render(final String indent) {
         final int[] width = new int[headers.length];
         for (int i = 0; i < headers.length; i++) {

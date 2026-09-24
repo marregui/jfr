@@ -1014,5 +1014,28 @@ a second run of the rewriter reporting nothing left. The `live` module, written 
 first application, was checked against the rest of §10 at the same time; its one stream
 (a digit check on the pid) became a loop (G-10.7).
 
+Recorded on 2026-09-24, after a conformance audit found them followed nowhere: these rules
+are not applied, on purpose, and a bare site is not a finding.
+
+- G-5.2/G-5.3: exceptions carry prose messages from constructors. Almost every message
+  ends up on the terminal as the tool's answer to a user, so it reads as a sentence; there
+  is no caller that re-derives meaning from message text.
+- G-9.1, G-9.4 in part: each command's options are resolved and validated once, into a
+  record per command, before the recording is opened; `Args` underneath stays a string
+  map and there is no configuration interface. The literal capacities left are initial
+  sizes of growable tables, not pool sizes.
+- G-10.3: no nullability library (`core` depends on `jdk.jfr` only). Absence is a
+  sentinel (G-1.2) or an `…OrNull` name plus javadoc; `@Override` and `@SuppressWarnings`
+  still apply.
+- G-10.5, test names only: tests are descriptive sentence-style method names under JUnit 5,
+  not `testXxx`. The rest of G-10.5 applies.
+- G-10.8, signature wrapping only: multi-parameter signatures wrap where the line is long,
+  not one parameter per line. The rest of G-10.8 applies.
+- G-11.1, G-11.2, G-11.3: no leak-check harness, fluent assertion builder or fault-injecting
+  facade (G-9.2 was not applied, so there is no facade to subclass). Tests that start
+  JVM-global resources (recordings, threads) release them in `finally`.
+- G-11.4: one printed, replayable seed per randomised test rather than two; test order is
+  JUnit's default.
+
 Measure with `--timing` before and after each further step; `docs/DESIGN.md` §8 holds the
 numbers.

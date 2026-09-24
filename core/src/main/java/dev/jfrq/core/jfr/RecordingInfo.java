@@ -25,13 +25,16 @@ import dev.jfrq.core.util.Durations;
  * shorter than 20 ms exists in the file.
  *
  * @param file        the recording that was read
- * @param span        the data span: first chunk start to last chunk end (see {@link Chunks})
+ * @param span        the data span: first chunk start to last chunk end, from the chunk
+ *                    headers alone (see {@link Chunks}), so the same for every command
  * @param chunks      how many chunks the file holds
- * @param eventCounts events per type name, only for types present
- * @param settings    per event type, setting name to value as JFR recorded it ({@code "10 ms"})
- * @param threads     every thread that appeared as an event thread
+ * @param eventCounts events per type name, only for types present among those the pass
+ *                    read (all of them for {@code info}, the subscribed ones otherwise)
+ * @param settings    per event type, setting name to value as JFR recorded it ({@code "10 ms"});
+ *                    read on every pass, filtered or not
+ * @param threads     every thread that appeared as an event thread in the events the pass read
  * @param warnings    structural problems with the file that limit every answer: truncation,
- *                    a chunk still being written
+ *                    chunks that do not follow one another (files joined)
  */
 public record RecordingInfo(
         Path file,
@@ -60,7 +63,7 @@ public record RecordingInfo(
     }
 
     public Duration duration() {
-        return Duration.ofNanos(span.length());
+        return Duration.ofNanos(span.duration());
     }
 
     public Instant start() {
@@ -91,7 +94,7 @@ public record RecordingInfo(
     }
 
     /** {@code true} when the event type was enabled in the recording's settings. */
-    public boolean enabled(final String eventType) {
+    public boolean isEnabled(final String eventType) {
         return setting(eventType, "enabled").map(Boolean::parseBoolean).orElse(false);
     }
 

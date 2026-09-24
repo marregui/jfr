@@ -8,6 +8,7 @@ import java.util.List;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
+import dev.jfrq.core.stalls.Holders;
 import dev.jfrq.core.util.ClassNames;
 
 /**
@@ -16,12 +17,14 @@ import dev.jfrq.core.util.ClassNames;
  * @param interval when the waiter was blocked
  * @param waiter   the thread that waited
  * @param lock     what it waited for
- * @param owner    the thread that held the monitor for the bulk of the wait; {@code null}
- *                 for {@code java.util.concurrent} parks, where JFR does not know the owner
+ * @param owner    the thread that held the monitor longest during the wait, from the chain
+ *                 of holds {@link Holders} rebuilds from JFR's {@code previousOwner} and the
+ *                 co-waiters' own waits; {@code null} for {@code java.util.concurrent} parks,
+ *                 where JFR does not know the owner
  * @param stack    where the waiter was
- * @param via      co-waiters that held the lock briefly between {@code owner} and the
- *                 waiter (JFR records only the thread that released the monitor to the
- *                 waiter; {@link ContentionReport} walks back through their own waits)
+ * @param via      the other threads that held the lock during the wait, in the order they
+ *                 held it (JFR records only the thread that released the monitor to the
+ *                 waiter; the chain before it comes from their own waits)
  */
 public record Wait(Interval interval, ThreadRef waiter, LockKey lock, ThreadRef owner, Stack stack,
                    List<ThreadRef> via) {
@@ -39,15 +42,7 @@ public record Wait(Interval interval, ThreadRef waiter, LockKey lock, ThreadRef 
         if (owner == null) {
             return "";
         }
-        final StringBuilder sb = new StringBuilder("held by ").append(owner.name());
-        if (!via.isEmpty()) {
-            sb.append(" (handed on through ");
-            for (int i = 0; i < via.size(); i++) {
-                sb.append(i > 0 ? ", " : "").append(via.get(i).name());
-            }
-            sb.append(')');
-        }
-        return sb.toString();
+        return Holders.appendVia(new StringBuilder("held by ").append(owner.name()), via).toString();
     }
 
     /** How the wait was recorded. */
@@ -92,7 +87,7 @@ public record Wait(Interval interval, ThreadRef waiter, LockKey lock, ThreadRef 
     }
 
     public long duration() {
-        return interval.length();
+        return interval.duration();
     }
 
     public Kind kind() {

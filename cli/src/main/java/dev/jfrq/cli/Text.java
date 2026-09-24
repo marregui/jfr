@@ -4,12 +4,10 @@
 package dev.jfrq.cli;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
 
 import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
@@ -18,6 +16,7 @@ import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
 import dev.jfrq.core.model.ThreadRef;
+import dev.jfrq.core.report.RecordingSummary;
 import dev.jfrq.core.stalls.Stall;
 import dev.jfrq.core.stalls.StallReport;
 import dev.jfrq.core.stalls.Timeline.Pause;
@@ -51,21 +50,8 @@ final class Text {
         if (!info.hasSettings()) {
             return String.format(Locale.ROOT, "%-10s unknown: the recording has no jdk.ActiveSetting events\n", label);
         }
-        final StringBuilder sb = new StringBuilder();
-        for (final String t : types) {
-            final String value = info.threshold(t).map(Durations::format)
-                    .or(() -> info.period(t).map(Durations::format))
-                    .or(() -> info.setting(t, "throttle"))
-                    .orElse(null);
-            if (value == null) {
-                continue;
-            }
-            if (!sb.isEmpty()) {
-                sb.append(", ");
-            }
-            sb.append(t.substring("jdk.".length())).append(' ').append(value);
-        }
-        return sb.isEmpty() ? "" : String.format(Locale.ROOT, "%-10s %s\n", label, sb);
+        final String settings = RecordingSummary.settings(info, types);
+        return settings.isEmpty() ? "" : String.format(Locale.ROOT, "%-10s %s\n", label, settings);
     }
 
     static String info(final RecordingInfo info) {
@@ -75,8 +61,8 @@ final class Text {
         sb.append(settingsLine(info, "Sampling", "jdk.ExecutionSample", "jdk.NativeMethodSample"));
         // Derived, not a whitelist: this line exists to answer "did the settings I asked for
         // take effect", and a fixed list answers it for the events someone thought of in 2026.
-        sb.append(settingsLine(info, "Thresholds", thresholded(info)));
-        sb.append(settingsLine(info, "Throttled", throttled(info)));
+        sb.append(settingsLine(info, "Thresholds", RecordingSummary.thresholded(info)));
+        sb.append(settingsLine(info, "Throttled", RecordingSummary.throttled(info)));
         sb.append(settingsLine(info, "Allocation", "jdk.ObjectAllocationSample", "jdk.ObjectAllocationInNewTLAB"));
         sb.append('\n');
         final TextTable t = new TextTable("Event type", "Count", "Enabled", "Threshold", "Period").numeric(1);
@@ -84,7 +70,7 @@ final class Text {
         byCount.sort(Map.Entry.<String, Long>comparingByValue().reversed().thenComparing(Map.Entry.comparingByKey()));
         for (final Map.Entry<String, Long> e : byCount) {
             final String type = e.getKey();
-            t.row(type, e.getValue(), info.settings().containsKey(type) ? (info.enabled(type) ? "yes" : "no") : "",
+            t.row(type, e.getValue(), info.settings().containsKey(type) ? (info.isEnabled(type) ? "yes" : "no") : "",
                     info.threshold(type).map(Durations::format).orElse(""),
                     info.period(type).map(Durations::format).or(() -> info.setting(type, "period")).orElse(""));
         }
@@ -93,102 +79,34 @@ final class Text {
         return sb.toString();
     }
 
-    /**
-     * The threads in the file, folded into families by stripping the trailing number a pool
-     * gives its workers. {@code stalls} and {@code locks} take a {@code --thread} glob and
-     * this is the only place that can say what to pass them.
-     */
+    /** The threads in the file by family ({@link RecordingSummary#threadFamilies}): what {@code --thread} matches. */
     static String threadFamilies(final RecordingInfo info) {
-        if (info.threads().isEmpty()) {
+        final List<RecordingSummary.Family> families = RecordingSummary.threadFamilies(info);
+        if (families.isEmpty()) {
             return "";
-        }
-        final Map<String, int[]> families = new TreeMap<>();
-        final Map<String, String> example = new TreeMap<>();
-        for (final ThreadRef t : info.threads()) {
-            final String family = family(t.name());
-            families.computeIfAbsent(family, _ -> new int[1])[0]++;
-            example.putIfAbsent(family, t.name());
         }
         final StringBuilder sb = new StringBuilder("\nTHREADS (the names --thread matches)\n");
         final TextTable table = new TextTable("Family", "Count", "Example").numeric(1);
-        for (final Map.Entry<String, int[]> e : families.entrySet()) {
-            final int count = e.getValue()[0];
-            table.row(count > 1 ? e.getKey() + "*" : e.getKey(), count, count > 1 ? example.get(e.getKey()) : "");
+        for (final RecordingSummary.Family f : families) {
+            table.row(f.count() > 1 ? f.name() + "*" : f.example(), f.count(), f.count() > 1 ? f.example() : "");
         }
         sb.append(table.render("  "));
         return sb.toString();
     }
 
-    /**
-     * {@code milo-shared-thread-pool-17} and {@code pool-36-thread-2} are one family each:
-     * the trailing run of digits, and any digits between two separators, are what a pool
-     * varies per worker.
-     */
-    static String family(final String name) {
-        final StringBuilder sb = new StringBuilder(name.length());
-        boolean digits = false;
-        for (int i = 0, n = name.length(); i < n; i++) {
-            final char c = name.charAt(i);
-            if (c >= '0' && c <= '9') {
-                digits = true;
-                continue;
-            }
-            if (digits) {
-                sb.append('N');
-                digits = false;
-            }
-            sb.append(c);
-        }
-        if (digits) {
-            sb.append('N');
-        }
-        return sb.toString();
-    }
-
-    /**
-     * Every enabled event type whose threshold suppresses something, in name order. A threshold
-     * of zero lets every event through, so it is the absence of one: the JDK's own profiles set
-     * it on dozens of types nobody chose, and listing those buried the handful that were chosen
-     * under 41 entries. The zeroes are still in the per-type table below, where they answer a
-     * question about one event type rather than about the recording.
-     */
-    static String[] thresholded(final RecordingInfo info) {
-        final List<String> types = new ArrayList<>();
-        for (final String type : info.settings().keySet()) {
-            if (info.enabled(type) && info.threshold(type).filter(d -> !d.isZero()).isPresent()) {
-                types.add(type);
-            }
-        }
-        return sorted(types);
-    }
-
-    /** Every enabled event type that is throttled: those are sampled, so the file is not complete for them. */
-    static String[] throttled(final RecordingInfo info) {
-        final List<String> types = new ArrayList<>();
-        for (final String type : info.settings().keySet()) {
-            if (info.enabled(type) && info.throttle(type).filter(v -> !v.isBlank()).isPresent()) {
-                types.add(type);
-            }
-        }
-        return sorted(types);
-    }
-
-    /** Name order, because the settings come out of a hash map and two reports have to diff. */
-    private static String[] sorted(final List<String> types) {
-        types.sort(Comparator.naturalOrder());
-        return types.toArray(new String[0]);
-    }
-
     static String alloc(final AllocationReport r, final int top, final boolean sites, final SiteKey key) {
         final StringBuilder sb = new StringBuilder(header(r.info()));
+        for (final String w : r.warnings()) {
+            sb.append("WARNING    ").append(w).append('\n');
+        }
         sb.append(String.format(Locale.ROOT, "%-10s %s (%d samples)\n", "Source", r.source(), r.samples()));
         sb.append(String.format(Locale.ROOT, "%-10s %s over %s = %s\n", "Estimate", Bytes.format(r.totalBytes()),
                 Durations.format(r.info().duration()), Bytes.rate(r.rate())));
         if (r.hasCounters()) {
-            sb.append(String.format(Locale.ROOT, "%-10s %s by the JVM's own counters on the %d threads seen at both ends "
+            sb.append(String.format(Locale.ROOT, "%-10s %s by the JVM's own counters on the %d %s seen at both ends "
                     + "of the file; the estimate for those is %s%s%s\n", "Counted", Bytes.format(r.countedBytes()),
-                    r.countedByThread().size(), Bytes.format(r.estimatedOnCountedThreads()), errorNote(r),
-                    coverageNote(r)));
+                    r.countedByThread().size(), r.countedByThread().size() == 1 ? "thread" : "threads",
+                    Bytes.format(r.estimatedOnCountedThreads()), errorNote(r), coverageNote(r)));
         }
         if (r.samples() == 0) {
             if (r.events() == 0) {
@@ -280,9 +198,15 @@ final class Text {
         for (final String w : d.baseline().info().warnings()) {
             sb.append("WARNING    baseline: ").append(w).append('\n');
         }
+        for (final String w : d.baseline().warnings()) {
+            sb.append("WARNING    baseline: ").append(w).append('\n');
+        }
         sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s\n", "Current", d.current().info().file().getFileName(),
                 Durations.format(d.current().info().duration()), Bytes.rate(d.current().rate())));
         for (final String w : d.current().info().warnings()) {
+            sb.append("WARNING    current: ").append(w).append('\n');
+        }
+        for (final String w : d.current().warnings()) {
             sb.append("WARNING    current: ").append(w).append('\n');
         }
         sb.append(String.format(Locale.ROOT, "%-10s %s (%s)\n", "Change", Bytes.signedRate(d.total().delta()),
@@ -325,25 +249,17 @@ final class Text {
     static String locks(final ContentionReport r, final int top, final boolean bySite) {
         final StringBuilder sb = new StringBuilder(header(r.info()));
         sb.append(settingsLine(r.info(), "Thresholds", "jdk.JavaMonitorEnter", "jdk.ThreadPark"));
-        if (r.isEmpty()) {
-            if (!r.workWaits().isEmpty()) {
-                // Every wait that got this far was a worker waiting for its own queue, and that
-                // is the answer rather than an empty report: an idle node has no contention. The
-                // section below is all there is to say about it, so it is what gets said — and
-                // the filter sentence is not, since an idle node reaches here having set none.
-                sb.append("\nNo contention: every wait was a worker waiting for work, not a thread held up "
-                        + "by another.\n");
-                sb.append(waitingForWork(r, top));
-                return sb.toString();
-            }
-            sb.append(r.filtered()
-                    ? "\nNo contended monitor enters or parks match the filters (--thread, --min, --lock); "
-                            + r.unfilteredCount() + " in the recording.\n"
-                    : "\nNo contended monitor enters or parks in the recording (at or above the thresholds above).\n");
+        final String none = r.noContention();
+        if (none != null) {
+            // When every wait that got this far was a worker waiting for its own queue, that is
+            // the answer rather than an empty report: an idle node has no contention, and the
+            // section below is all there is to say about it, so it is what gets said.
+            sb.append('\n').append(none).append('\n');
+            sb.append(waitingForWork(r, top));
             return sb.toString();
         }
-        sb.append(String.format(Locale.ROOT, "%-10s %s across %d waits\n", "Blocked", Durations.format(r.totalNanos()),
-                r.waits().size()));
+        sb.append(String.format(Locale.ROOT, "%-10s %s across %d wait%s\n", "Blocked", Durations.format(r.totalNanos()),
+                r.waits().size(), r.waits().size() == 1 ? "" : "s"));
         if (r.clippedCount() > 0) {
             sb.append(String.format(Locale.ROOT, "%-10s %d wait%s began before the recording or outlived it; "
                             + "only the part inside it is counted\n", "Note", r.clippedCount(),
@@ -390,7 +306,7 @@ final class Text {
 
         sb.append("\nTHREADS BY TIME BLOCKED\n");
         final TextTable threads = new TextTable("Thread", "Total", "Waits", "Max", "Share").numeric(1, 2, 3, 4);
-        final double span = Math.max(1, r.info().span().length());
+        final double span = Math.max(1, r.info().span().duration());
         for (final ContentionReport.ThreadStats t : r.waiters(top)) {
             threads.row(t.thread().name(), Durations.format(t.totalNanos()), t.count(), Durations.format(t.maxNanos()),
                     pct(t.totalNanos() / span));
@@ -468,7 +384,7 @@ final class Text {
         final StringBuilder sb = new StringBuilder(
                 "\nLOCK SITES BY TOTAL WAIT (one row per stack; without --by-site each instance has its own row)\n");
         int n = 1;
-        for (final ContentionReport.SiteStats s : r.lockSites(top, STACK_FRAMES)) {
+        for (final ContentionReport.SiteStats s : r.lockSites(top)) {
             sb.append(String.format(Locale.ROOT, "  %2d  %-8s %10s across %d wait%s, %d lock instance%s, longest %s\n",
                     n++, s.kind().label(), Durations.format(s.totalNanos()), s.count(), s.count() == 1 ? "" : "s",
                     s.locks().size(), s.locks().size() == 1 ? "" : "s", Durations.format(s.maxNanos())));
@@ -477,7 +393,8 @@ final class Text {
             if (s.locks().size() == 1) {
                 sb.append("      ").append(s.locks().getFirst().pretty()).append('\n');
             }
-            sb.append(s.longest().stack().pretty("        ", STACK_FRAMES));
+            // The depth the rows were grouped at, so what one row stands for is what it prints.
+            sb.append(s.longest().stack().pretty("        ", ContentionReport.SITE_FRAMES));
         }
         return sb.toString();
     }
@@ -488,8 +405,14 @@ final class Text {
         sb.append(settingsLine(r.info(), "Thresholds", "jdk.JavaMonitorEnter", "jdk.ThreadPark", "jdk.ThreadSleep",
                 "jdk.SocketRead", "jdk.FileRead"));
         sb.append(String.format(Locale.ROOT, "%-10s %s\n", "Gap", Durations.format(r.gapNanos())));
-        if (r.threads().isEmpty()) {
-            sb.append("\nNo thread matched. Use `jfrq info` to list the threads in the recording.\n");
+        if (r.isNoThreadMatched()) {
+            // Warnings still matter here (they name the matching threads there was nothing on),
+            // and so do the JVM-wide pauses, which stop every thread whichever were asked about.
+            for (final String w : r.warnings()) {
+                sb.append("WARNING    ").append(w).append('\n');
+            }
+            sb.append('\n').append(StallReport.NO_THREAD).append('\n');
+            sb.append(pauses(r, top));
             return sb.toString();
         }
         // A count, not the roll call: thirteen dispatchers made this one line 1200 characters wide,
@@ -533,7 +456,7 @@ final class Text {
         sb.append("\nPER THREAD (cadence: median interval between samples, which bounds what can be seen)\n");
         final TextTable summary = new TextTable("Thread", "Samples", "Java cadence", "Native cadence",
                 "Stalls", "Stalled", "Share", "Worst").numeric(1, 2, 3, 4, 5, 6, 7);
-        final double span = Math.max(1, r.info().span().length());
+        final double span = Math.max(1, r.info().span().duration());
         for (final StallReport.ThreadSummary t : r.threads()) {
             summary.row(t.thread().name(), t.samples(), Durations.formatOrDash(t.javaCadenceNanos()),
                     Durations.formatOrDash(t.nativeCadenceNanos()), t.stalls(),
@@ -541,18 +464,23 @@ final class Text {
                     Durations.format(t.worstNanos()));
         }
         sb.append(summary.render("  "));
+        sb.append(pauses(r, top));
+        return sb.toString();
+    }
 
-        if (!r.pauses().isEmpty()) {
-            sb.append("\nJVM-WIDE PAUSES >= gap (stop every thread)\n");
-            final List<Pause> pauses = r.pauses();
-            for (int i = 0; i < Math.min(top, pauses.size()); i++) {
-                final Pause p = pauses.get(i);
-                sb.append(String.format(Locale.ROOT, "  %s  %8s  %s: %s\n", Durations.offset(p.interval().start()
-                        - r.info().startNanos()), Durations.format(p.length()), p.kind().label(), p.detail()));
-            }
-            if (pauses.size() > top) {
-                sb.append("  ... ").append(pauses.size() - top).append(" more\n");
-            }
+    private static String pauses(final StallReport r, final int top) {
+        if (r.pauses().isEmpty()) {
+            return "";
+        }
+        final StringBuilder sb = new StringBuilder("\nJVM-WIDE PAUSES >= gap (stop every thread)\n");
+        final List<Pause> pauses = r.pauses();
+        for (int i = 0; i < Math.min(top, pauses.size()); i++) {
+            final Pause p = pauses.get(i);
+            sb.append(String.format(Locale.ROOT, "  %s  %8s  %s: %s\n", Durations.offset(p.interval().start()
+                    - r.info().startNanos()), Durations.format(p.duration()), p.kind().label(), p.detail()));
+        }
+        if (pauses.size() > top) {
+            sb.append("  ... ").append(pauses.size() - top).append(" more\n");
         }
         return sb.toString();
     }
@@ -601,7 +529,7 @@ final class Text {
 
     /** {@code " (+7%)"} when the counted threads carry enough of the estimate for the comparison to mean something. */
     static String errorNote(final AllocationReport r) {
-        return r.estimateErrorMaterial() ? String.format(Locale.ROOT, " (%+.0f%%)", r.estimateError() * 100) : "";
+        return r.isEstimateErrorMaterial() ? String.format(Locale.ROOT, " (%+.0f%%)", r.estimateError() * 100) : "";
     }
 
     /** How much of the estimate the counters cover, so the error above is read against the right total. */

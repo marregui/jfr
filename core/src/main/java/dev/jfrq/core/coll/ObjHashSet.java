@@ -13,20 +13,21 @@ import java.util.Arrays;
  */
 public final class ObjHashSet<T> implements Mutable {
 
+    // A field added below that holds contents must be reset in clear() too (G-3.2).
     private Object[] keys;
     private int mask;
     private int free;
     private int size;
 
     public ObjHashSet() {
-        this(Hashing.MIN_CAPACITY);
+        this(Hashes.MIN_CAPACITY);
     }
 
     public ObjHashSet(final int initialCapacity) {
-        final int capacity = Hashing.capacityFor(initialCapacity);
+        final int capacity = Hashes.capacityFor(initialCapacity);
         keys = new Object[capacity];
         mask = capacity - 1;
-        free = Hashing.freeFor(capacity);
+        free = Hashes.freeFor(capacity);
     }
 
     /** @return true when the element was not there before */
@@ -52,7 +53,7 @@ public final class ObjHashSet<T> implements Mutable {
     @Override
     public void clear() {
         Arrays.fill(keys, null);
-        free = Hashing.freeFor(keys.length);
+        free = Hashes.freeFor(keys.length);
         size = 0;
     }
 
@@ -81,7 +82,7 @@ public final class ObjHashSet<T> implements Mutable {
 
     /** See {@link ObjObjHashMap#keyIndex}: negative means present at {@code -index - 1}. */
     public int keyIndex(final T value) {
-        final int index = Hashing.spread(value.hashCode()) & mask;
+        final int index = Hashes.spread(value.hashCode()) & mask;
         final Object k = keys[index];
         if (k == null) {
             return index;
@@ -108,8 +109,8 @@ public final class ObjHashSet<T> implements Mutable {
         free++;
         int next = (slot + 1) & mask;
         while (keys[next] != null) {
-            final int home = Hashing.spread(keys[next].hashCode()) & mask;
-            if (Hashing.mayMove(slot, next, home)) {
+            final int home = Hashes.spread(keys[next].hashCode()) & mask;
+            if (Hashes.mayMove(slot, next, home)) {
                 keys[slot] = keys[next];
                 keys[next] = null;
                 slot = next;
@@ -143,13 +144,13 @@ public final class ObjHashSet<T> implements Mutable {
 
     private void rehash() {
         final Object[] old = keys;
-        final int capacity = old.length << 1;
+        final int capacity = Hashes.grow(old.length);
         keys = new Object[capacity];
         mask = capacity - 1;
-        free = Hashing.freeFor(capacity) - size;
+        free = Hashes.freeFor(capacity) - size;
         for (final Object k : old) {
             if (k != null) {
-                int index = Hashing.spread(k.hashCode()) & mask;
+                int index = Hashes.spread(k.hashCode()) & mask;
                 while (keys[index] != null) {
                     index = (index + 1) & mask;
                 }

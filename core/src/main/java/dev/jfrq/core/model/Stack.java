@@ -7,9 +7,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
-import jdk.jfr.consumer.RecordedFrame;
-import jdk.jfr.consumer.RecordedStackTrace;
-
 /**
  * A stack trace with the innermost frame first. Value semantics, so stacks can key maps
  * (allocation sites, busy-run histograms); the hash is computed once, because a stack is
@@ -42,19 +39,6 @@ public final class Stack {
         this(frames.toArray(new Frame[0]), truncated);
     }
 
-    /** Builds a stack without interning; {@link Interner#stack(RecordedStackTrace)} is preferred in bulk. */
-    public static Stack of(final RecordedStackTrace trace) {
-        if (trace == null) {
-            return EMPTY;
-        }
-        final List<RecordedFrame> recorded = trace.getFrames();
-        final Frame[] frames = new Frame[recorded.size()];
-        for (int i = 0; i < frames.length; i++) {
-            frames[i] = Frame.of(recorded.get(i));
-        }
-        return new Stack(frames, trace.isTruncated());
-    }
-
     /**
      * The hash a stack over the first {@code n} frames of {@code frames} would have,
      * which is what {@link #hashCode()} caches.
@@ -83,7 +67,7 @@ public final class Stack {
         return frames[index];
     }
 
-    public boolean truncated() {
+    public boolean isTruncated() {
         return truncated;
     }
 

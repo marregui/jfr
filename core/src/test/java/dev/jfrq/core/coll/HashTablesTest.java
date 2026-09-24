@@ -16,12 +16,15 @@ import java.util.Set;
 import java.util.SplittableRandom;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.extension.TestExecutionExceptionHandler;
 
 /**
  * The open-addressing tables against {@code java.util}: the same random sequence of
  * inserts, overwrites, deletes and lookups must leave both in the same state, through
- * several rehashes. The seed is printed and taken back through {@code -Djfrq.test.seed}
- * so a failing run can be replayed (G-11.4).
+ * several rehashes. The seed is printed, named in every failure, and taken back through
+ * {@code -Djfrq.test.seed} ({@code ./gradlew :core:test -Djfrq.test.seed=<seed>} forwards
+ * it) so a failing run can be replayed (G-11.4).
  */
 class HashTablesTest {
 
@@ -30,9 +33,17 @@ class HashTablesTest {
     /** Few distinct keys, so deletes and re-inserts hit occupied neighbourhoods. */
     static final int KEY_SPACE = 4_000;
 
+    static final String REPLAY = "seed " + SEED + ", replay with -Djfrq.test.seed=" + SEED;
+
     static {
-        System.out.println("HashTablesTest seed: " + SEED + " (replay with -Djfrq.test.seed=" + SEED + ")");
+        System.out.println("HashTablesTest " + REPLAY);
     }
+
+    /** Gradle shows a failure's message but not the test's output, so the seed goes into the message. */
+    @RegisterExtension
+    static final TestExecutionExceptionHandler SEED_ON_FAILURE = (context, failure) -> {
+        throw new AssertionError(failure.getMessage() + " [" + REPLAY + "]", failure);
+    };
 
     /** A key whose hash collides in bands, so linear probing runs long and deletes have to shift. */
     record Key(int id) {
@@ -219,8 +230,9 @@ class HashTablesTest {
         final LongObjHashMap<String> map = new LongObjHashMap<>(4, Long.MIN_VALUE);
         final Map<Long, String> reference = new HashMap<>();
         for (int op = 0; op < OPERATIONS; op++) {
-            // Negative keys too: the default no-entry key of -1 would forbid them, this map's does not.
-            final long k = rnd.nextInt(KEY_SPACE) - KEY_SPACE / 2;
+            // Negative keys too, and now and then the no-entry key itself: keys come from the file,
+            // so the map has to store every long.
+            final long k = rnd.nextInt(64) == 0 ? Long.MIN_VALUE : rnd.nextInt(KEY_SPACE) - KEY_SPACE / 2;
             if (rnd.nextBoolean()) {
                 final String v = "v" + op;
                 assertEquals(reference.put(k, v), map.put(k, v));
@@ -254,23 +266,96 @@ class HashTablesTest {
     }
 
     @Test
+    void longObjHashMapStoresItsNoEntryKey() {
+        // The default no-entry key is -1, a value a recording can hold (an id, an address).
+        final LongObjHashMap<String> map = new LongObjHashMap<>(1);
+        assertFalse(map.contains(-1));
+        assertNull(map.get(-1));
+        final int free = map.keyIndex(-1);
+        assertTrue(free >= 0);
+        assertEquals("minus one", map.putAt(free, -1, "minus one"));
+        assertEquals(1, map.size());
+        assertTrue(map.contains(-1));
+        assertEquals("minus one", map.valueAt(map.keyIndex(-1)));
+        assertEquals("minus one", map.put(-1, "again"));
+        // Through several rehashes, and visible to iteration like any other entry.
+        for (long k = 0; k < 100; k++) {
+            map.put(k, "v" + k);
+        }
+        assertEquals(101, map.size());
+        assertEquals("again", map.get(-1));
+        final Map<Long, String> seen = new HashMap<>();
+        for (int s = 0, n = map.slots(); s < n; s++) {
+            if (map.hasKeyAtSlot(s)) {
+                seen.put(map.keyAtSlot(s), map.valueAtSlot(s));
+            }
+        }
+        assertEquals(101, seen.size());
+        assertEquals("again", seen.get(-1L));
+        map.clear();
+        assertTrue(map.isEmpty());
+        assertFalse(map.contains(-1));
+        assertNull(map.get(-1));
+    }
+
+    /**
+     * {@code capacityFor(n)} is the promise that n inserts into a new table never rehash.
+     * The identity map shares the arithmetic ({@link Hashes}) but exposes no slot count.
+     */
+    @Test
+    void aTableSizedForNEntriesHoldsThemWithoutARehash() {
+        for (final int n : new int[]{0, 1, 7, 8, 9, 16, 100, 1000}) {
+            final ObjObjHashMap<Integer, Integer> objObj = new ObjObjHashMap<>(n);
+            final ObjLongHashMap<Integer> objLong = new ObjLongHashMap<>(n, -1);
+            final ObjHashSet<Integer> set = new ObjHashSet<>(n);
+            final LongObjHashMap<Integer> longObj = new LongObjHashMap<>(n);
+            final int[] before = {objObj.slots(), objLong.slots(), set.slots(), longObj.slots()};
+            for (int i = 0; i < n; i++) {
+                final Integer k = i;
+                objObj.put(k, k);
+                objLong.put(k, i);
+                set.add(k);
+                longObj.put(i, k);
+            }
+            assertEquals(before[0], objObj.slots(), "ObjObjHashMap for " + n);
+            assertEquals(before[1], objLong.slots(), "ObjLongHashMap for " + n);
+            assertEquals(before[2], set.slots(), "ObjHashSet for " + n);
+            assertEquals(before[3], longObj.slots(), "LongObjHashMap for " + n);
+            // The next insert past the load factor is the one that grows it.
+            final int full = (int) (before[0] * Hashes.LOAD_FACTOR);
+            for (int i = n; i <= full; i++) {
+                objObj.put(i, i);
+            }
+            assertEquals(before[0] * 2, objObj.slots(), "ObjObjHashMap past " + full);
+        }
+    }
+
+    @Test
     void capacityArithmetic() {
-        assertEquals(1, Hashing.ceilPow2(0));
-        assertEquals(1, Hashing.ceilPow2(1));
-        assertEquals(2, Hashing.ceilPow2(2));
-        assertEquals(4, Hashing.ceilPow2(3));
-        assertEquals(1024, Hashing.ceilPow2(1000));
-        assertEquals(1024, Hashing.ceilPow2(1024));
-        assertEquals(16, Hashing.capacityFor(0));
-        assertEquals(32, Hashing.capacityFor(16));
-        assertEquals(8, Hashing.freeFor(16));
+        assertEquals(1, Hashes.ceilPow2(0));
+        assertEquals(1, Hashes.ceilPow2(1));
+        assertEquals(2, Hashes.ceilPow2(2));
+        assertEquals(4, Hashes.ceilPow2(3));
+        assertEquals(1024, Hashes.ceilPow2(1000));
+        assertEquals(1024, Hashes.ceilPow2(1024));
+        assertEquals(16, Hashes.capacityFor(0));
+        assertEquals(16, Hashes.capacityFor(8));
+        assertEquals(32, Hashes.capacityFor(9));
+        assertEquals(32, Hashes.capacityFor(16));
+        assertEquals(9, Hashes.freeFor(16));
+        // The array limit is 2^30 slots: past it the answer is an explanation, not a negative size.
+        assertEquals(1 << 30, Hashes.capacityFor(1 << 29));
+        assertTrue(assertThrows(IllegalArgumentException.class, () -> Hashes.capacityFor((1 << 29) + 1))
+                .getMessage().contains("cannot hold"));
+        assertEquals(1 << 30, Hashes.grow(1 << 29));
+        assertTrue(assertThrows(IllegalStateException.class, () -> Hashes.grow(1 << 30)).getMessage().contains("full"));
         // A key at its home slot never moves; one probed past the hole does.
-        assertTrue(Hashing.mayMove(3, 5, 2));
-        assertFalse(Hashing.mayMove(3, 5, 4));
-        assertFalse(Hashing.mayMove(3, 5, 5));
-        assertTrue(Hashing.mayMove(14, 1, 12));
-        assertFalse(Hashing.mayMove(14, 1, 15));
-        assertFalse(Hashing.mayMove(14, 1, 0));
+        assertTrue(Hashes.mayMove(3, 5, 2));
+        assertFalse(Hashes.mayMove(3, 5, 4));
+        assertFalse(Hashes.mayMove(3, 5, 5));
+        assertTrue(Hashes.mayMove(14, 1, 12));
+        assertFalse(Hashes.mayMove(14, 1, 15));
+        assertFalse(Hashes.mayMove(14, 1, 0));
     }
 
     private static <K, V> Map<K, V> slotsOf(final ObjObjHashMap<K, V> map) {

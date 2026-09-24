@@ -3,21 +3,24 @@
 
 package dev.jfrq.core.stalls;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.function.ToLongFunction;
 
 import dev.jfrq.core.coll.LongList;
 import dev.jfrq.core.coll.LongObjHashMap;
 import dev.jfrq.core.coll.Nulls;
-import dev.jfrq.core.coll.ObjHashSet;
 import dev.jfrq.core.coll.ObjList;
 import dev.jfrq.core.coll.ObjObjHashMap;
 import dev.jfrq.core.jfr.EventKinds;
 import dev.jfrq.core.jfr.Events;
+import dev.jfrq.core.jfr.Fields;
 import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
+import dev.jfrq.core.jfr.Transient;
 import dev.jfrq.core.model.Interner;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
@@ -29,7 +32,7 @@ import dev.jfrq.core.stalls.Timeline.PauseKind;
 import dev.jfrq.core.stalls.Timeline.Sample;
 import dev.jfrq.core.stalls.Timeline.ThreadTimeline;
 import dev.jfrq.core.util.ClassNames;
-import dev.jfrq.core.util.Sorted;
+import dev.jfrq.core.util.Sorts;
 import jdk.jfr.consumer.RecordedEvent;
 
 /**
@@ -45,9 +48,17 @@ import jdk.jfr.consumer.RecordedEvent;
  * {@code default} and {@code profile} settings disable it, which is why the VM operation
  * event is the one that matters.
  *
+ * <p>Every thread's parks are weighed for {@link Perch} and every thread's monitor waits are
+ * kept to resolve lock holders, watched or not: both answers depend on what the other
+ * threads did, and must not change with {@code --thread}. {@code jdk.ThreadStart} and
+ * {@code jdk.ThreadEnd} bound a watched thread's life inside the recording, so that the
+ * stretch before its first sample and after its last can be judged without mistaking a
+ * thread's birth or death for a stall.
+ *
  * <p>Per event the collector does one probe per thread (the filter verdict is cached
- * with the thread), reuses the detail strings for locks and peers, and keeps GC pauses
- * and safepoints flat; the {@link Sample} and {@link Block} records the analysis reads
+ * with the thread), reuses the detail strings for locks and peers, and keeps GC pauses,
+ * safepoint events and every thread's parks flat until {@link #finish}; the {@link Sample}
+ * and {@link Block} records the analysis reads, with the {@link Interval} of each block,
  * are the only per-event allocations left.
  */
 public final class StallCollector implements JfrReader.Sink {
@@ -57,31 +68,69 @@ public final class StallCollector implements JfrReader.Sink {
             EventKinds.JAVA_MONITOR_ENTER, EventKinds.THREAD_PARK, EventKinds.JAVA_MONITOR_WAIT,
             EventKinds.THREAD_SLEEP, EventKinds.SOCKET_READ, EventKinds.SOCKET_WRITE, EventKinds.FILE_READ,
             EventKinds.FILE_WRITE, EventKinds.FILE_FORCE, EventKinds.GC_PHASE_PAUSE, EventKinds.SAFEPOINT_BEGIN,
-            EventKinds.SAFEPOINT_END, EventKinds.EXECUTE_VM_OPERATION);
+            EventKinds.SAFEPOINT_END, EventKinds.EXECUTE_VM_OPERATION, EventKinds.THREAD_START,
+            EventKinds.THREAD_END);
 
     private static final Comparator<Sample> BY_TIME = Comparator.comparingLong(Sample::time);
     private static final Comparator<Block> BY_INTERVAL = Comparator.comparing(Block::interval);
     private static final Comparator<Pause> PAUSE_BY_INTERVAL = Comparator.comparing(Pause::interval);
+    private static final ToLongFunction<Pause> PAUSE_START = Pause::start;
+    private static final ToLongFunction<Pause> PAUSE_DURATION = Pause::duration;
+    /** A monitor block names its lock by {@code detail}. */
+    static final Holders.Access<Block> MONITOR_WAITS = new Holders.Access<>() {
+        @Override
+        public Interval interval(final Block wait) {
+            return wait.interval();
+        }
 
-    /** GC pauses are kept flat until the end (G-1.8): four longs per pause. */
-    private static final int GC_SLOT = 4;
+        @Override
+        public ThreadRef owner(final Block wait) {
+            return wait.owner();
+        }
+
+        @Override
+        public Object lock(final Block wait) {
+            return wait.detail();
+        }
+
+        @Override
+        public Block withHolder(final Block wait, final ThreadRef holder, final List<ThreadRef> via) {
+            return new Block(wait.interval(), wait.kind(), wait.detail(), wait.stack(), holder, via, wait.bytes());
+        }
+    };
+
+    /** GC pauses are kept flat until the end (G-1.8): three longs per pause. */
+    private static final int GC_SLOT = 3;
     private static final int GC_START = 0;
     private static final int GC_END = 1;
     private static final int GC_ID = 2;
 
+    /** Safepoint events are kept flat until the end (G-1.8), joined on their id in {@link #finish}. */
+    private static final int SP_SLOT = 4;
+    private static final int SP_KIND = 0;
+    private static final int SP_ID = 1;
+    private static final int SP_START = 2;
+    private static final int SP_END = 3;
+    private static final long SP_BEGIN = 0;
+    private static final long SP_END_EVENT = 1;
+    private static final long SP_OPERATION = 2;
+
     private final Predicate<String> threadFilter;
     private final IdleMatcher idle;
     private final StallAnalysis analysis;
-    /** Every thread seen, watched or not: the monitor waits of all of them resolve lock holders. */
+    /** Every thread seen in a thread event, watched or not, with the filter's verdict. */
     private final ObjObjHashMap<ThreadRef, ThreadEvents> threads = new ObjObjHashMap<>(256);
     private final LongList gcPauses = new LongList(64 * GC_SLOT);
     private final ObjList<String> gcNames = new ObjList<>(64);
-    private final LongObjHashMap<Safepoint> safepoints = new LongObjHashMap<>(256, Long.MIN_VALUE);
+    private final LongList safepointEvents = new LongList(64 * SP_SLOT);
+    /** The operation's name for a safepoint row that is a VM operation, {@code null} for the others. */
+    private final ObjList<String> safepointOperations = new ObjList<>(64);
+    /** Every thread's monitor waits: who really held a lock depends on threads nobody asked about. */
+    private final Holders<Block> holders = new Holders<>(MONITOR_WAITS);
+    /** Every thread's parks: whether a lock is a perch depends on everyone who parked on it. */
+    private final ParkShapes parks = new ParkShapes();
     private final LockNames lockNames = new LockNames();
     private final PeerNames peerNames = new PeerNames();
-    /** Scratch for the holder walk-back, cleared per block (G-3.3). */
-    private final ObjList<ThreadRef> via = new ObjList<>();
-    private final ObjHashSet<ThreadRef> seen = new ObjHashSet<>();
     private Interner interner = new Interner();
     private StallReport report;
 
@@ -112,40 +161,42 @@ public final class StallCollector implements JfrReader.Sink {
     }
 
     @Override
-    public void accept(final RecordedEvent e) {
+    public void accept(@Transient final RecordedEvent e) {
         accept(e, EventKinds.kindOf(e.getEventType().getName()));
     }
 
     @Override
-    public void accept(final RecordedEvent e, final int kind) {
+    public void accept(@Transient final RecordedEvent e, final int kind) {
         switch (kind) {
             case EventKinds.GC_PHASE_PAUSE -> {
-                final Interval interval = Events.interval(e);
-                gcPauses.add(interval.start());
-                gcPauses.add(interval.end());
-                gcPauses.add(Events.longOr(e, "gcId", -1));
-                gcPauses.add(0);
-                gcNames.add(Events.stringOr(e, "name", "GC"));
+                final long start = Events.startNanos(e);
+                gcPauses.add(start);
+                gcPauses.add(Math.max(start, Events.endNanos(e)));
+                gcPauses.add(Events.longOr(e, Fields.GC_ID, Nulls.LONG_NULL, interner));
+                gcNames.add(Events.stringOr(e, Fields.NAME, "GC", interner));
             }
             // Begin, end and operation may arrive in any order (delivery is file order); joined in finish().
-            case EventKinds.SAFEPOINT_BEGIN -> safepoint(e).begin(Events.interval(e));
-            case EventKinds.SAFEPOINT_END -> safepoint(e).end(Events.endNanos(e));
+            case EventKinds.SAFEPOINT_BEGIN -> safepointEvent(e, SP_BEGIN, null);
+            case EventKinds.SAFEPOINT_END -> safepointEvent(e, SP_END_EVENT, null);
             case EventKinds.EXECUTE_VM_OPERATION -> {
-                if (e.hasField("safepoint") && e.getBoolean("safepoint")) {
-                    safepoint(e).operation(Events.interval(e), Events.stringOr(e, "operation", "?"));
+                if (Events.booleanOr(e, Fields.SAFEPOINT, false, interner)) {
+                    safepointEvent(e, SP_OPERATION, Events.stringOr(e, Fields.OPERATION, "?", interner));
                 }
             }
             default -> acceptThreadEvent(e, kind);
         }
     }
 
-    private Safepoint safepoint(final RecordedEvent e) {
-        final long id = Events.longOr(e, "safepointId", -1);
-        final int index = safepoints.keyIndex(id);
-        return index < 0 ? safepoints.valueAtQuick(index) : safepoints.putAt(index, id, new Safepoint(id));
+    private void safepointEvent(@Transient final RecordedEvent e, final long kind, final String operation) {
+        final long start = Events.startNanos(e);
+        safepointEvents.add(kind);
+        safepointEvents.add(Events.longOr(e, Fields.SAFEPOINT_ID, Nulls.LONG_NULL, interner));
+        safepointEvents.add(start);
+        safepointEvents.add(Math.max(start, Events.endNanos(e)));
+        safepointOperations.add(operation);
     }
 
-    private void acceptThreadEvent(final RecordedEvent e, final int kind) {
+    private void acceptThreadEvent(@Transient final RecordedEvent e, final int kind) {
         final ThreadRef thread = interner.thread(e);
         if (thread == null) {
             return;
@@ -153,15 +204,43 @@ public final class StallCollector implements JfrReader.Sink {
         final int index = threads.keyIndex(thread);
         final ThreadEvents t = index < 0 ? threads.valueAtQuick(index)
                 : threads.putAt(index, thread, new ThreadEvents(threadFilter.test(thread.name())));
-        if (kind == EventKinds.JAVA_MONITOR_ENTER) {
-            // Kept for every thread; a watched thread's own wait carries the stack and is the same object.
-            final Block wait = new Block(Events.interval(e), BlockKind.MONITOR, lockName(e, "monitorClass"),
-                    t.watched ? Events.stack(e, interner) : Stack.EMPTY, Events.thread(e, "previousOwner", interner));
-            t.monitorWaits.add(wait);
-            if (t.watched) {
-                t.blocks.add(wait);
+        switch (kind) {
+            case EventKinds.JAVA_MONITOR_ENTER -> {
+                // Kept for every thread; a watched thread's own wait carries the stack and is the same object.
+                final Block wait = new Block(Events.interval(e), BlockKind.MONITOR, lockName(e, Fields.MONITOR_CLASS),
+                        t.watched ? Events.stack(e, interner) : Stack.EMPTY,
+                        Events.thread(e, Fields.PREVIOUS_OWNER, interner));
+                holders.add(thread, wait);
+                if (t.watched) {
+                    t.blocks.add(wait);
+                }
+                return;
             }
-            return;
+            case EventKinds.THREAD_PARK -> {
+                // Weighed for every thread; a watched thread's park is also one of its blocks.
+                final String lock = parkName(e);
+                if (t.watched) {
+                    final Stack stack = Events.stack(e, interner);
+                    final Block park = new Block(Events.interval(e), BlockKind.PARK, lock, stack, 0);
+                    t.blocks.add(park);
+                    parks.add(thread, lock, park.start(), park.interval().end(), stack);
+                } else if (!ParkShapes.NO_BLOCKER.equals(lock)) {
+                    // A park on no object is never weighed, so its stack and times are not read.
+                    final long start = Events.startNanos(e);
+                    parks.add(thread, lock, start, Math.max(start, Events.endNanos(e)), Events.stack(e, interner));
+                }
+                return;
+            }
+            case EventKinds.THREAD_START -> {
+                t.started = Events.startNanos(e);
+                return;
+            }
+            case EventKinds.THREAD_END -> {
+                t.ended = Events.startNanos(e);
+                return;
+            }
+            default -> {
+            }
         }
         if (!t.watched) {
             return;
@@ -172,55 +251,55 @@ public final class StallCollector implements JfrReader.Sink {
                 final boolean inNative = kind == EventKinds.NATIVE_METHOD_SAMPLE;
                 t.samples.add(new Sample(Events.startNanos(e), stack, idle.isIdle(stack), inNative));
             }
-            case EventKinds.THREAD_PARK -> block(t, e, BlockKind.PARK, parkName(e), 0);
             case EventKinds.JAVA_MONITOR_WAIT ->
-                    block(t, e, BlockKind.OBJECT_WAIT, lockNames.on(lockName(e, "monitorClass")), 0);
+                    block(t, e, BlockKind.OBJECT_WAIT, lockNames.on(lockName(e, Fields.MONITOR_CLASS)), 0);
             case EventKinds.THREAD_SLEEP -> block(t, e, BlockKind.SLEEP, "", 0);
             case EventKinds.SOCKET_READ -> block(t, e, BlockKind.SOCKET_READ, peerNames.from(peer(e)),
-                    Events.longOr(e, "bytesRead", 0));
+                    Events.longOr(e, Fields.BYTES_READ, 0, interner));
             case EventKinds.SOCKET_WRITE -> block(t, e, BlockKind.SOCKET_WRITE, peerNames.to(peer(e)),
-                    Events.longOr(e, "bytesWritten", 0));
-            case EventKinds.FILE_READ -> block(t, e, BlockKind.FILE_READ, Events.stringOr(e, "path", "?"),
-                    Events.longOr(e, "bytesRead", 0));
-            case EventKinds.FILE_WRITE -> block(t, e, BlockKind.FILE_WRITE, Events.stringOr(e, "path", "?"),
-                    Events.longOr(e, "bytesWritten", 0));
-            case EventKinds.FILE_FORCE -> block(t, e, BlockKind.FILE_FORCE, Events.stringOr(e, "path", "?"), 0);
+                    Events.longOr(e, Fields.BYTES_WRITTEN, 0, interner));
+            case EventKinds.FILE_READ -> block(t, e, BlockKind.FILE_READ, Events.stringOr(e, Fields.PATH, "?", interner),
+                    Events.longOr(e, Fields.BYTES_READ, 0, interner));
+            case EventKinds.FILE_WRITE -> block(t, e, BlockKind.FILE_WRITE, Events.stringOr(e, Fields.PATH, "?", interner),
+                    Events.longOr(e, Fields.BYTES_WRITTEN, 0, interner));
+            case EventKinds.FILE_FORCE -> block(t, e, BlockKind.FILE_FORCE, Events.stringOr(e, Fields.PATH, "?", interner), 0);
             default -> {
             }
         }
     }
 
-    private void block(final ThreadEvents t, final RecordedEvent e, final BlockKind kind, final String detail, final long bytes) {
+    private void block(final ThreadEvents t, @Transient final RecordedEvent e, final BlockKind kind, final String detail,
+                       final long bytes) {
         t.blocks.add(new Block(Events.interval(e), kind, detail, Events.stack(e, interner), bytes));
     }
 
     /** {@code dev.app.Registry@1f2e}: one string per (class, address), reused across events. */
-    private String lockName(final RecordedEvent e, final String field) {
-        return lockNames.name(Events.className(e, field, interner), Events.longOr(e, "address", 0));
+    private String lockName(@Transient final RecordedEvent e, final int field) {
+        return lockNames.name(Events.className(e, field, interner), Events.longOr(e, Fields.ADDRESS, 0, interner));
     }
 
-    private String parkName(final RecordedEvent e) {
-        final String cls = Events.className(e, "parkedClass", interner);
-        return cls == null ? "(no blocker object)" : lockNames.on(lockName(e, "parkedClass"));
+    private String parkName(@Transient final RecordedEvent e) {
+        final String cls = Events.className(e, Fields.PARKED_CLASS, interner);
+        return cls == null ? ParkShapes.NO_BLOCKER : lockNames.on(lockName(e, Fields.PARKED_CLASS));
     }
 
     /** {@code host:port}, or {@code address:port} when the host is unknown; one string per peer. */
-    private String peer(final RecordedEvent e) {
-        final String host = Events.stringOr(e, "host", "");
-        final String where = host.isEmpty() ? Events.stringOr(e, "address", "?") : host;
-        return peerNames.peer(where, Events.longOr(e, "port", 0));
+    private String peer(@Transient final RecordedEvent e) {
+        final String host = Events.stringOr(e, Fields.HOST, "", interner);
+        final String where = host.isEmpty() ? Events.stringOr(e, Fields.ADDRESS, "?", interner) : host;
+        return peerNames.peer(where, Events.longOr(e, Fields.PORT, 0, interner));
     }
 
     @Override
     public void finish(final RecordingInfo info) {
+        holders.seal();
+        final Interval span = info.span();
+        // Without both lifetime events a thread's birth or death inside the window cannot be
+        // told from a stall, so the stretches before its first sample and after its last are
+        // not judged at all.
+        final boolean lifetimes = info.isEnabled(EventKinds.nameOf(EventKinds.THREAD_START))
+                && info.isEnabled(EventKinds.nameOf(EventKinds.THREAD_END));
         final ObjList<ThreadTimeline> timelines = new ObjList<>();
-        for (int s = 0, n = threads.slots(); s < n; s++) {
-            if (threads.hasKeyAtSlot(s)) {
-                final ThreadEvents t = threads.valueAtSlot(s);
-                t.monitorWaits.sort(BY_INTERVAL);
-                t.longestMonitorWait = Sorted.maxLength(t.monitorWaits, Block::length);
-            }
-        }
         for (int s = 0, n = threads.slots(); s < n; s++) {
             if (!threads.hasKeyAtSlot(s)) {
                 continue;
@@ -234,12 +313,36 @@ public final class StallCollector implements JfrReader.Sink {
             final ObjList<Block> blocks = new ObjList<>(t.blocks.size());
             for (int i = 0, m = t.blocks.size(); i < m; i++) {
                 final Block block = t.blocks.getQuick(i);
-                blocks.add(block.kind() == BlockKind.MONITOR ? resolveHolder(thread, block) : block);
+                blocks.add(block.kind() == BlockKind.MONITOR ? holders.resolve(thread, block) : block);
             }
             blocks.sort(BY_INTERVAL);
-            timelines.add(new ThreadTimeline(thread, t.samples.toList(), blocks.toList()));
+            long lifeStart = Nulls.LONG_NULL;
+            long lifeEnd = Nulls.LONG_NULL;
+            if (lifetimes) {
+                lifeStart = t.started == Nulls.LONG_NULL ? span.start() : Math.min(Math.max(t.started, span.start()), span.end());
+                lifeEnd = t.ended == Nulls.LONG_NULL ? span.end() : Math.max(Math.min(t.ended, span.end()), lifeStart);
+            }
+            timelines.add(new ThreadTimeline(thread, t.samples.toList(), blocks.toList(), lifeStart, lifeEnd));
         }
-        report = analysis.analyse(info, timelines.toList(), pauses());
+        report = analysis.analyse(info, timelines.toList(), pauses(), parks, silentThreads(info));
+    }
+
+    /**
+     * Threads the filter matches that the recording saw, in any event this pass read, but
+     * that have neither a sample nor a blocking event: the JVM's own threads, and any thread
+     * blocked through the whole window with nothing ending inside it.
+     */
+    private List<String> silentThreads(final RecordingInfo info) {
+        final List<String> silent = new ArrayList<>();
+        for (final ThreadRef thread : info.threads()) {
+            final ThreadEvents t = threads.get(thread);
+            final boolean evidence = t != null && (t.samples.notEmpty() || t.blocks.notEmpty());
+            if (!evidence && threadFilter.test(thread.name())) {
+                silent.add(thread.name());
+            }
+        }
+        silent.sort(Comparator.naturalOrder());
+        return silent;
     }
 
     /**
@@ -252,30 +355,26 @@ public final class StallCollector implements JfrReader.Sink {
         final ObjList<Pause> gcs = new ObjList<>(gcNames.size());
         for (int i = 0, n = gcNames.size(); i < n; i++) {
             final int slot = i * GC_SLOT;
+            final long gcId = gcPauses.getQuick(slot + GC_ID);
             gcs.add(new Pause(new Interval(gcPauses.getQuick(slot + GC_START), gcPauses.getQuick(slot + GC_END)),
-                    PauseKind.GC, gcNames.getQuick(i) + " (gcId " + gcPauses.getQuick(slot + GC_ID) + ")"));
+                    PauseKind.GC, gcId == Nulls.LONG_NULL ? gcNames.getQuick(i) : gcNames.getQuick(i) + " (gcId " + gcId + ")"));
         }
         gcs.sort(PAUSE_BY_INTERVAL);
-        final long longestGc = Sorted.maxLength(gcs, Pause::length);
+        final long longestGc = Sorts.maxDuration(gcs, PAUSE_DURATION);
 
+        final ObjList<Pause> safepoints = safepoints();
         final ObjList<Pause> pauses = new ObjList<>(gcs.size() + safepoints.size());
         pauses.addAll(gcs);
-        for (int s = 0, n = safepoints.slots(); s < n; s++) {
-            if (!safepoints.hasKeyAtSlot(s)) {
-                continue;
-            }
-            final Pause sp = safepoints.valueAtSlot(s).pause();
-            if (sp == null) {
-                continue;
-            }
+        for (int s = 0, n = safepoints.size(); s < n; s++) {
+            final Pause sp = safepoints.getQuick(s);
             boolean isGc = false;
-            final int from = Sorted.lowerBound(gcs, Pause::start, sp.start() - longestGc);
+            final int from = Sorts.lowerBound(gcs, PAUSE_START, sp.start() - longestGc);
             for (int i = from, m = gcs.size(); i < m; i++) {
                 final Pause gc = gcs.getQuick(i);
                 if (gc.start() >= sp.interval().end()) {
                     break;
                 }
-                if (gc.interval().overlap(sp.interval()) >= StallAnalysis.COVER * sp.length()) {
+                if (gc.interval().overlap(sp.interval()) >= StallAnalysis.COVER * sp.duration()) {
                     isGc = true;
                     break;
                 }
@@ -288,49 +387,47 @@ public final class StallCollector implements JfrReader.Sink {
     }
 
     /**
-     * JFR's {@code previousOwner} is the thread that released the monitor to the waiter,
-     * which under contention is often another waiter that held it for microseconds. Walks
-     * back: while the recorded owner was itself waiting for the same lock during this wait,
-     * take its owner instead, and remember the intermediaries.
+     * The safepoint events joined on their id: a safepoint spans from the begin event's start
+     * to the end of its VM operation (or its end event, when recorded). An event without an
+     * id cannot be joined; an operation without one stands alone, like one whose begin event
+     * fell under the threshold, and a begin or end without one says nothing on its own.
      */
-    private Block resolveHolder(final ThreadRef waiter, final Block block) {
-        ThreadRef owner = block.owner();
-        if (owner == null) {
-            return block;
+    private ObjList<Pause> safepoints() {
+        final int rows = safepointOperations.size();
+        final LongObjHashMap<Safepoint> byId = new LongObjHashMap<>(Math.max(16, rows), Nulls.LONG_NULL);
+        final ObjList<Pause> out = new ObjList<>(rows);
+        for (int r = 0; r < rows; r++) {
+            final int slot = r * SP_SLOT;
+            final long kind = safepointEvents.getQuick(slot + SP_KIND);
+            final long id = safepointEvents.getQuick(slot + SP_ID);
+            final long start = safepointEvents.getQuick(slot + SP_START);
+            final long end = safepointEvents.getQuick(slot + SP_END);
+            if (id == Nulls.LONG_NULL) {
+                if (kind == SP_OPERATION) {
+                    out.add(new Pause(new Interval(start, end), PauseKind.SAFEPOINT,
+                            "VM operation " + safepointOperations.getQuick(r)));
+                }
+                continue;
+            }
+            final int index = byId.keyIndex(id);
+            final Safepoint sp = index < 0 ? byId.valueAtQuick(index) : byId.putAt(index, id, new Safepoint(id));
+            if (kind == SP_BEGIN) {
+                sp.begin(start, end);
+            } else if (kind == SP_END_EVENT) {
+                sp.end(end);
+            } else {
+                sp.operation(start, end, safepointOperations.getQuick(r));
+            }
         }
-        via.clear();
-        seen.clear();
-        seen.add(waiter);
-        seen.add(owner);
-        while (true) {
-            Block ownersWait = null;
-            final ThreadEvents theirs = threads.get(owner);
-            if (theirs != null) {
-                final ObjList<Block> waits = theirs.monitorWaits;
-                final int from = Sorted.lowerBound(waits, Block::start, block.start() - theirs.longestMonitorWait);
-                for (int i = from, n = waits.size(); i < n; i++) {
-                    final Block w = waits.getQuick(i);
-                    if (w.start() >= block.interval().end()) {
-                        break;
-                    }
-                    if (w.detail().equals(block.detail()) && w.interval().overlaps(block.interval())
-                            && (ownersWait == null || w.length() > ownersWait.length())) {
-                        ownersWait = w;
-                    }
+        for (int s = 0, n = byId.slots(); s < n; s++) {
+            if (byId.hasKeyAtSlot(s)) {
+                final Pause sp = byId.valueAtSlot(s).pause();
+                if (sp != null) {
+                    out.add(sp);
                 }
             }
-            // Stop at an unknown owner, and at a cycle (a thread cannot hold what it waits for).
-            if (ownersWait == null || ownersWait.owner() == null || !seen.add(ownersWait.owner())) {
-                break;
-            }
-            via.add(owner);
-            owner = ownersWait.owner();
         }
-        if (via.isEmpty()) {
-            return block;
-        }
-        return new Block(block.interval(), block.kind(), block.detail(), block.stack(), owner, via.toList(),
-                block.bytes());
+        return out;
     }
 
     public StallReport report() {
@@ -346,17 +443,16 @@ public final class StallCollector implements JfrReader.Sink {
         final boolean watched;
         final ObjList<Sample> samples = new ObjList<>(16);
         final ObjList<Block> blocks = new ObjList<>(8);
-        /** Monitor waits, watched or not, to trace who really held a lock. */
-        final ObjList<Block> monitorWaits = new ObjList<>(4);
-        /** The longest monitor wait: bounds the window a holder lookup scans. */
-        long longestMonitorWait;
+        /** When the thread started and ended, if the recording saw it happen. */
+        long started = Nulls.LONG_NULL;
+        long ended = Nulls.LONG_NULL;
 
         ThreadEvents(final boolean watched) {
             this.watched = watched;
         }
     }
 
-    /** The three events of one safepoint, assembled in whatever order the file delivers them. */
+    /** The three events of one safepoint, joined in {@link #finish}, whatever order the file delivered them in. */
     private static final class Safepoint {
         final long id;
         long beginStart = Nulls.LONG_NULL;
@@ -370,18 +466,18 @@ public final class StallCollector implements JfrReader.Sink {
             this.id = id;
         }
 
-        void begin(final Interval interval) {
-            beginStart = interval.start();
-            beginEnd = interval.end();
+        void begin(final long start, final long end) {
+            beginStart = start;
+            beginEnd = end;
         }
 
         void end(final long endNanos) {
             recordedEnd = endNanos;
         }
 
-        void operation(final Interval interval, final String name) {
-            operationStart = interval.start();
-            operationEnd = interval.end();
+        void operation(final long start, final long end, final String name) {
+            operationStart = start;
+            operationEnd = end;
             operation = name;
         }
 

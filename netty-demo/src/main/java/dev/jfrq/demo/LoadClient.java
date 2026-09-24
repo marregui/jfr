@@ -14,6 +14,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * Paced closed-loop load: each connection sends a request, waits for the reply, then
@@ -26,7 +28,12 @@ final class LoadClient {
 
     private final List<Thread> threads = new ArrayList<>();
     private final List<long[]> latencies = new ArrayList<>();
-    private final List<int[]> counts = new ArrayList<>();
+    /**
+     * Samples taken per connection. Only the connection's own thread writes it, after the
+     * sample it counts, with release semantics; a reader that acquires it may copy that many
+     * samples even while the thread is still running (it outlived {@link #stop()}'s join).
+     */
+    private final List<AtomicInteger> counts = new ArrayList<>();
     private final long intervalNanos;
     private volatile boolean running = true;
 
@@ -35,7 +42,7 @@ final class LoadClient {
                 : 1_000_000_000L / requestsPerSecondPerConnection;
         for (int c = 1; c <= connections; c++) {
             final long[] samples = new long[maxSamplesPerConnection];
-            final int[] count = new int[1];
+            final AtomicInteger count = new AtomicInteger();
             latencies.add(samples);
             counts.add(count);
             final Thread t = new Thread(() -> drive(port, samples, count), "load-client-" + c);
@@ -48,7 +55,7 @@ final class LoadClient {
         threads.forEach(Thread::start);
     }
 
-    private void drive(final int port, final long[] samples, final int[] count) {
+    private void drive(final int port, final long[] samples, final AtomicInteger count) {
         try (final Socket s = new Socket(InetAddress.getLoopbackAddress(), port)) {
             s.setTcpNoDelay(true);
             final OutputStream out = s.getOutputStream();
@@ -59,7 +66,7 @@ final class LoadClient {
                 if (intervalNanos > 0) {
                     final long wait = next - System.nanoTime();
                     if (wait > 0) {
-                        java.util.concurrent.locks.LockSupport.parkNanos(wait);
+                        LockSupport.parkNanos(wait);
                     } else if (wait < -intervalNanos) {
                         // Behind by more than one interval (a stall, or this process was starved):
                         // drop the backlog rather than burst it, so the offered rate stays the rate.
@@ -75,8 +82,10 @@ final class LoadClient {
                 if (reply == null) {
                     break;
                 }
-                if (count[0] < samples.length) {
-                    samples[count[0]++] = latency;
+                final int taken = count.getPlain();
+                if (taken < samples.length) {
+                    samples[taken] = latency;
+                    count.setRelease(taken + 1);
                 }
                 n++;
             }
@@ -87,20 +96,25 @@ final class LoadClient {
         }
     }
 
-    /** Percentiles over every connection's samples. */
+    /**
+     * Percentiles over every connection's samples. Each count is read once, so a connection
+     * that is still running adds samples past the snapshot, never inside the copy.
+     */
     String summary() {
+        final int[] taken = new int[counts.size()];
         int total = 0;
-        for (final int[] c : counts) {
-            total += c[0];
+        for (int k = 0; k < taken.length; k++) {
+            taken[k] = counts.get(k).getAcquire();
+            total += taken[k];
         }
         if (total == 0) {
             return "no completed requests";
         }
         final long[] all = new long[total];
         int i = 0;
-        for (int k = 0; k < latencies.size(); k++) {
-            System.arraycopy(latencies.get(k), 0, all, i, counts.get(k)[0]);
-            i += counts.get(k)[0];
+        for (int k = 0; k < taken.length; k++) {
+            System.arraycopy(latencies.get(k), 0, all, i, taken[k]);
+            i += taken[k];
         }
         Arrays.sort(all);
         return String.format(Locale.ROOT, "%d requests; latency p50 %s  p90 %s  p99 %s  max %s",
@@ -110,8 +124,8 @@ final class LoadClient {
 
     int completed() {
         int total = 0;
-        for (final int[] c : counts) {
-            total += c[0];
+        for (final AtomicInteger c : counts) {
+            total += c.getAcquire();
         }
         return total;
     }

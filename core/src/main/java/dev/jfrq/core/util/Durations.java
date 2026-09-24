@@ -10,18 +10,30 @@ import dev.jfrq.core.coll.Nulls;
 
 /**
  * Parsing and formatting of human durations in the forms JFR itself uses
- * ({@code "10 ms"}, {@code "20 ms"}, {@code "1 s"}) and the forms people type on a
- * command line ({@code "50ms"}, {@code "1.5s"}, {@code "2m"}). Parsing is by hand, with
+ * ({@code "10 ms"}, {@code "20 ms"}, {@code "1 s"}, {@code "infinity"}), the forms people
+ * type on a command line ({@code "50ms"}, {@code "1.5s"}, {@code "2m"}) and the forms
+ * {@link #format(long)} prints ({@code "2m18s"}, {@code "3d04h"}), so every duration the
+ * tool shows can be pasted back into an option. Parsing is by hand, with
  * a {@code Quiet} variant that answers a sentinel instead of throwing (G-2.3, G-1.6):
  * a setting value that is not a duration ({@code "everyChunk"}) is a normal case, not
  * an exception.
  */
 public final class Durations {
 
+    /** What {@code "infinity"} parses to and what formats as {@code "infinity"}: never. */
+    public static final long INFINITE = Long.MAX_VALUE;
     private static final long NOT_A_DURATION = -1;
     private static final long UNKNOWN_UNIT = -2;
-    /** Mantissas longer than this are parsed as doubles so a long cannot overflow. */
-    private static final int EXACT_DIGITS = 18;
+    private static final long OUT_OF_RANGE = -3;
+    /**
+     * Mantissas up to this many digits are exact in a double (below 2^53), so dividing by
+     * an exact power of ten is one correctly rounded operation; longer ones go through
+     * {@link Double#parseDouble}, which rounds correctly on its own.
+     */
+    private static final int EXACT_DIGITS = 15;
+    /** 2^63: the first double a {@code long} cannot hold. */
+    private static final double LONG_LIMIT = 0x1p63;
+    private static final String[] UNITS = {"ns", "µs", "ms", "s"};
     private static final double[] POW10 = new double[EXACT_DIGITS + 1];
 
     static {
@@ -36,10 +48,14 @@ public final class Durations {
 
     /**
      * Parses {@code "50ms"}, {@code "10 ms"}, {@code "1.5s"}, {@code "2m"}, {@code "100us"},
-     * {@code "100µs"}, {@code "5ns"}, {@code "1h"}. A bare number is nanoseconds, matching
-     * JFR's own unit-less values.
+     * {@code "100µs"}, {@code "5ns"}, {@code "1h"}, {@code "2d"}, the compound forms
+     * {@link #format(long)} prints ({@code "2m18s"}, {@code "13h11m"}, {@code "3d04h"}) and
+     * {@code "infinity"} ({@link #INFINITE}). A bare number is nanoseconds, matching JFR's
+     * own unit-less values.
      *
-     * @throws IllegalArgumentException when the text is not a duration
+     * @throws IllegalArgumentException when the text is not a duration, or is one longer
+     *                                  than a {@code long} of nanoseconds holds (about 292
+     *                                  years; {@code infinity} says "never")
      */
     public static Duration parse(final String text) {
         return Duration.ofNanos(parseNanos(text));
@@ -53,6 +69,10 @@ public final class Durations {
         }
         if (nanos == NOT_A_DURATION) {
             throw new IllegalArgumentException("not a duration: '" + text + "' (expected e.g. 50ms, 1.5s, 2m)");
+        }
+        if (nanos == OUT_OF_RANGE) {
+            throw new IllegalArgumentException("duration out of range: '" + text + "' (at most " + format(INFINITE - 1)
+                    + "; 'infinity' means never)");
         }
         return nanos;
     }
@@ -68,28 +88,44 @@ public final class Durations {
      * {@code 2m18s}, {@code 13h11m}, {@code 3d04h}. Each tier carries two units, so the number
      * is read rather than divided: a warning that says {@code 790m55s} is one the reader has to
      * convert, and the durations that reach these tiers are exactly the ones in the warnings.
-     * Negative values are formatted with a leading minus.
+     * Below a minute the unit is chosen after rounding to three digits, so 999.9 µs is
+     * {@code 1.00 ms} and 59.97 s is {@code 1m00s}; above it the smaller unit is truncated,
+     * like a clock. {@link #INFINITE} is {@code infinity}; negative values are formatted
+     * with a leading minus.
      */
     public static String format(final long nanos) {
         if (nanos == Long.MIN_VALUE) {
-            return "-" + format(Long.MAX_VALUE);
+            return "-" + format(INFINITE);
         }
         if (nanos < 0) {
             return "-" + format(-nanos);
         }
+        if (nanos == INFINITE) {
+            return "infinity";
+        }
         if (nanos < 1_000L) {
             return nanos + " ns";
         }
-        if (nanos < 1_000_000L) {
-            return trim(nanos / 1_000.0) + " µs";
-        }
-        if (nanos < 1_000_000_000L) {
-            return trim(nanos / 1_000_000.0) + " ms";
-        }
+        long seconds = nanos / 1_000_000_000L;
         if (nanos < 60_000_000_000L) {
-            return trim(nanos / 1_000_000_000.0) + " s";
+            double v = nanos / 1_000.0;
+            int unit = 1;
+            while (v >= 1_000 && unit < UNITS.length - 1) {
+                v /= 1_000;
+                unit++;
+            }
+            String digits = threeDigits(v);
+            if (unit < UNITS.length - 1 && digits.equals("1000")) {
+                // Rounded up to 1000 of this unit: that is 1.00 of the next.
+                v /= 1_000;
+                unit++;
+                digits = threeDigits(v);
+            }
+            if (unit < UNITS.length - 1 || Double.parseDouble(digits) < 60) {
+                return digits + " " + UNITS[unit];
+            }
+            seconds = 60;
         }
-        final long seconds = nanos / 1_000_000_000L;
         if (seconds < 3_600L) {
             return String.format(Locale.ROOT, "%dm%02ds", seconds / 60, seconds % 60);
         }
@@ -122,8 +158,11 @@ public final class Durations {
 
     /**
      * The worker behind both parse entry points: nanoseconds, or a negative code. Accepts
-     * optional whitespace, digits with an optional fraction, optional whitespace, an
-     * optional unit of ASCII letters or {@code µ}, optional whitespace.
+     * optional whitespace, then {@code infinity} or one or more terms, then optional
+     * whitespace. A term is digits with an optional fraction, optional whitespace and a unit
+     * of ASCII letters or {@code µ}; the unit may be left out only when the term is the
+     * whole text (a bare number is nanoseconds). Terms add up; a total a {@code long}
+     * cannot hold is out of range rather than clamped.
      */
     private static long parse0(final CharSequence text) {
         if (text == null) {
@@ -137,39 +176,77 @@ public final class Durations {
         while (hi > lo && isSpace(text.charAt(hi - 1))) {
             hi--;
         }
-        int p = lo;
-        while (p < hi && isDigit(text.charAt(p))) {
-            p++;
+        if (isInfinity(text, lo, hi)) {
+            return INFINITE;
         }
-        if (p == lo) {
+        if (lo == hi) {
             return NOT_A_DURATION;
         }
-        final int fractionStart = p;
-        if (p < hi && text.charAt(p) == '.') {
-            int q = p + 1;
-            while (q < hi && isDigit(text.charAt(q))) {
-                q++;
+        long total = 0;
+        int p = lo;
+        while (p < hi) {
+            final int start = p;
+            while (p < hi && isDigit(text.charAt(p))) {
+                p++;
             }
-            if (q == p + 1) {
+            if (p == start) {
                 return NOT_A_DURATION;
             }
-            p = q;
-        }
-        final double value = number(text, lo, fractionStart, p);
-        while (p < hi && isSpace(text.charAt(p))) {
-            p++;
-        }
-        for (int i = p; i < hi; i++) {
-            final char c = text.charAt(i);
-            if (!isAsciiLetter(c) && c != 'µ') {
+            final int fractionStart = p;
+            if (p < hi && text.charAt(p) == '.') {
+                int q = p + 1;
+                while (q < hi && isDigit(text.charAt(q))) {
+                    q++;
+                }
+                if (q == p + 1) {
+                    return NOT_A_DURATION;
+                }
+                p = q;
+            }
+            final double value = number(text, start, fractionStart, p);
+            while (p < hi && isSpace(text.charAt(p))) {
+                p++;
+            }
+            final int unitStart = p;
+            while (p < hi && (isAsciiLetter(text.charAt(p)) || text.charAt(p) == 'µ')) {
+                p++;
+            }
+            if (unitStart == p && (start != lo || p != hi)) {
+                // A number with no unit is nanoseconds only on its own; inside a compound, or
+                // followed by anything but a unit, it is not a duration.
                 return NOT_A_DURATION;
             }
+            final long unitNanos = unitNanos(text, unitStart, p);
+            if (unitNanos < 0) {
+                return UNKNOWN_UNIT;
+            }
+            final double product = value * unitNanos;
+            if (product >= LONG_LIMIT) {
+                return OUT_OF_RANGE;
+            }
+            total += Math.round(product);
+            if (total < 0) {
+                return OUT_OF_RANGE;
+            }
+            while (p < hi && isSpace(text.charAt(p))) {
+                p++;
+            }
         }
-        final long unitNanos = unitNanos(text, p, hi);
-        if (unitNanos < 0) {
-            return UNKNOWN_UNIT;
+        return total == INFINITE ? OUT_OF_RANGE : total;
+    }
+
+    /** Whether {@code [lo, hi)} is {@code infinity}, in any case, without allocating (G-2.2). */
+    private static boolean isInfinity(final CharSequence text, final int lo, final int hi) {
+        final String word = "infinity";
+        if (hi - lo != word.length()) {
+            return false;
         }
-        return Math.round(value * unitNanos);
+        for (int i = 0; i < word.length(); i++) {
+            if (fold(text.charAt(lo + i)) != word.charAt(i)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** The decimal number in {@code [lo, hi)} whose fraction, if any, starts at {@code dot}. */
@@ -203,6 +280,7 @@ public final class Durations {
                 case 's' -> 1_000_000_000L;
                 case 'm' -> 60_000_000_000L;
                 case 'h' -> 3_600_000_000_000L;
+                case 'd' -> 86_400_000_000_000L;
                 default -> -1;
             };
         }
@@ -239,13 +317,23 @@ public final class Durations {
         return c == ' ' || c == '\t' || c == '\n' || c == 0x0B || c == '\f' || c == '\r';
     }
 
-    private static String trim(final double v) {
-        if (v >= 100) {
-            return String.format(Locale.ROOT, "%.0f", v);
+    /**
+     * {@code v} to three significant digits ({@code 1.42}, {@code 12.3}, {@code 312}), the
+     * precision chosen after rounding: 9.996 is {@code 10.0}, not {@code 10.00}, and 99.96
+     * is {@code 100}. A value that rounds up to 1000 comes back as {@code "1000"} for the
+     * caller to carry into the next unit; one already at or above 1000 keeps its digits.
+     */
+    static String threeDigits(final double v) {
+        int decimals = v >= 100 ? 0 : v >= 10 ? 1 : 2;
+        String digits = fixed(v, decimals);
+        if (decimals > 0 && Double.parseDouble(digits) >= (decimals == 2 ? 10 : 100)) {
+            decimals--;
+            digits = fixed(v, decimals);
         }
-        if (v >= 10) {
-            return String.format(Locale.ROOT, "%.1f", v);
-        }
-        return String.format(Locale.ROOT, "%.2f", v);
+        return digits;
+    }
+
+    private static String fixed(final double v, final int decimals) {
+        return String.format(Locale.ROOT, "%." + decimals + "f", v);
     }
 }

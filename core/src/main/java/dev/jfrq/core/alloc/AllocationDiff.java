@@ -17,7 +17,7 @@ import dev.jfrq.core.model.Stack;
  * Compares two allocation reports, a baseline and a candidate, by <em>rate</em>
  * (bytes per second) rather than by total, so that recordings of different lengths are
  * comparable. Threads are matched by name, classes by name, and sites either by full stack
- * ({@link #sites(int)}) or by the fold a reader is shown ({@link #sites(SiteKey, int)}); a
+ * ({@link #sitesByStack(int)}) or by the fold a reader is shown ({@link #sites(SiteKey, int)}); a
  * key present on one side only is reported against zero on the other.
  *
  * @param baseline the "before" report

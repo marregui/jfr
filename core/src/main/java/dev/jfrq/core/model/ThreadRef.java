@@ -6,13 +6,20 @@ package dev.jfrq.core.model;
 import jdk.jfr.consumer.RecordedThread;
 
 /**
- * A thread as JFR identifies it: the Java thread id plus the name it had when the event
- * was written. Two events attributed to the same thread compare equal.
+ * A thread as JFR identifies it: the Java thread id plus the name JFR recorded for it.
+ * Two events attributed to the same thread compare equal.
  *
- * @param id   the Java thread id, or the OS thread id for threads without a Java identity
- * @param name the Java thread name, falling back to the OS name, then {@code thread#<id>}
+ * @param id      the Java thread id, or the OS thread id for threads without a Java identity
+ * @param name    the Java thread name, falling back to the OS name, then {@code thread#<id>}
+ * @param isVirtual whether it is a virtual thread; an allocation sample on one is weighted by
+ *                what its carrier allocated, not by what it did ({@code AllocationCollector})
  */
-public record ThreadRef(long id, String name) {
+public record ThreadRef(long id, String name, boolean isVirtual) {
+
+    /** A platform thread. */
+    public ThreadRef(final long id, final String name) {
+        this(id, name, false);
+    }
 
     public static ThreadRef of(final RecordedThread t) {
         if (t == null) {
@@ -26,7 +33,7 @@ public record ThreadRef(long id, String name) {
         if (name == null || name.isEmpty()) {
             name = "thread#" + id;
         }
-        return new ThreadRef(id, name);
+        return new ThreadRef(id, name, t.isVirtual());
     }
 
     @Override

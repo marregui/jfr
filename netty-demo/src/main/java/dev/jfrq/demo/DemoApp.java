@@ -93,7 +93,7 @@ public final class DemoApp {
         final Background background = new Background();
         try (final SlowBackend backend = scenario.blockingIo() ? new SlowBackend(120, 220) : null;
              final Recorder recorder = recording == null ? null : new Recorder(recording);
-             final Server server = new Server(scenario, registry, backend == null ? -1 : backend.port(), loops)) {
+             final Server server = new Server(scenario, registry, backend == null ? -1 : backend.port(), loops, 0)) {
             final LoadClient load = new LoadClient(server.port(), connections, rate, 2_000_000);
             if (scenario.lock()) {
                 background.flusher(persistence);
@@ -106,12 +106,15 @@ public final class DemoApp {
                 recorder.start();
             }
             load.start();
-            Thread.sleep(duration.toMillis());
-            load.stop();
+            try {
+                Thread.sleep(duration.toMillis());
+            } finally {
+                load.stop();
+            }
             if (recorder != null) {
                 recorder.stop();
             }
-            return new Result(scenario, load.completed(), load.summary(), recording, RequestHandler.lookups());
+            return new Result(scenario, load.completed(), load.summary(), recording, server.lookups());
         } finally {
             background.stop();
         }

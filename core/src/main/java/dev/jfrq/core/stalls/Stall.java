@@ -64,6 +64,6 @@ public record Stall(ThreadRef thread, Interval interval, Verdict verdict, String
     }
 
     public long duration() {
-        return interval.length();
+        return interval.duration();
     }
 }

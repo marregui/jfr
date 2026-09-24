@@ -8,6 +8,9 @@ import java.util.List;
 
 import dev.jfrq.core.coll.IdentityObjObjHashMap;
 import dev.jfrq.core.coll.ObjObjHashMap;
+import dev.jfrq.core.jfr.Events;
+import dev.jfrq.core.jfr.Fields;
+import dev.jfrq.core.jfr.Transient;
 import jdk.jfr.EventType;
 import jdk.jfr.consumer.RecordedClass;
 import jdk.jfr.consumer.RecordedEvent;
@@ -28,7 +31,8 @@ import jdk.jfr.consumer.RecordedThread;
  * first sight of a pool object pays the lookups once and is remembered by identity; the
  * value-keyed tables behind it then make equal stacks from different chunks share one
  * instance too. Those tables are probed with the raw components (a frame's type, method,
- * line and kind; a stack's frame buffer), so a lookup that hits allocates nothing (G-3.4).
+ * line and native bit; a stack's frame buffer), so a lookup that hits allocates nothing
+ * (G-1.5, G-2.2).
  *
  * <p>Identity caches are bounded so that a many-chunk recording cannot pin every
  * chunk's pool objects; when full they are cleared and refilled, which costs at most one
@@ -42,7 +46,7 @@ public final class Interner {
     public static final int IDENTITY_LIMIT = 200_000;
 
     private static final String UNKNOWN = "?";
-    private static final String NO_THREAD_FIELD = "";
+    private static final long SAMPLED_THREAD = Fields.bit(Fields.SAMPLED_THREAD);
     private static final Method NO_METHOD = new Method(UNKNOWN, UNKNOWN);
 
     private final FrameTable frames = new FrameTable(4096);
@@ -53,9 +57,16 @@ public final class Interner {
     private final IdentityObjObjHashMap<RecordedThread, ThreadRef> threadsByIdentity = new IdentityObjObjHashMap<>(256);
     private final IdentityObjObjHashMap<RecordedClass, String> classNamesByIdentity = new IdentityObjObjHashMap<>(1024);
     /** Event types are per chunk; a long recording would otherwise grow this without bound. */
-    private final IdentityObjObjHashMap<EventType, String> threadFieldByType = new IdentityObjObjHashMap<>(64);
+    private final IdentityObjObjHashMap<EventType, TypeFields> fieldsByType = new IdentityObjObjHashMap<>(64);
+    /** The type {@link #fields} resolved last and its mask: consecutive lookups on one event skip the probe. */
+    private EventType lastType;
+    private long lastFields;
     /** Frames of the stack being resolved; grown to the deepest stack seen, reused for life (G-3.3). */
     private Frame[] scratch = new Frame[64];
+
+    /** The {@link Fields} an event type has; a holder because the identity table maps to objects. */
+    private record TypeFields(long present) {
+    }
 
     /** A method's declaring type and name, resolved once per pool object. */
     private record Method(String type, String name) {
@@ -89,7 +100,7 @@ public final class Interner {
 
     /** The canonical instance equal to {@code f}. */
     public Frame frame(final Frame f) {
-        return frames.intern(f.type(), f.method(), f.line(), f.kind());
+        return frames.intern(f.type(), f.method(), f.line(), f.isNative());
     }
 
     /** The thread a {@link RecordedThread} denotes, or {@code null}. */
@@ -116,22 +127,41 @@ public final class Interner {
      * The thread an event belongs to: {@code sampledThread} for the sampler events,
      * {@code eventThread} otherwise, decided once per event type instead of per event.
      */
-    public ThreadRef thread(final RecordedEvent e) {
+    public ThreadRef thread(@Transient final RecordedEvent e) {
+        return Events.thread(e, (fields(e) & SAMPLED_THREAD) != 0 ? Fields.SAMPLED_THREAD : Fields.EVENT_THREAD, this);
+    }
+
+    /**
+     * Which {@link Fields} the event's type has, as a mask of {@link Fields#bit} values:
+     * resolved with {@code hasField} on the first event of each {@code EventType} object,
+     * then by identity. The last type is checked first; the reader calls {@link #thread}
+     * before dispatching, so every sink's lookups on the same event hit that entry.
+     */
+    public long fields(@Transient final RecordedEvent e) {
         final EventType type = e.getEventType();
-        int index = threadFieldByType.keyIndex(type);
-        String field;
-        if (index < 0) {
-            field = threadFieldByType.valueAtQuick(index);
-        } else {
-            field = e.hasField("sampledThread") ? "sampledThread"
-                    : e.hasField("eventThread") ? "eventThread" : NO_THREAD_FIELD;
-            if (threadFieldByType.size() >= IDENTITY_LIMIT) {
-                threadFieldByType.clear();
-                index = threadFieldByType.keyIndex(type);
-            }
-            threadFieldByType.putAt(index, type, field);
+        if (type == lastType) {
+            return lastFields;
         }
-        return field.isEmpty() ? null : thread(e.getThread(field));
+        int index = fieldsByType.keyIndex(type);
+        final TypeFields known;
+        if (index < 0) {
+            known = fieldsByType.valueAtQuick(index);
+        } else {
+            long present = 0;
+            for (int field = 0; field < Fields.COUNT; field++) {
+                if (e.hasField(Fields.nameOf(field))) {
+                    present |= Fields.bit(field);
+                }
+            }
+            if (fieldsByType.size() >= IDENTITY_LIMIT) {
+                fieldsByType.clear();
+                index = fieldsByType.keyIndex(type);
+            }
+            known = fieldsByType.putAt(index, type, new TypeFields(present));
+        }
+        lastType = type;
+        lastFields = known.present();
+        return lastFields;
     }
 
     /** The JVM name of a class ({@code [B}, {@code java.lang.Object}), or {@code null}. */
@@ -162,7 +192,7 @@ public final class Interner {
 
     private Frame frame(final RecordedFrame f) {
         final Method m = method(f.getMethod());
-        return frames.intern(m.type(), m.name(), f.getLineNumber(), f.getType());
+        return frames.intern(m.type(), m.name(), f.getLineNumber(), Frame.isNativeKind(f.getType()));
     }
 
     private Method method(final RecordedMethod m) {
@@ -200,20 +230,20 @@ public final class Interner {
             free = n >>> 1;
         }
 
-        private static int hash(final String type, final String method, final int line, final String kind) {
+        private static int hash(final String type, final String method, final int line, final boolean nativeMethod) {
             int h = type.hashCode();
             h = 31 * h + method.hashCode();
             h = 31 * h + line;
-            h = 31 * h + kind.hashCode();
+            h = 31 * h + (nativeMethod ? 1 : 0);
             return h ^ (h >>> 16);
         }
 
-        Frame intern(final String type, final String method, final int line, final String kind) {
-            int index = hash(type, method, line, kind) & mask;
+        Frame intern(final String type, final String method, final int line, final boolean nativeMethod) {
+            int index = hash(type, method, line, nativeMethod) & mask;
             while (true) {
                 final Frame f = entries[index];
                 if (f == null) {
-                    final Frame created = new Frame(type, method, line, kind);
+                    final Frame created = new Frame(type, method, line, nativeMethod);
                     entries[index] = created;
                     size++;
                     if (--free == 0) {
@@ -221,7 +251,7 @@ public final class Interner {
                     }
                     return created;
                 }
-                if (f.line() == line && f.type().equals(type) && f.method().equals(method) && f.kind().equals(kind)) {
+                if (f.line() == line && f.isNative() == nativeMethod && f.type().equals(type) && f.method().equals(method)) {
                     return f;
                 }
                 index = (index + 1) & mask;
@@ -240,7 +270,7 @@ public final class Interner {
             free = (n >>> 1) - size;
             for (final Frame f : old) {
                 if (f != null) {
-                    int index = hash(f.type(), f.method(), f.line(), f.kind()) & mask;
+                    int index = hash(f.type(), f.method(), f.line(), f.isNative()) & mask;
                     while (entries[index] != null) {
                         index = (index + 1) & mask;
                     }

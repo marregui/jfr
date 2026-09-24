@@ -39,8 +39,8 @@ class ModelTest {
             assertTrue(a.contains(10));
             assertFalse(a.contains(20));
             assertEquals(new Interval(10, 30), a.union(b));
-            assertEquals(10, a.length());
-            assertEquals(new Interval(5, 12), Interval.ofLength(5, 7));
+            assertEquals(10, a.duration());
+            assertEquals(new Interval(5, 12), Interval.ofDuration(5, 7));
         }
 
         @Test
@@ -66,9 +66,9 @@ class ModelTest {
             assertSame(inside, inside.clampTo(window));
             assertSame(window, window.clampTo(window));
             // Disjoint on either side collapses to a point inside the window, never to a negative length.
-            assertEquals(0, new Interval(0, 5).clampTo(window).length());
+            assertEquals(0, new Interval(0, 5).clampTo(window).duration());
             assertEquals(10, new Interval(0, 5).clampTo(window).start());
-            assertEquals(0, new Interval(30, 40).clampTo(window).length());
+            assertEquals(0, new Interval(30, 40).clampTo(window).duration());
             assertEquals(20, new Interval(30, 40).clampTo(window).start());
         }
     }
@@ -92,6 +92,31 @@ class ModelTest {
             final Frame g = new Frame("dev.app.Hidden/0x1234", "run", 0, "JIT compiled");
             assertEquals("dev.app.Hidden/0x1234.run(lambda)", g.pretty());
             assertFalse(app("x", 1).isHidden());
+        }
+
+        @Test
+        void howTheJitRanTheMethodIsNotPartOfTheFrame() {
+            // The same line sampled interpreted, then compiled, then inlined is one frame: the kind
+            // is never printed, and keeping it split one allocation site into stacks that print alike.
+            final Frame interpreted = new Frame("org.lib.NodeId", "parse", 453, "Interpreted");
+            final Frame compiled = new Frame("org.lib.NodeId", "parse", 453, "JIT compiled");
+            final Frame inlined = new Frame("org.lib.NodeId", "parse", 453, "Inlined");
+            assertEquals(interpreted, compiled);
+            assertEquals(interpreted, inlined);
+            assertEquals(interpreted.hashCode(), compiled.hashCode());
+            assertEquals(new Stack(List.of(interpreted), false), new Stack(List.of(compiled), false));
+            // The native bit stays: it is how a frame without a line prints.
+            final Frame poll = new Frame("sun.nio.ch.KQueue", "poll", 0, Frame.NATIVE);
+            assertTrue(poll.isNative());
+            assertFalse(interpreted.isNative());
+            assertFalse(poll.equals(new Frame("sun.nio.ch.KQueue", "poll", 0, "JIT compiled")));
+
+            final Interner interner = new Interner();
+            assertSame(interner.frame(interpreted), interner.frame(compiled));
+            assertSame(interner.frame(compiled), interner.frame(inlined));
+            assertEquals(1, interner.distinctFrames());
+            assertSame(interner.frame(poll), interner.frame(new Frame("sun.nio.ch.KQueue", "poll", 0, "Native")));
+            assertEquals(2, interner.distinctFrames());
         }
 
         @Test
@@ -129,7 +154,7 @@ class ModelTest {
         @Test
         void headTruncates() {
             assertEquals(2, stack.head(2).frames().size());
-            assertTrue(stack.head(2).truncated());
+            assertTrue(stack.head(2).isTruncated());
             assertEquals(stack, stack.head(10));
         }
 
@@ -167,6 +192,8 @@ class ModelTest {
         final ThreadRef t = new ThreadRef(7, "event-loop-1");
         assertEquals("event-loop-1", t.toString());
         assertEquals(new ThreadRef(7, "event-loop-1"), t);
+        assertFalse(t.isVirtual());
+        assertTrue(new ThreadRef(8, "vt-1", true).isVirtual());
         assertNull(ThreadRef.of(null));
     }
 }

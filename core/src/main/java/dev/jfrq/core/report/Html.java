@@ -49,7 +49,10 @@ public final class Html {
     private Html() {
     }
 
-    /** Rows listed in the stalls table; the timeline always shows every stall. */
+    /**
+     * Rows listed in each stalls table at least, whatever {@code --top} says; the timeline
+     * draws every stall, up to {@link #MAX_BOXES_PER_ROW} per thread.
+     */
     static final int MIN_LISTED = 100;
 
     /** Frames a stack row shows. */
@@ -67,6 +70,12 @@ public final class Html {
         p.warnings(report.warnings());
         p.kv("Evidence", "event: exact to the event's timestamps; samples: as good as the sampling density; "
                 + "silence: an absence of samples explained by what covered it");
+        if (report.isNoThreadMatched()) {
+            // The same sentence as the text report: an empty set of tables says nothing.
+            p.kv("Threads", StallReport.NO_THREAD);
+            pauses(p, report);
+            return p.finish();
+        }
 
         p.h2("Threads");
         p.tableStart("Thread", "Samples", "Java cadence", "Native cadence", "Stalls", "Stalled", "Worst");
@@ -108,17 +117,20 @@ public final class Html {
                     + ": some HTTP stacks produce none, so a response being written is invisible here.");
             stallTable(p, report, listedGaps);
         }
+        pauses(p, report);
+        return p.finish();
+    }
 
+    private static void pauses(final Page p, final StallReport report) {
         if (!report.pauses().isEmpty()) {
             p.h2("JVM-wide pauses ≥ gap");
             p.tableStart("At", "Duration", "Kind", "Detail");
             for (final Pause pause : report.pauses()) {
                 p.row(Durations.offset(pause.interval().start() - report.info().startNanos()),
-                        Durations.format(pause.length()), pause.kind().label(), pause.detail());
+                        Durations.format(pause.duration()), pause.kind().label(), pause.detail());
             }
             p.tableEnd();
         }
-        return p.finish();
     }
 
     /** One row per stall, and one copy of each distinct stack: see {@code Text.rows}. */
@@ -161,7 +173,7 @@ public final class Html {
             final List<Box> boxes = new ArrayList<>();
             for (final Pause pause : report.pauses()) {
                 boxes.add(new Box(pause.interval(), "#9e9e9e",
-                        pause.kind().label() + " " + Durations.format(pause.length()) + ": " + pause.detail()));
+                        pause.kind().label() + " " + Durations.format(pause.duration()) + ": " + pause.detail()));
             }
             rows.add(longest(boxes));
         }
@@ -175,8 +187,17 @@ public final class Html {
 
     public static String locks(final ContentionReport report, final int top, final boolean bySite) {
         final Page p = new Page("jfrq locks", report.info());
+        final String none = report.noContention();
+        if (none != null) {
+            // The same answer the text report gives, and for an idle process the same section
+            // after it: empty tables under a zero total would say nothing about why.
+            thresholds(p, report.info());
+            p.raw("<p>" + escape(none) + "</p>\n");
+            workWaits(p, report, top);
+            return p.finish();
+        }
         p.kv("Total blocked time", Durations.format(report.totalNanos()) + " across " + report.waits().size()
-                + " waits");
+                + (report.waits().size() == 1 ? " wait" : " waits"));
         if (report.clippedCount() > 0) {
             p.kv("Clipped to the window", report.clippedCount() + (report.clippedCount() == 1 ? " wait" : " waits")
                     + " began before the recording or outlived it, and count only for the part inside it");
@@ -186,12 +207,13 @@ public final class Html {
         if (bySite) {
             p.h2("Lock sites by total wait");
             p.tableStart("Site", "Kind", "Total", "Waits", "Instances", "Max", "Waiters");
-            for (final ContentionReport.SiteStats s : report.lockSites(top, STACK_FRAMES)) {
+            for (final ContentionReport.SiteStats s : report.lockSites(top)) {
                 p.row(s.locks().size() == 1 ? s.locks().getFirst().pretty() : s.locks().size() + " lock instances",
                         s.kind().label(), Durations.format(s.totalNanos()), s.count(), s.locks().size(),
                         Durations.format(s.maxNanos()), names(s.waiters()));
                 if (!s.longest().stack().isEmpty()) {
-                    p.stackRow(7, s.longest().stack());
+                    // The depth the rows were grouped at, the same as the text report's.
+                    p.stackRow(7, s.longest().stack(), ContentionReport.SITE_FRAMES);
                 }
             }
             p.tableEnd();
@@ -208,24 +230,7 @@ public final class Html {
             p.tableEnd();
         }
 
-        if (!report.workWaits().isEmpty()) {
-            p.h2("Waiting for work: " + report.workWaitThreads()
-                    + (report.workWaitThreads() == 1 ? " thread" : " threads") + " parked on an empty queue");
-            p.kv("Not contention", Durations.format(report.workWaitNanos()) + " across " + report.workWaits().size()
-                    + (report.workWaits().size() == 1 ? " park" : " parks") + ", kept out of the totals above");
-            if (report.perchCount() > 0) {
-                p.kv("Recognised by shape", report.perchCount() + (report.perchCount() == 1 ? " lock" : " locks")
-                        + " with one thread, no holder, and most of the recording parked there, or the same stack as "
-                        + "a lock like that; the rest were recognised by a frame in the idle list. --idle none turns "
-                        + "both off");
-            }
-            p.tableStart("Queue", "Total", "Parks", "Max", "Threads");
-            for (final ContentionReport.LockStats l : report.workWaitLocks(top)) {
-                p.row(l.lock().pretty(), Durations.format(l.totalNanos()), l.count(), Durations.format(l.maxNanos()),
-                        names(l.waiters()));
-            }
-            p.tableEnd();
-        }
+        workWaits(p, report, top);
 
         p.h2("Threads by time blocked");
         p.tableStart("Thread", "Total", "Waits", "Max");
@@ -271,6 +276,32 @@ public final class Html {
         return p.finish();
     }
 
+    /**
+     * The parks that were a worker waiting for its own queue, when there were any: after the
+     * contention in the full report, and as the whole content of an idle process's.
+     */
+    private static void workWaits(final Page p, final ContentionReport report, final int top) {
+        if (report.workWaits().isEmpty()) {
+            return;
+        }
+        p.h2("Waiting for work: " + report.workWaitThreads()
+                + (report.workWaitThreads() == 1 ? " thread" : " threads") + " parked on an empty queue");
+        p.kv("Not contention", Durations.format(report.workWaitNanos()) + " across " + report.workWaits().size()
+                + (report.workWaits().size() == 1 ? " park" : " parks") + ", kept out of the contention totals");
+        if (report.perchCount() > 0) {
+            p.kv("Recognised by shape", report.perchCount() + (report.perchCount() == 1 ? " lock" : " locks")
+                    + " with one thread, no holder, and most of the recording parked there, or the same stack as "
+                    + "a lock like that; the rest were recognised by a frame in the idle list. --idle none turns "
+                    + "both off");
+        }
+        p.tableStart("Queue", "Total", "Parks", "Max", "Threads");
+        for (final ContentionReport.LockStats l : report.workWaitLocks(top)) {
+            p.row(l.lock().pretty(), Durations.format(l.totalNanos()), l.count(), Durations.format(l.maxNanos()),
+                    names(l.waiters()));
+        }
+        p.tableEnd();
+    }
+
     private static String lockTimeline(final ContentionReport report, final int top) {
         final Interval span = report.info().span();
         final List<String> labels = new ArrayList<>();
@@ -297,20 +328,42 @@ public final class Html {
         return timeline(span, labels, rows) + legend;
     }
 
-    public static String alloc(final AllocationReport report, final int top, final SiteKey key) {
+    public static String alloc(final AllocationReport report, final int top, final boolean sites, final SiteKey key) {
         final Page p = new Page("jfrq alloc", report.info());
+        p.warnings(report.warnings());
         p.kv("Source", report.source());
         p.kv("Estimated allocation", Bytes.format(report.totalBytes()) + " over "
                 + Durations.format(report.info().duration()) + " = " + Bytes.rate(report.rate())
                 + " from " + report.samples() + " samples");
         if (report.hasCounters()) {
             p.kv("JVM counters", Bytes.format(report.countedBytes()) + " on " + report.countedByThread().size()
-                    + " threads seen at both ends of the file; the estimate for those is "
-                    + Bytes.format(report.estimatedOnCountedThreads()) + (report.estimateErrorMaterial()
+                    + (report.countedByThread().size() == 1 ? " thread" : " threads")
+                    + " seen at both ends of the file; the estimate for those is "
+                    + Bytes.format(report.estimatedOnCountedThreads()) + (report.isEstimateErrorMaterial()
                     ? String.format(Locale.ROOT, " (%+.0f%%)", report.estimateError() * 100) : "")
                     + (report.totalBytes() > 0
                     ? String.format(Locale.ROOT, ", %.1f%% of the estimate above", report.countedCoverage() * 100)
                     : ""));
+        }
+        if (report.samples() == 0) {
+            if (report.events() == 0) {
+                p.para("No allocation events. Record with the 'profile' settings, or enable jdk.ObjectAllocationSample.");
+            } else {
+                p.para("Every thread was sampled once, and a thread's first sample carries its history from before "
+                        + "the recording, so none is in the estimate (docs/DESIGN.md, section 2). Record for longer, "
+                        + "or read the JVM's counters below.");
+            }
+            if (report.hasCounters()) {
+                p.h2("By thread (JVM counters)");
+                p.tableStart("Thread", "Counted");
+                final List<Map.Entry<String, Long>> rows = new ArrayList<>(report.countedByThread().entrySet());
+                rows.sort(Map.Entry.<String, Long>comparingByValue().reversed());
+                for (final Map.Entry<String, Long> e : rows.subList(0, Math.min(top, rows.size()))) {
+                    p.row(e.getKey(), Bytes.format(e.getValue()));
+                }
+                p.tableEnd();
+            }
+            return p.finish();
         }
 
         p.h2("By thread");
@@ -336,6 +389,9 @@ public final class Html {
         }
         p.tableEnd();
 
+        if (!sites) {
+            return p.finish();
+        }
         p.h2("By site: " + key.description());
         final StringBuilder packages = new StringBuilder();
         for (final AllocationReport.Row<String> root : report.packageRoots(PACKAGES_SHOWN)) {
@@ -356,9 +412,14 @@ public final class Html {
 
     public static String info(final RecordingInfo info) {
         final Page p = new Page("jfrq info", info);
-        p.kv("Threads", Integer.toString(info.threads().size()));
+        p.kv("Threads", info.threads().size() + " seen in events");
         p.kv("Chunks", Integer.toString(info.chunks()));
-        if (!info.hasSettings()) {
+        if (info.hasSettings()) {
+            settingsKv(p, info, "Sampling", "jdk.ExecutionSample", "jdk.NativeMethodSample");
+            settingsKv(p, info, "Thresholds", RecordingSummary.thresholded(info));
+            settingsKv(p, info, "Throttled", RecordingSummary.throttled(info));
+            settingsKv(p, info, "Allocation", "jdk.ObjectAllocationSample", "jdk.ObjectAllocationInNewTLAB");
+        } else {
             p.kv("Settings", "unknown: the recording has no jdk.ActiveSetting events");
         }
         p.h2("Event types");
@@ -367,30 +428,64 @@ public final class Html {
         byCount.sort(Map.Entry.<String, Long>comparingByValue().reversed().thenComparing(Map.Entry.comparingByKey()));
         for (final Map.Entry<String, Long> e : byCount) {
             final String type = e.getKey();
-            p.row(type, e.getValue(), info.settings().containsKey(type) ? (info.enabled(type) ? "yes" : "no") : "",
+            p.row(type, e.getValue(), info.settings().containsKey(type) ? (info.isEnabled(type) ? "yes" : "no") : "",
                     info.threshold(type).map(Durations::format).orElse(""),
                     info.period(type).map(Durations::format).or(() -> info.setting(type, "period")).orElse(""),
                     info.throttle(type).orElse(""));
         }
         p.tableEnd();
+
+        final List<RecordingSummary.Family> families = RecordingSummary.threadFamilies(info);
+        if (!families.isEmpty()) {
+            p.h2("Threads (the names --thread matches)");
+            p.tableStart("Family", "Count", "Example");
+            for (final RecordingSummary.Family f : families) {
+                p.row(f.count() > 1 ? f.name() + "*" : f.example(), f.count(), f.count() > 1 ? f.example() : "");
+            }
+            p.tableEnd();
+        }
         return p.finish();
     }
 
-    public static String allocDiff(final AllocationDiff diff, final int top, final SiteKey key) {
+    /** One settings line of {@code info}, left out when none of {@code types} has a setting. */
+    private static void settingsKv(final Page p, final RecordingInfo info, final String label, final String... types) {
+        final String settings = RecordingSummary.settings(info, types);
+        if (!settings.isEmpty()) {
+            p.kv(label, settings);
+        }
+    }
+
+    public static String allocDiff(final AllocationDiff diff, final int top, final boolean sites, final SiteKey key) {
         final Page p = new Page("jfrq alloc diff", diff.current().info());
         p.kv("Baseline", diff.baseline().info().file().toString() + " (" + Bytes.rate(diff.baseline().rate()) + ")");
         final List<String> baselineWarnings = new ArrayList<>();
         for (final String w : diff.baseline().info().warnings()) {
             baselineWarnings.add("baseline: " + w);
         }
+        for (final String w : diff.baseline().warnings()) {
+            baselineWarnings.add("baseline: " + w);
+        }
         p.warnings(baselineWarnings);
         p.kv("Current", diff.current().info().file().toString() + " (" + Bytes.rate(diff.current().rate()) + ")");
+        final List<String> currentWarnings = new ArrayList<>();
+        for (final String w : diff.current().warnings()) {
+            currentWarnings.add("current: " + w);
+        }
+        p.warnings(currentWarnings);
         p.kv("Change", Bytes.signedRate(diff.total().delta()) + " (" + ratio(diff.total().ratio()) + ")");
+        p.para("Rates are bytes/second so recordings of different length compare. The sample counts are the "
+                + "evidence behind each change: a few hundred percent on a handful of samples is noise, not a finding.");
 
+        final AllocationReport.Support before = diff.baseline().support();
+        final AllocationReport.Support after = diff.current().support();
         p.h2("By thread");
-        deltaTable(p, diff.threads(top), k -> k);
+        deltaTable(p, "Thread", diff.threads(top), k -> k, k -> before.thread(k) + " -> " + after.thread(k));
         p.h2("By class");
-        deltaTable(p, diff.classes(top), ClassNames::pretty);
+        deltaTable(p, "Class", diff.classes(top), ClassNames::pretty,
+                k -> before.className(k) + " -> " + after.className(k));
+        if (!sites) {
+            return p.finish();
+        }
         p.h2("By site: " + key.description());
         p.tableStart("Site", "Before", "After", "Change", "Samples");
         for (final AllocationDiff.Delta<AllocationDiff.Site> d : diff.sites(key, top)) {
@@ -403,12 +498,13 @@ public final class Html {
         return p.finish();
     }
 
-    private static <K> void deltaTable(final Page p, final List<AllocationDiff.Delta<K>> deltas,
-                                       final Function<K, String> name) {
-        p.tableStart("Key", "Before", "After", "Change");
+    /** Rates on both sides, the change, and the samples behind each side, which say whether the change is noise. */
+    private static <K> void deltaTable(final Page p, final String keyHeader, final List<AllocationDiff.Delta<K>> deltas,
+                                       final Function<K, String> name, final Function<K, String> samples) {
+        p.tableStart(keyHeader, "Before", "After", "Change", "Samples");
         for (final AllocationDiff.Delta<K> d : deltas) {
             p.row(name.apply(d.key()), Bytes.rate(d.beforeRate()), Bytes.rate(d.afterRate()),
-                    Bytes.signedRate(d.delta()) + " (" + ratio(d.ratio()) + ")");
+                    Bytes.signedRate(d.delta()) + " (" + ratio(d.ratio()) + ")", samples.apply(d.key()));
         }
         p.tableEnd();
     }
@@ -462,7 +558,7 @@ public final class Html {
             return boxes;
         }
         final List<Box> sorted = new ArrayList<>(boxes);
-        sorted.sort(Comparator.comparingLong((Box b) -> b.interval().length()).reversed());
+        sorted.sort(Comparator.comparingLong((Box b) -> b.interval().duration()).reversed());
         final List<Box> kept = new ArrayList<>(sorted.subList(0, MAX_BOXES_PER_ROW));
         kept.sort(Comparator.comparing(Box::interval));
         return kept;
@@ -488,7 +584,7 @@ public final class Html {
     }
 
     private static String timeline(final Interval span, final List<String> labels, final List<List<Box>> rows) {
-        final double scale = span.length() <= 0 ? 0 : (double) TIMELINE_WIDTH / span.length();
+        final double scale = span.duration() <= 0 ? 0 : (double) TIMELINE_WIDTH / span.duration();
         final int height = rows.size() * ROW_HEIGHT + 20;
         final StringBuilder svg = new StringBuilder();
         svg.append("<svg class=\"timeline\" viewBox=\"0 0 ").append(LABEL_WIDTH + TIMELINE_WIDTH + 10).append(' ')
@@ -501,7 +597,7 @@ public final class Html {
                     .append(TIMELINE_WIDTH).append("\" height=\"").append(ROW_HEIGHT - 6).append("\" class=\"track\"/>\n");
             for (final Box b : rows.get(r)) {
                 final double x = LABEL_WIDTH + (b.interval.start() - span.start()) * scale;
-                final double w = Math.max(1.5, b.interval.length() * scale);
+                final double w = Math.max(1.5, b.interval.duration() * scale);
                 svg.append("<rect x=\"").append(fmt(x)).append("\" y=\"").append(y + 3).append("\" width=\"").append(fmt(w))
                         .append("\" height=\"").append(ROW_HEIGHT - 6).append("\" fill=\"").append(b.colour)
                         .append("\"><title>").append(escape(b.title)).append("</title></rect>\n");
@@ -510,7 +606,7 @@ public final class Html {
         final int axisY = rows.size() * ROW_HEIGHT + 12;
         for (int t = 0; t <= 10; t++) {
             final double x = LABEL_WIDTH + t * (TIMELINE_WIDTH / 10.0);
-            final long nanos = (long) (span.length() * (t / 10.0));
+            final long nanos = (long) (span.duration() * (t / 10.0));
             svg.append("<text x=\"").append(fmt(x)).append("\" y=\"").append(axisY).append("\" class=\"axis\">")
                     .append(Durations.offset(nanos)).append("</text>\n");
         }
@@ -579,6 +675,11 @@ public final class Html {
             sb.append("</ul><dl>");
         }
 
+        /** A sentence of explanation between the sections. */
+        void para(final String text) {
+            sb.append("</dl>\n<p>").append(escape(text)).append("</p>\n<dl>");
+        }
+
         void h2(final String text) {
             sb.append("</dl>\n<h2>").append(escape(text)).append("</h2>\n<dl>");
         }
@@ -610,8 +711,12 @@ public final class Html {
         }
 
         void stackRow(final int colspan, final Stack stack) {
+            stackRow(colspan, stack, STACK_FRAMES);
+        }
+
+        void stackRow(final int colspan, final Stack stack, final int frames) {
             sb.append("<tr class=\"stack\"><td colspan=\"").append(colspan).append("\"><pre>")
-                    .append(escape(stack.pretty("", STACK_FRAMES))).append("</pre></td></tr>\n");
+                    .append(escape(stack.pretty("", frames))).append("</pre></td></tr>\n");
         }
 
         /** A line in a stack's place, for a stack that is already on the page. */

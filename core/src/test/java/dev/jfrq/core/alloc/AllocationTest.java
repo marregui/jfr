@@ -7,20 +7,32 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.management.ManagementFactory;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 
+import com.sun.management.ThreadMXBean;
+import dev.jfrq.core.jfr.JfrFixtures;
+import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
+import dev.jfrq.core.model.ThreadRef;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class AllocationTest {
 
     static final long S = 1_000_000_000L;
+    /** Where the allocating tasks write, so the allocation is not optimised away. */
+    static volatile Object sink;
     static final Stack SITE_A = new Stack(List.of(new Frame("dev.app.A", "alloc", 1, "JIT compiled")), false);
     static final Stack SITE_B = new Stack(List.of(new Frame("dev.app.B", "alloc", 2, "JIT compiled")), false);
 
@@ -38,11 +50,11 @@ class AllocationTest {
     /** One sample per key unless a test says otherwise: enough for the counts to be present. */
     static AllocationReport.Support support(final Map<String, Long> byThread, final Map<String, Long> byClass,
                                             final Map<Stack, Long> bySite) {
-        final Map<String, Long> threads = new java.util.HashMap<>();
+        final Map<String, Long> threads = new HashMap<>();
         byThread.forEach((k, _) -> threads.put(k, 1L));
-        final Map<String, Long> classes = new java.util.HashMap<>();
+        final Map<String, Long> classes = new HashMap<>();
         byClass.forEach((k, _) -> classes.put(k, 1L));
-        final Map<Stack, Long> sites = new java.util.HashMap<>();
+        final Map<Stack, Long> sites = new HashMap<>();
         bySite.forEach((k, _) -> sites.put(k, 1L));
         return new AllocationReport.Support(threads, classes, sites);
     }
@@ -61,7 +73,7 @@ class AllocationTest {
         assertEquals(1000, some.countedBytes());
         assertEquals(1070, some.estimatedOnCountedThreads());
         assertEquals(0.07, some.estimateError(), 1e-9);
-        assertTrue(some.estimateErrorMaterial());
+        assertTrue(some.isEstimateErrorMaterial());
         assertEquals(1000L, some.counted("worker").orElseThrow());
         assertTrue(some.counted("short-lived").isEmpty());
         // The +7 % is a statement about 68 % of the estimate: the short-lived thread has no counter.
@@ -72,7 +84,104 @@ class AllocationTest {
                 Map.of("main", 20L), Map.of("main", 480L, "worker", 999_520L), Map.of(), Map.of(), Map.of(), Map.of(),
                 AllocationReport.Support.NONE);
         assertTrue(noise.hasCounters());
-        assertFalse(noise.estimateErrorMaterial());
+        assertFalse(noise.isEstimateErrorMaterial());
+        // What decides it is the estimate on the counted threads, not their counters: this one's counter grew
+        // by 1 GB, but it was sampled for 1 MB of a 201 MB estimate, so the -100 % is about half a percent of it.
+        final AllocationReport minority = new AllocationReport(info("a.jfr", 1), "jdk.ObjectAllocationSample",
+                201_000_000, 100, 100, Map.of("counted", 1_000_000_000L),
+                Map.of("counted", 1_000_000L, "pool-1", 200_000_000L), Map.of(), Map.of(), Map.of(), Map.of(),
+                AllocationReport.Support.NONE);
+        assertEquals(1_000_000.0 / 201_000_000.0, minority.countedCoverage(), 1e-9);
+        assertFalse(minority.isEstimateErrorMaterial());
+    }
+
+    @Test
+    void aVirtualThreadLosesItsFirstSampleAndTheReportSaysHowMuch() {
+        // A virtual thread's first sample is weighed by its carrier's allocation since the carrier
+        // was last sampled, which for a carrier new to the recording is its whole history.
+        final ThreadRef worker = new ThreadRef(1, "worker");
+        final ThreadRef vt1 = new ThreadRef(2, "vt-1", true);
+        final ThreadRef vt2 = new ThreadRef(3, "vt-2", true);
+        final AllocationCollector c = new AllocationCollector();
+        c.sample(worker, 2 * S, 400, "[B", SITE_A);
+        c.sample(worker, S, 100_000, "[B", SITE_A);
+        c.sample(vt1, 4 * S, 700, null, SITE_B);
+        c.sample(vt1, 3 * S, 5_000_000, null, SITE_B);
+        c.sample(vt2, 3 * S, 900, "[B", SITE_B);
+        c.finish(info("a.jfr", 10));
+        final AllocationReport r = c.report();
+
+        assertEquals(5, r.events());
+        assertEquals(2, r.samples());
+        assertEquals(1_100, r.totalBytes());
+        // Each thread lost its earliest sample by time, not by arrival.
+        assertEquals(Map.of("worker", 400L, "vt-1", 700L), r.byThread());
+        assertEquals(Map.of(SITE_A, 400L, SITE_B, 700L), r.bySite());
+        assertEquals(1, r.support().thread("vt-1"));
+        // The platform thread's first sample is not in the count: only the virtual threads' are.
+        assertEquals(new AllocationReport.Dropped(2, 5_000_900), r.virtualFirsts());
+        assertEquals(1, r.warnings().size());
+        assertTrue(r.warnings().getFirst().contains("2 first samples of virtual threads, 5.00 MB, not counted"),
+                r.warnings().getFirst());
+    }
+
+    @Test
+    void withoutVirtualThreadsThereIsNoWarning() {
+        final AllocationCollector c = new AllocationCollector();
+        c.sample(new ThreadRef(1, "worker"), S, 400, "[B", SITE_A);
+        c.sample(new ThreadRef(1, "worker"), 2 * S, 400, "[B", SITE_A);
+        c.finish(info("a.jfr", 10));
+        assertEquals(AllocationReport.Dropped.NONE, c.report().virtualFirsts());
+        assertEquals(List.of(), c.report().warnings());
+    }
+
+    @Test
+    void virtualThreadsDoNotReportTheirCarriersHistory(@TempDir final Path dir) throws Exception {
+        // The carriers allocate a gigabyte before the recording, with the sampler off, so none of
+        // them has been sampled since; inside it, virtual threads allocate a sixteenth of that. A
+        // virtual thread's first sample on a carrier carries the carrier's gigabyte.
+        final int tasks = 64;
+        allocateOnVirtualThreads(tasks, 16 << 20);
+        final ThreadMXBean threads =
+                (ThreadMXBean) ManagementFactory.getThreadMXBean();
+        final long[] allocated = new long[2];
+        final Path file = JfrFixtures.record(dir, "vthreads",
+                r -> r.enable("jdk.ObjectAllocationSample").with("throttle", "1000/s"), () -> {
+                    allocated[0] = threads.getTotalThreadAllocatedBytes();
+                    allocateOnVirtualThreads(tasks, 1 << 20);
+                    allocated[1] = threads.getTotalThreadAllocatedBytes();
+                });
+        final AllocationCollector collector = new AllocationCollector();
+        JfrReader.read(file, collector);
+        final AllocationReport report = collector.report();
+
+        // Every platform thread's allocation while the recording ran, carriers included: an
+        // upper bound on what the virtual threads allocated in it.
+        final long truth = allocated[1] - allocated[0];
+        long estimate = 0;
+        for (final Map.Entry<String, Long> e : report.byThread().entrySet()) {
+            if (e.getKey().startsWith("vt-")) {
+                estimate += e.getValue();
+            }
+        }
+        assertTrue(estimate <= 2 * truth, "estimated " + estimate + " for " + truth + " allocated");
+        // The history was there to be counted, and the report says it was not.
+        assertTrue(report.virtualFirsts().samples() > 0);
+        assertTrue(report.virtualFirsts().bytes() > truth, report.virtualFirsts() + " against " + truth);
+        assertTrue(report.warnings().getFirst().startsWith("allocation on virtual threads is under-counted"));
+    }
+
+    private static void allocateOnVirtualThreads(final int tasks, final int bytesPerTask) {
+        final ThreadFactory factory = Thread.ofVirtual().name("vt-", 0).factory();
+        try (final ExecutorService executor = Executors.newThreadPerTaskExecutor(factory)) {
+            for (int i = 0; i < tasks; i++) {
+                executor.submit(() -> {
+                    for (int k = 0; k < bytesPerTask / 1024; k++) {
+                        sink = new byte[1024 - 16];
+                    }
+                });
+            }
+        }
     }
 
     @Test
@@ -140,7 +249,7 @@ class AllocationTest {
         assertEquals(300, roots.getFirst().bytes());
     }
 
-    /** A stack allocating inside {@code org.lib.NodeId.parse}, reached through {@code through}. */
+    /** A stack allocating inside {@code org.lib.NodeId.parse} on {@code line}, reached through {@code type.method}. */
     private static Stack parsePath(final String type, final String method, final int line) {
         return new Stack(List.of(new Frame(type, method, 2904, "JIT compiled"),
                 new Frame("org.lib.NodeId", "parse", line, "JIT compiled"),

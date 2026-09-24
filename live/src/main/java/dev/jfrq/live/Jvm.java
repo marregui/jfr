@@ -3,6 +3,7 @@
 
 package dev.jfrq.live;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.RuntimeMXBean;
@@ -25,7 +26,7 @@ import jdk.management.jfr.FlightRecorderMXBean;
  * {@code -XX:+DisableAttachMechanism}, and a target runtime that carries
  * {@code jdk.management.agent} (every full JDK; a jlinked image may not).
  */
-public final class Jvm implements AutoCloseable {
+public final class Jvm implements Closeable {
 
     private static final String FLIGHT_RECORDER = "jdk.management.jfr:type=FlightRecorder";
     private static final String RMI_HOSTNAME = "java.rmi.server.hostname";
@@ -55,19 +56,25 @@ public final class Jvm implements AutoCloseable {
         if (System.getProperty(RMI_HOSTNAME) == null) {
             System.setProperty(RMI_HOSTNAME, "127.0.0.1");
         }
-        VirtualMachine vm;
+        final VirtualMachine vm;
         try {
             vm = VirtualMachine.attach(pid);
         } catch (final AttachNotSupportedException | IOException e) {
             throw new IOException("cannot attach to " + pid + ": " + e.getMessage(), e);
         }
-        String address;
+        final String address;
         try {
             // Idempotent: a JVM whose agent is already running answers with the same address.
             address = vm.startLocalManagementAgent();
-        } finally {
-            vm.detach();
+        } catch (final IOException | RuntimeException | Error e) {
+            try {
+                vm.detach();
+            } catch (final IOException | RuntimeException | Error d) {
+                e.addSuppressed(d);
+            }
+            throw e;
         }
+        vm.detach();
         final JMXConnector connector = JMXConnectorFactory.connect(new JMXServiceURL(address));
         try {
             final MBeanServerConnection mbsc = connector.getMBeanServerConnection();
@@ -76,8 +83,12 @@ public final class Jvm implements AutoCloseable {
             final RuntimeMXBean runtime = ManagementFactory.newPlatformMXBeanProxy(mbsc,
                     ManagementFactory.RUNTIME_MXBEAN_NAME, RuntimeMXBean.class);
             return new Jvm(pid, connector, fr, runtime);
-        } catch (final IOException | RuntimeException e) {
-            connector.close();
+        } catch (final IOException | RuntimeException | Error e) {
+            try {
+                connector.close();
+            } catch (final IOException | RuntimeException | Error c) {
+                e.addSuppressed(c);
+            }
             throw e;
         }
     }

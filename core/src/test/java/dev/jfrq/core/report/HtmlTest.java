@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -68,7 +69,7 @@ class HtmlTest {
 
     @Test
     void stallsTableIsCappedAndTheTimelineKeepsTheLongestBoxes() {
-        final List<Stall> many = new java.util.ArrayList<>();
+        final List<Stall> many = new ArrayList<>();
         for (int i = 0; i < Html.MIN_LISTED + 1; i++) {
             many.add(new Stall(LOOP, new Interval(i * 10 * MS, i * 10 * MS + 5 * MS), Stall.Verdict.SLEEP, "s" + i,
                     Stack.EMPTY, Stall.Evidence.EVENT, 0));
@@ -81,7 +82,7 @@ class HtmlTest {
         assertEquals(Html.MIN_LISTED + 1, html.split("<title>SLEEP").length - 1);
 
         // Past the cap, the longest boxes are drawn and the file stays bounded.
-        final List<Stall> flood = new java.util.ArrayList<>();
+        final List<Stall> flood = new ArrayList<>();
         for (int i = 0; i < Html.MAX_BOXES_PER_ROW + 500; i++) {
             final long length = i < 500 ? 9 * MS : MS;
             flood.add(new Stall(LOOP, new Interval(i * 10 * MS, i * 10 * MS + length), Stall.Verdict.SLEEP, "f" + i,
@@ -111,12 +112,43 @@ class HtmlTest {
     }
 
     @Test
+    void infoPageSaysWhatTheTextSays() {
+        // The settings lines and the thread families, which the text report prints and the page left out.
+        final RecordingInfo info = new RecordingInfo(Path.of("rec.jfr"), new Interval(0, MS), 1,
+                Map.of("jdk.SocketWrite", 3L),
+                Map.of("jdk.SocketWrite", Map.of("enabled", "true", "threshold", "1 ms"),
+                        "jdk.ExecutionSample", Map.of("enabled", "true", "period", "10 ms"),
+                        "jdk.ObjectAllocationSample", Map.of("enabled", "true", "throttle", "1000/s")),
+                Set.of(new ThreadRef(1, "pool-3-thread-2"), new ThreadRef(2, "pool-3-thread-1"), LOOP),
+                List.of());
+        final String html = Html.info(info);
+        assertTrue(html.contains("<dt>Threads</dt><dd>3 seen in events</dd>"), html);
+        assertTrue(html.contains("<dt>Sampling</dt><dd>ExecutionSample 10.0 ms</dd>"), html);
+        assertTrue(html.contains("<dt>Thresholds</dt><dd>SocketWrite 1.00 ms</dd>"), html);
+        assertTrue(html.contains("<dt>Throttled</dt><dd>ObjectAllocationSample 1000/s</dd>"), html);
+        assertTrue(html.contains("<dt>Allocation</dt><dd>ObjectAllocationSample 1000/s</dd>"), html);
+        assertTrue(html.contains("<h2>Threads (the names --thread matches)</h2>"), html);
+        assertTrue(html.contains("<tr><td>pool-N-thread-N*</td><td class=\"n\">2</td><td>pool-3-thread-1</td></tr>"),
+                html);
+        // A family of one is named by its thread: "event-loop-N" is not a name --thread can match.
+        assertTrue(html.contains("<tr><td>event-loop-1</td><td class=\"n\">1</td><td></td></tr>"), html);
+
+        // A file without settings says so once, and has no settings lines to show.
+        final RecordingInfo bare = new RecordingInfo(Path.of("rec.jfr"), new Interval(0, MS), 1, Map.of(), Map.of(),
+                Set.of(), List.of());
+        final String page = Html.info(bare);
+        assertTrue(page.contains("<dt>Settings</dt><dd>unknown: the recording has no jdk.ActiveSetting events</dd>"));
+        assertFalse(page.contains("<dt>Sampling</dt>"), page);
+        assertFalse(page.contains("Threads (the names"), page);
+    }
+
+    @Test
     void fileWarningsAppearOnEveryPage() {
         final RecordingInfo damaged = new RecordingInfo(Path.of("cut.jfr"), new Interval(0, MS), 1, Map.of(), Map.of(), Set.of(),
                 List.of("the file is truncated: <cut>"));
         final AllocationReport a = new AllocationReport(damaged, "jdk.ObjectAllocationSample", 0, 0, 0, Map.of(),
                 Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), AllocationReport.Support.NONE);
-        assertTrue(Html.alloc(a, 5, SiteKey.culpritMethod()).contains("<li>the file is truncated: &lt;cut&gt;</li>"));
+        assertTrue(Html.alloc(a, 5, true, SiteKey.culpritMethod()).contains("<li>the file is truncated: &lt;cut&gt;</li>"));
         assertTrue(Html.locks(new ContentionReport(damaged, List.of()), 5, false).contains("class=\"warn\""));
         final StallReport r = new StallReport(damaged, MS, List.of(), List.of(), List.of(), List.of());
         assertTrue(Html.stalls(r, 5).contains("the file is truncated"));
@@ -149,6 +181,19 @@ class HtmlTest {
     }
 
     @Test
+    void aStallsPageWithNoThreadSaysSoAndStillListsThePauses() {
+        final Pause gc = new Pause(new Interval(100 * MS, 400 * MS), PauseKind.GC, "Full (gcId 9)");
+        final StallReport r = new StallReport(info(), 50 * MS, List.of(), List.of(), List.of(gc),
+                List.of("1 matching thread has no samples and no blocking events, so nothing to judge by (VM Thread)"));
+        final String html = Html.stalls(r, 10);
+        assertTrue(html.contains("No thread matched that has a sample or a blocking event."), html);
+        assertTrue(html.contains("JVM-wide pauses"), html);
+        assertTrue(html.contains("Full (gcId 9)"), html);
+        assertTrue(html.contains("(VM Thread)"), html);
+        assertFalse(html.contains("<h2>Threads</h2>"), html);
+    }
+
+    @Test
     void stallsPageWithoutPausesOrWarnings() {
         final StallReport r = new StallReport(info(), 50 * MS, List.of(), List.of(), List.of(), List.of());
         final String html = Html.stalls(r, 10);
@@ -176,14 +221,54 @@ class HtmlTest {
     }
 
     @Test
+    void locksPageSaysWhyNothingIsListed() {
+        final Wait.LockKey key = new Wait.LockKey("dev.app.Registry", 0xabc, Wait.Kind.MONITOR_ENTER);
+        final List<Wait> one = List.of(new Wait(new Interval(100 * MS, 300 * MS), LOOP, key, HOLDER, STACK));
+        final String none = Html.locks(new ContentionReport(info(), List.of()), 10, false);
+        assertTrue(none.contains("<p>No contended monitor enters or parks in the recording"), none);
+        assertFalse(none.contains("Total blocked time"), none);
+        final String filtered = Html.locks(new ContentionReport(info(), one, 0, name -> name.equals("nobody")), 10,
+                false);
+        assertTrue(filtered.contains("match the filters (--thread, --min, --lock); 1 in the recording."), filtered);
+
+        // A queue a pool worker idles on for the whole window is the page's one section.
+        final Stack noWork = new Stack(List.of(
+                new Frame("java.util.concurrent.LinkedBlockingQueue", "take", 435, "JIT compiled"),
+                new Frame("java.util.concurrent.ThreadPoolExecutor", "getTask", 1070, "JIT compiled")), false);
+        final Wait.LockKey queue = new Wait.LockKey("java.util.concurrent.LinkedBlockingQueue", 0x1, Wait.Kind.PARK);
+        final String idle = Html.locks(new ContentionReport(info(), List.of(
+                new Wait(new Interval(0, 2_000 * MS), LOOP, queue, null, noWork))), 10, false);
+        assertTrue(idle.contains("<p>No contention: every wait was a worker waiting for work"), idle);
+        assertTrue(idle.contains("<h2>Waiting for work: 1 thread parked on an empty queue"), idle);
+        assertFalse(idle.contains("Locks by total wait"), idle);
+    }
+
+    @Test
+    void lockSitesPrintTheStackToTheDepthTheyAreGroupedAt() {
+        final List<Frame> frames = new ArrayList<>();
+        for (int f = 0; f < 10; f++) {
+            frames.add(new Frame("dev.app.Layer" + f, "call", 1, "JIT compiled"));
+        }
+        final Wait.LockKey queue = new Wait.LockKey("dev.app.Queue", 0x1, Wait.Kind.PARK);
+        final ContentionReport r = new ContentionReport(info(), List.of(
+                new Wait(new Interval(100 * MS, 300 * MS), LOOP, queue, null, new Stack(frames, false))));
+        final String html = Html.locks(r, 10, true);
+        final int from = html.indexOf("<h2>Lock sites by total wait");
+        final String sites = html.substring(from, html.indexOf("<h2>", from + 1));
+        assertTrue(sites.contains("Layer" + (ContentionReport.SITE_FRAMES - 1) + ".call"), sites);
+        assertFalse(sites.contains("Layer" + ContentionReport.SITE_FRAMES + ".call"), sites);
+        assertTrue(html.contains("Total blocked time</dt><dd>200 ms across 1 wait</dd>"), html);
+    }
+
+    @Test
     void allocAndDiffPages() {
         final AllocationReport a = new AllocationReport(info(), "jdk.ObjectAllocationSample", 1000, 10, 10, Map.of("worker", 950L),
                 Map.of("worker", 1000L), Map.of("[B", 1000L), Map.of(STACK, 1000L),
                 Map.of("worker", Map.of("[B", 1000L)), Map.of("worker", Map.of(STACK, 1000L)),
                 new AllocationReport.Support(Map.of("worker", 7L), Map.of("[B", 7L), Map.of(STACK, 7L)));
-        final String html = Html.alloc(a, 10, SiteKey.culpritMethod());
+        final String html = Html.alloc(a, 10, true, SiteKey.culpritMethod());
         assertTrue(html.contains("By thread"));
-        assertTrue(html.contains("<dt>JVM counters</dt><dd>950 B on 1 threads seen at both ends of the file; "
+        assertTrue(html.contains("<dt>JVM counters</dt><dd>950 B on 1 thread seen at both ends of the file; "
                 + "the estimate for those is 1.00 KB (+5%), 100.0% of the estimate above</dd>"), html);
         assertTrue(html.contains("<td class=\"n\">950 B</td>"), html);
         assertTrue(html.contains("By class"));
@@ -195,11 +280,59 @@ class HtmlTest {
                 Map.of("worker", 500L), Map.of("[B", 500L), Map.of(STACK, 500L),
                 Map.of(), Map.of(), new AllocationReport.Support(Map.of("worker", 3L), Map.of("[B", 3L),
                 Map.of(STACK, 3L)));
-        final String diff = Html.allocDiff(new AllocationDiff(a, b), 10, SiteKey.culpritMethod());
+        final String diff = Html.allocDiff(new AllocationDiff(a, b), 10, true, SiteKey.culpritMethod());
         assertTrue(diff.contains("<title>jfrq alloc diff"));
         assertTrue(diff.contains("Baseline"));
         assertTrue(diff.contains("-50%"));
         assertTrue(diff.contains("By site"));
+        // The samples behind each side, in every table, as in the text report.
+        assertTrue(diff.contains("<th>Thread</th><th>Before</th><th>After</th><th>Change</th><th>Samples</th>"), diff);
+        assertTrue(diff.contains("<td>worker</td><td class=\"n\">500 B/s</td><td class=\"n\">250 B/s</td>"
+                + "<td>-250 B/s (-50%)</td><td>7 -&gt; 3</td>"), diff);
+        assertTrue(diff.contains("<td>byte[]</td>"), diff);
+        assertTrue(diff.contains("a few hundred percent on a handful of samples is noise"), diff);
+
+        // Sites are what --sites asks for, in the HTML report as in the text one.
+        final String noSites = Html.alloc(a, 10, false, SiteKey.culpritMethod());
+        assertTrue(noSites.contains("By class"));
+        assertFalse(noSites.contains("By site"), noSites);
+        assertFalse(noSites.contains("class=\"stack\""), noSites);
+        final String noSitesDiff = Html.allocDiff(new AllocationDiff(a, b), 10, false, SiteKey.culpritMethod());
+        assertTrue(noSitesDiff.contains("By class"));
+        assertFalse(noSitesDiff.contains("By site"), noSitesDiff);
+    }
+
+    @Test
+    void allocPagesWarnThatVirtualThreadsAreUnderCounted() {
+        final AllocationReport vt = new AllocationReport(info(), "jdk.ObjectAllocationSample", 1000, 10, 13, Map.of(),
+                Map.of("vt-1", 1000L), Map.of("[B", 1000L), Map.of(STACK, 1000L), Map.of(), Map.of(),
+                AllocationReport.Support.NONE, new AllocationReport.Dropped(3, 4_000_000_000L));
+        final String html = Html.alloc(vt, 10, false, SiteKey.culpritMethod());
+        assertTrue(html.contains("<ul class=\"warn\"><li>allocation on virtual threads is under-counted, and can "
+                + "still be over-counted: 3 first samples of virtual threads, 4.00 GB, not counted"), html);
+        final String diff = Html.allocDiff(new AllocationDiff(vt, vt), 10, false, SiteKey.culpritMethod());
+        assertTrue(diff.contains("<li>baseline: allocation on virtual threads"), diff);
+        assertTrue(diff.contains("<li>current: allocation on virtual threads"), diff);
+    }
+
+    @Test
+    void allocPageWithoutSamplesSaysWhyAndShowsTheCounters() {
+        // Every thread sampled once: nothing is left in the estimate, and the counters are the answer.
+        final AllocationReport once = new AllocationReport(info(), "jdk.ObjectAllocationSample", 0, 0, 3,
+                Map.of("worker", 950L, "main", 20L), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(),
+                AllocationReport.Support.NONE);
+        final String html = Html.alloc(once, 10, true, SiteKey.culpritMethod());
+        assertTrue(html.contains("Every thread was sampled once"), html);
+        assertTrue(html.contains("<h2>By thread (JVM counters)</h2>"), html);
+        assertTrue(html.indexOf("<td>worker</td><td class=\"n\">950 B</td>") < html.indexOf("<td>main</td>"), html);
+        assertFalse(html.contains("By site"), html);
+        assertFalse(html.contains("<h2>By class</h2>"), html);
+
+        final AllocationReport none = new AllocationReport(info(), "jdk.ObjectAllocationSample", 0, 0, 0, Map.of(),
+                Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), AllocationReport.Support.NONE);
+        final String empty = Html.alloc(none, 10, true, SiteKey.culpritMethod());
+        assertTrue(empty.contains("No allocation events."), empty);
+        assertFalse(empty.contains("JVM counters"), empty);
     }
 
     @Test

@@ -10,6 +10,7 @@ import java.time.Duration;
 
 import jdk.jfr.Configuration;
 import jdk.jfr.Recording;
+import jdk.jfr.RecordingState;
 
 /**
  * Starts an in-process JFR recording tuned for the questions jfrq asks. The tuning is
@@ -34,42 +35,57 @@ final class Recorder implements AutoCloseable {
     private final Recording recording;
     private boolean closed;
 
+    /** Configures the recording; closes it again if any step fails, so a bad destination leaks nothing (G-4.2). */
     Recorder(final Path destination) throws IOException, ParseException {
         recording = new Recording(Configuration.getConfiguration("profile"));
-        recording.setName("jfrq-demo");
-        final Duration oneMs = Duration.ofMillis(1);
-        for (final String blocking : new String[] {"jdk.JavaMonitorEnter", "jdk.ThreadPark", "jdk.ThreadSleep",
-                "jdk.JavaMonitorWait"}) {
-            recording.enable(blocking).withThreshold(oneMs).withStackTrace();
+        try {
+            recording.setName("jfrq-demo");
+            final Duration oneMs = Duration.ofMillis(1);
+            for (final String blocking : new String[] {"jdk.JavaMonitorEnter", "jdk.ThreadPark", "jdk.ThreadSleep",
+                    "jdk.JavaMonitorWait"}) {
+                recording.enable(blocking).withThreshold(oneMs).withStackTrace();
+            }
+            for (final String io : new String[] {"jdk.SocketRead", "jdk.SocketWrite", "jdk.FileRead", "jdk.FileWrite"}) {
+                recording.enable(io).withThreshold(oneMs).withStackTrace().with("throttle", "off");
+            }
+            recording.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(10));
+            recording.enable("jdk.NativeMethodSample").withPeriod(Duration.ofMillis(10));
+            recording.enable("jdk.ObjectAllocationSample").with("throttle", "1000/s").withStackTrace();
+            recording.enable("jdk.GCPhasePause").withThreshold(Duration.ZERO);
+            recording.enable("jdk.SafepointBegin").withThreshold(Duration.ZERO);
+            recording.enable("jdk.SafepointEnd").withThreshold(Duration.ZERO);
+            recording.setDestination(destination);
+            recording.setToDisk(true);
+        } catch (final Throwable e) {
+            close();
+            throw e;
         }
-        for (final String io : new String[] {"jdk.SocketRead", "jdk.SocketWrite", "jdk.FileRead", "jdk.FileWrite"}) {
-            recording.enable(io).withThreshold(oneMs).withStackTrace().with("throttle", "off");
-        }
-        recording.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(10));
-        recording.enable("jdk.NativeMethodSample").withPeriod(Duration.ofMillis(10));
-        recording.enable("jdk.ObjectAllocationSample").with("throttle", "1000/s").withStackTrace();
-        recording.enable("jdk.GCPhasePause").withThreshold(Duration.ZERO);
-        recording.enable("jdk.SafepointBegin").withThreshold(Duration.ZERO);
-        recording.enable("jdk.SafepointEnd").withThreshold(Duration.ZERO);
-        recording.setDestination(destination);
-        recording.setToDisk(true);
     }
 
     void start() {
         recording.start();
     }
 
-    /** Stops the recording and writes the file; the demo calls it before reading the result. */
+    /**
+     * Stops the recording and writes the file; the demo calls it before reading the result.
+     * Does nothing on a recording that is not running: never started, or already stopped.
+     */
     void stop() {
-        if (!closed) {
-            closed = true;
+        if (recording.getState() == RecordingState.RUNNING) {
             recording.stop();
         }
     }
 
+    /** Stops the recording if it is running, then releases it; idempotent (G-4.1). */
     @Override
     public void close() {
-        stop();
-        recording.close();
+        if (!closed) {
+            closed = true;
+            try {
+                stop();
+            } finally {
+                recording.close();
+            }
+        }
     }
 }

@@ -3,12 +3,18 @@
 
 package dev.jfrq.live;
 
+import java.io.Closeable;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.io.Reader;
 import java.io.Writer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.Properties;
@@ -26,6 +32,11 @@ import java.util.Properties;
  * window, so a delta beginning at {@code T} would include the sealed chunk again. The
  * JVM reports {@code T} in milliseconds, hence one millisecond past it is strictly after
  * the sealed chunk and inside the new one: no event is counted twice and none is lost.
+ *
+ * <p>Two {@code jfrq-live} processes on the same JVM take turns: a dump holds
+ * {@link #lock(Path, String, PrintStream) the lock} from loading the cursor to advancing it,
+ * and a save replaces the file in one rename, so a reader sees the old cursor or the new one,
+ * never half of either.
  */
 public final class Cursor {
 
@@ -53,6 +64,10 @@ public final class Cursor {
         final Properties p = new Properties();
         try (final Reader in = Files.newBufferedReader(c.file, StandardCharsets.UTF_8)) {
             p.load(in);
+        } catch (final IllegalArgumentException e) {
+            // A malformed unicode escape: the file was edited or damaged, not written by save().
+            throw new IOException("cursor file " + c.file + " is damaged: " + e.getMessage()
+                    + "; delete it to start the loop again", e);
         }
         if (!Long.toString(jvmStart).equals(p.getProperty(KEY_JVM))) {
             return c;
@@ -62,9 +77,37 @@ public final class Cursor {
             final Instant end = instant(p.getProperty(KEY_END));
             c.lastWindow = end == null ? null : new Window(instant(p.getProperty(KEY_BEGIN)), end);
         } catch (final DateTimeParseException e) {
-            throw new IOException("cursor file " + c.file + " is damaged: " + e.getMessage(), e);
+            throw new IOException("cursor file " + c.file + " is damaged: " + e.getMessage()
+                    + "; delete it to start the loop again", e);
         }
         return c;
+    }
+
+    /**
+     * Takes the cursor lock for {@code pid} under {@code dir}, waiting (and saying so on
+     * {@code err}) while another {@code jfrq-live} process holds it; closing the result releases
+     * it. The lock is a sibling file, not the cursor itself, because a save replaces the cursor
+     * file.
+     */
+    public static Closeable lock(final Path dir, final String pid, final PrintStream err) throws IOException {
+        Files.createDirectories(dir);
+        final Path path = dir.resolve(pid + ".lock");
+        final FileChannel channel = FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+        try {
+            if (channel.tryLock() == null) {
+                err.print("jfrq-live: waiting for another jfrq-live on JVM " + pid + " (" + path + ")\n");
+                channel.lock();
+            }
+        } catch (final IOException | RuntimeException | Error e) {
+            try {
+                channel.close();
+            } catch (final IOException | RuntimeException | Error c) {
+                e.addSuppressed(c);
+            }
+            throw e;
+        }
+        // Closing the channel releases every lock taken through it.
+        return channel;
     }
 
     public Path file() {
@@ -94,9 +137,27 @@ public final class Cursor {
         p.setProperty(KEY_CURSOR, next.toString());
         p.setProperty(KEY_BEGIN, lastWindow.begin() == null ? "" : lastWindow.begin().toString());
         p.setProperty(KEY_END, lastWindow.end().toString());
-        Files.createDirectories(file.getParent());
-        try (final Writer out = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) {
-            p.store(out, "jfrq-live cursor: cursor is where the next delta begins; begin/end is the last window");
+        final Path dir = file.getParent();
+        Files.createDirectories(dir);
+        // Written beside the cursor and renamed over it, so a crash or a concurrent reader never
+        // sees half a file.
+        final Path temporary = Files.createTempFile(dir, "." + file.getFileName() + ".", ".tmp");
+        try {
+            try (final Writer out = Files.newBufferedWriter(temporary, StandardCharsets.UTF_8)) {
+                p.store(out, "jfrq-live cursor: cursor is where the next delta begins; begin/end is the last window");
+            }
+            try {
+                Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (final AtomicMoveNotSupportedException e) {
+                Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (final IOException | RuntimeException | Error e) {
+            try {
+                Files.deleteIfExists(temporary);
+            } catch (final IOException | RuntimeException | Error d) {
+                e.addSuppressed(d);
+            }
+            throw e;
         }
     }
 

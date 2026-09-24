@@ -15,11 +15,11 @@ public record Interval(long start, long end) implements Comparable<Interval> {
         }
     }
 
-    public static Interval ofLength(final long start, final long length) {
-        return new Interval(start, start + length);
+    public static Interval ofDuration(final long start, final long duration) {
+        return new Interval(start, start + duration);
     }
 
-    public long length() {
+    public long duration() {
         return end - start;
     }
 

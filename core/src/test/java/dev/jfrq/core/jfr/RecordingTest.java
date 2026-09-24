@@ -10,24 +10,35 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.locks.ReentrantLock;
 
 import dev.jfrq.core.alloc.AllocationCollector;
 import dev.jfrq.core.alloc.AllocationReport;
+import dev.jfrq.core.coll.Nulls;
 import dev.jfrq.core.locks.ContentionCollector;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
+import dev.jfrq.core.model.Interner;
+import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.stalls.IdleMatcher;
-import dev.jfrq.core.stalls.Stall;
 import dev.jfrq.core.stalls.Stall.Verdict;
+import dev.jfrq.core.stalls.Stall;
 import dev.jfrq.core.stalls.StallCollector;
 import dev.jfrq.core.stalls.StallReport;
+import dev.jfrq.core.stalls.Timeline;
 import dev.jfrq.core.util.Glob;
+import jdk.jfr.Recording;
 import jdk.jfr.consumer.RecordedEvent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -57,8 +68,8 @@ class RecordingTest {
             }
 
             @Override
-            public void accept(final RecordedEvent event) {
-                seen.add(Events.thread(event).name());
+            public void accept(@Transient final RecordedEvent event) {
+                seen.add(ThreadRef.of(event.getThread()).name());
             }
         };
         final int[] all = new int[1];
@@ -69,7 +80,7 @@ class RecordingTest {
             }
 
             @Override
-            public void accept(final RecordedEvent event) {
+            public void accept(@Transient final RecordedEvent event) {
                 all[0]++;
             }
         };
@@ -83,19 +94,70 @@ class RecordingTest {
         assertEquals(file, info.file());
         assertEquals(Duration.ofMillis(20), info.period("jdk.ExecutionSample").orElseThrow());
         assertEquals(Duration.ZERO, info.threshold("jdk.ThreadSleep").orElseThrow());
-        assertTrue(info.enabled("jdk.ThreadSleep"));
-        assertFalse(info.enabled("jdk.NoSuchEvent"));
+        assertTrue(info.isEnabled("jdk.ThreadSleep"));
+        assertFalse(info.isEnabled("jdk.NoSuchEvent"));
         assertTrue(info.setting("jdk.ThreadSleep", "enabled").isPresent());
         assertTrue(info.threshold("jdk.NoSuchEvent").isEmpty());
         // Chunk-relative periods are not durations and must not throw.
         assertTrue(info.period("jdk.JVMInformation").isEmpty());
-        assertEquals(dev.jfrq.core.coll.Nulls.LONG_NULL, info.periodNanos("jdk.JVMInformation"));
+        assertEquals(Nulls.LONG_NULL, info.periodNanos("jdk.JVMInformation"));
         assertEquals(20_000_000L, info.periodNanos("jdk.ExecutionSample"));
         assertEquals(0L, info.thresholdNanos("jdk.ThreadSleep"));
-        assertEquals(dev.jfrq.core.coll.Nulls.LONG_NULL, info.thresholdNanos("jdk.NoSuchEvent"));
+        assertEquals(Nulls.LONG_NULL, info.thresholdNanos("jdk.NoSuchEvent"));
         assertEquals(0, info.count("jdk.NoSuchEvent"));
         assertNotNull(info.start());
         assertTrue(info.endNanos() > info.startNanos());
+    }
+
+    @Test
+    void fieldMaskAgreesWithHasFieldOnEveryEvent() throws Exception {
+        final Path file = JfrFixtures.record(dir, "fields", r -> {
+            r.enable("jdk.ThreadSleep").withThreshold(Duration.ZERO).withStackTrace();
+            r.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(10));
+            r.enable("jdk.ObjectAllocationSample");
+            r.enable("jdk.GCPhasePause").withThreshold(Duration.ZERO);
+        }, () -> JfrFixtures.onThread("fields-thread", () -> {
+            JfrFixtures.sleep(30);
+            System.gc();
+            TestLoop.idle(60);
+        }));
+
+        final int[] events = new int[1];
+        final int[] present = new int[Fields.COUNT];
+        final JfrReader.Sink everything = new JfrReader.Sink() {
+            dev.jfrq.core.model.Interner interner;
+
+            @Override
+            public Set<String> eventTypes() {
+                return Set.of();
+            }
+
+            @Override
+            public void begin(final dev.jfrq.core.model.Interner i) {
+                interner = i;
+            }
+
+            @Override
+            public void accept(@Transient final RecordedEvent e) {
+                events[0]++;
+                final long mask = interner.fields(e);
+                for (int field = 0; field < Fields.COUNT; field++) {
+                    final boolean has = e.hasField(Fields.nameOf(field));
+                    assertEquals(has, (mask & Fields.bit(field)) != 0, e.getEventType().getName() + "." + Fields.nameOf(field));
+                    if (has) {
+                        present[field]++;
+                    }
+                }
+            }
+        };
+        JfrReader.read(file, everything);
+
+        assertTrue(events[0] > 50, "events " + events[0]);
+        // Both thread fields, and fields of more than one kind, were actually seen.
+        assertTrue(present[Fields.EVENT_THREAD] > 0);
+        assertTrue(present[Fields.SAMPLED_THREAD] > 0);
+        assertTrue(present[Fields.OBJECT_CLASS] > 0);
+        assertTrue(present[Fields.NAME] > 0);
     }
 
     @Test
@@ -112,7 +174,7 @@ class RecordingTest {
         final RecordingInfo info = JfrReader.read(file);
         assertFalse(info.hasSettings());
         assertTrue(info.threshold("jdk.ThreadSleep").isEmpty());
-        assertFalse(info.enabled("jdk.ThreadSleep"));
+        assertFalse(info.isEnabled("jdk.ThreadSleep"));
         assertTrue(info.endNanos() >= info.startNanos());
     }
 
@@ -136,7 +198,10 @@ class RecordingTest {
         JfrReader.read(file, collector);
         final ContentionReport report = collector.report();
 
-        final Wait wait = report.waits().stream().filter(w -> w.waiter().name().equals("waiter-thread")).findFirst()
+        // The waiter also parks on the fixture's latch (ThreadPark at threshold 0): pick the monitor.
+        final Wait wait = report.waits().stream()
+                .filter(w -> w.waiter().name().equals("waiter-thread") && w.kind() == Wait.Kind.MONITOR_ENTER)
+                .findFirst()
                 .orElseThrow(() -> new AssertionError("no wait recorded: " + report.waits()));
         // JFR may omit previousOwner even for a real contended enter. That limits the diagnosis,
         // but must not turn a valid wait into a failed read; holder resolution itself is covered
@@ -146,7 +211,7 @@ class RecordingTest {
         assertEquals(Wait.Kind.MONITOR_ENTER, wait.kind());
         assertTrue(wait.duration() >= 80_000_000L, "waited " + wait.duration());
         assertFalse(wait.stack().isEmpty());
-        assertEquals(wait.lock(), report.locks(5).getFirst().lock());
+        assertTrue(report.locks(5).stream().anyMatch(l -> l.lock().equals(wait.lock())), report.locks(5).toString());
 
         // Filters: by minimum duration and by waiter name.
         final ContentionCollector filtered = new ContentionCollector(10_000_000_000L, _ -> true);
@@ -297,11 +362,11 @@ class RecordingTest {
 
     @Test
     void stallCollectorSeesParksWaitsAndBlockingSocketReads() throws Exception {
-        final java.util.concurrent.locks.ReentrantLock lock = new java.util.concurrent.locks.ReentrantLock();
+        final ReentrantLock lock = new ReentrantLock();
         final Object monitor = new Object();
-        try (final java.net.ServerSocket server = new java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())) {
+        try (final ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             final Thread slow = new Thread(() -> {
-                try (final java.net.Socket s = server.accept()) {
+                try (final Socket s = server.accept()) {
                     JfrFixtures.sleep(200);
                     s.getOutputStream().write('x');
                 } catch (final IOException e) {
@@ -321,7 +386,7 @@ class RecordingTest {
                 r.enable("jdk.SafepointEnd").withThreshold(Duration.ZERO);
             }, () -> JfrFixtures.onThread("loop-io", () -> {
                 TestLoop.idle(200);
-                final java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1);
+                final CountDownLatch held = new CountDownLatch(1);
                 final Thread holder = new Thread(() -> {
                     lock.lock();
                     try {
@@ -332,17 +397,17 @@ class RecordingTest {
                     }
                 }, "lock-holder");
                 holder.start();
-                held.await();
+                JfrFixtures.await(held);
                 JfrFixtures.sleep(20);
                 lock.lock();
                 lock.unlock();
-                holder.join();
+                JfrFixtures.join(holder);
                 TestLoop.idle(200);
                 synchronized (monitor) {
                     monitor.wait(200);
                 }
                 TestLoop.idle(200);
-                try (final java.net.Socket s = new java.net.Socket(java.net.InetAddress.getLoopbackAddress(),
+                try (final Socket s = new Socket(InetAddress.getLoopbackAddress(),
                         server.getLocalPort())) {
                     if (s.getInputStream().read() != 'x') {
                         throw new IllegalStateException("bad reply");
@@ -351,7 +416,7 @@ class RecordingTest {
                 System.gc();
                 TestLoop.idle(200);
             }));
-            slow.join();
+            JfrFixtures.join(slow);
 
             final StallCollector collector = new StallCollector(Glob.of("loop-io"),
                     IdleMatcher.of(".*RecordingTest\\$TestLoop\\.idle"), 50_000_000L);
@@ -384,13 +449,13 @@ class RecordingTest {
             }
         }));
 
-        final java.util.IdentityHashMap<dev.jfrq.core.model.Stack, Boolean> distinctInstances = new java.util.IdentityHashMap<>();
-        final java.util.IdentityHashMap<ThreadRef, Boolean> threadInstances = new java.util.IdentityHashMap<>();
-        final java.util.IdentityHashMap<String, Boolean> classNameInstances = new java.util.IdentityHashMap<>();
+        final IdentityHashMap<Stack, Boolean> distinctInstances = new IdentityHashMap<>();
+        final IdentityHashMap<ThreadRef, Boolean> threadInstances = new IdentityHashMap<>();
+        final IdentityHashMap<String, Boolean> classNameInstances = new IdentityHashMap<>();
         final int[] events = new int[1];
-        final dev.jfrq.core.model.Interner[] seen = new dev.jfrq.core.model.Interner[1];
+        final Interner[] seen = new Interner[1];
         final JfrReader.Sink sink = new JfrReader.Sink() {
-            dev.jfrq.core.model.Interner interner;
+            Interner interner;
 
             @Override
             public Set<String> eventTypes() {
@@ -398,20 +463,20 @@ class RecordingTest {
             }
 
             @Override
-            public void begin(final dev.jfrq.core.model.Interner i) {
+            public void begin(final Interner i) {
                 interner = i;
                 seen[0] = i;
             }
 
             @Override
-            public void accept(final RecordedEvent e) {
+            public void accept(@Transient final RecordedEvent e) {
                 events[0]++;
                 distinctInstances.put(Events.stack(e, interner), Boolean.TRUE);
                 final ThreadRef t = interner.thread(e);
                 if (t != null && t.name().equals("intern-thread")) {
                     threadInstances.put(t, Boolean.TRUE);
                 }
-                classNameInstances.put(Events.className(e, "objectClass", interner), Boolean.TRUE);
+                classNameInstances.put(Events.className(e, Fields.OBJECT_CLASS, interner), Boolean.TRUE);
             }
         };
         final RecordingInfo info = JfrReader.read(file, sink);
@@ -459,7 +524,7 @@ class RecordingTest {
             JfrFixtures.burn(500);
             TestLoop.idle(400);
             // Block this very thread on the lock while a holder sleeps inside it.
-            final java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1);
+            final CountDownLatch held = new CountDownLatch(1);
             final Thread holder = new Thread(() -> {
                 synchronized (lock) {
                     held.countDown();
@@ -471,7 +536,7 @@ class RecordingTest {
                 JfrFixtures.sleep(JfrFixtures.HOLDER_TAIL_MILLIS);
             }, "holder-thread");
             holder.start();
-            held.await();
+            JfrFixtures.await(held);
             JfrFixtures.sleep(20);
             synchronized (lock) {
                 lock.notifyAll();
@@ -492,12 +557,12 @@ class RecordingTest {
     @Test
     void spanIsTheDumpedRecordingsOwnEvenWithAnOlderRecordingRunning() throws Exception {
         final Path file = dir.resolve("ondemand.jfr");
-        try (final jdk.jfr.Recording continuous = new jdk.jfr.Recording()) {
+        try (final Recording continuous = new Recording()) {
             continuous.enable("jdk.ActiveRecording");
             continuous.enable("jdk.ActiveSetting");
             continuous.start();
             JfrFixtures.sleep(600);
-            try (final jdk.jfr.Recording onDemand = new jdk.jfr.Recording()) {
+            try (final Recording onDemand = new Recording()) {
                 onDemand.enable("jdk.ActiveRecording");
                 onDemand.enable("jdk.ActiveSetting");
                 onDemand.setDestination(file);
@@ -522,55 +587,61 @@ class RecordingTest {
      */
     @Test
     void safepointsAreNamedAfterTheirVmOperationWhenTheEndEventIsDisabled() throws Exception {
-        final java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
         final List<Thread> parked = new ArrayList<>();
-        for (int i = 0; i < 200; i++) {
-            final Thread t = new Thread(() -> {
-                try {
-                    release.await();
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }, "parked-" + i);
-            t.setDaemon(true);
-            t.start();
-            parked.add(t);
-        }
-        final Path file = JfrFixtures.record(dir, "safepoints", r -> {
-            r.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(10));
-            r.enable("jdk.SafepointBegin").withThreshold(Duration.ZERO);
-            r.disable("jdk.SafepointEnd");
-            r.enable("jdk.ExecuteVMOperation").withThreshold(Duration.ZERO);
-            r.enable("jdk.GCPhasePause").withThreshold(Duration.ZERO);
-        }, () -> {
-            for (int i = 0; i < 20; i++) {
-                // A thread dump is a safepoint VM operation, and with hundreds of threads it takes a while.
-                if (Thread.getAllStackTraces().isEmpty()) {
-                    throw new IllegalStateException();
-                }
+        final Path file;
+        try {
+            for (int i = 0; i < 200; i++) {
+                final Thread t = new Thread(() -> {
+                    try {
+                        release.await();
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }, "parked-" + i);
+                t.setDaemon(true);
+                t.start();
+                parked.add(t);
             }
-            JfrFixtures.sleep(50);
-        });
-        release.countDown();
+            file = JfrFixtures.record(dir, "safepoints", r -> {
+                r.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(10));
+                r.enable("jdk.SafepointBegin").withThreshold(Duration.ZERO);
+                r.disable("jdk.SafepointEnd");
+                r.enable("jdk.ExecuteVMOperation").withThreshold(Duration.ZERO);
+                r.enable("jdk.GCPhasePause").withThreshold(Duration.ZERO);
+            }, () -> {
+                for (int i = 0; i < 20; i++) {
+                    // A thread dump is a safepoint VM operation, and with hundreds of threads it takes a while.
+                    if (Thread.getAllStackTraces().isEmpty()) {
+                        throw new IllegalStateException();
+                    }
+                }
+                JfrFixtures.sleep(50);
+            });
+        } finally {
+            // Released whether or not the recording succeeded, so a failure does not leave 200
+            // threads parked for the rest of the test run.
+            release.countDown();
+        }
         for (final Thread t : parked) {
-            t.join();
+            JfrFixtures.join(t);
         }
 
         final StallCollector collector = new StallCollector(Glob.of("main"), IdleMatcher.defaults(), 1_000L);
         final RecordingInfo info = JfrReader.read(file, collector);
         assertEquals(0, info.count("jdk.SafepointEnd"));
         assertTrue(info.count("jdk.ExecuteVMOperation") > 0);
-        final List<dev.jfrq.core.stalls.Timeline.Pause> pauses = collector.report().pauses();
+        final List<Timeline.Pause> pauses = collector.report().pauses();
         assertTrue(pauses.stream().anyMatch(p -> p.detail().startsWith("VM operation ThreadDump")),
                 "pauses: " + pauses);
         // No pause is reported twice: a GC's own safepoint is folded into the GC pause.
-        for (final dev.jfrq.core.stalls.Timeline.Pause p : pauses) {
-            if (p.kind() != dev.jfrq.core.stalls.Timeline.PauseKind.SAFEPOINT) {
+        for (final Timeline.Pause p : pauses) {
+            if (p.kind() != Timeline.PauseKind.SAFEPOINT) {
                 continue;
             }
-            for (final dev.jfrq.core.stalls.Timeline.Pause gc : pauses) {
-                if (gc.kind() == dev.jfrq.core.stalls.Timeline.PauseKind.GC) {
-                    assertTrue(gc.interval().overlap(p.interval()) < 0.5 * p.length(), "reported twice: " + p + " and " + gc);
+            for (final Timeline.Pause gc : pauses) {
+                if (gc.kind() == Timeline.PauseKind.GC) {
+                    assertTrue(gc.interval().overlap(p.interval()) < 0.5 * p.duration(), "reported twice: " + p + " and " + gc);
                 }
             }
         }

@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
 import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.jfr.RecordingInfo;
@@ -22,8 +23,11 @@ import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
+import dev.jfrq.core.report.Html;
 import dev.jfrq.core.stalls.Stall;
 import dev.jfrq.core.stalls.StallReport;
+import dev.jfrq.core.stalls.Timeline.Pause;
+import dev.jfrq.core.stalls.Timeline.PauseKind;
 import org.junit.jupiter.api.Test;
 
 /** The renderers on hand-built reports, where a recording cannot produce the case on demand. */
@@ -50,7 +54,7 @@ class TextTest {
         assertTrue(text.contains("Note       1 wait began before the recording or outlived it; "
                 + "only the part inside it is counted"), text);
         // The whole wait is 1.5 s; 900 ms of it is inside the window, and that is what is reported.
-        assertTrue(text.contains("Blocked    900 ms across 1 waits"), text);
+        assertTrue(text.contains("Blocked    900 ms across 1 wait\n"), text);
         assertTrue(text.contains("90.0%"), text);
         assertFalse(text.contains("1.50 s"), text);
     }
@@ -87,31 +91,26 @@ class TextTest {
                 Map.of("jdk.SocketWrite", Map.of("enabled", "true", "threshold", "1 ms"),
                         "jdk.ObjectAllocationSample", Map.of("enabled", "true", "throttle", "1000/s")),
                 Set.of(new ThreadRef(1, "milo-shared-thread-pool-17"), new ThreadRef(2, "milo-shared-thread-pool-3"),
-                        new ThreadRef(3, "main")),
+                        new ThreadRef(3, "main"), new ThreadRef(4, "event-loop-1")),
                 List.of());
         final String text = Text.info(info);
 
         // SocketWrite is outside the old fixed whitelist, and its 1 ms threshold was in force.
         assertTrue(text.contains("Thresholds SocketWrite 1.00 ms"), text);
         assertTrue(text.contains("Throttled  ObjectAllocationSample 1000/s"), text);
-        assertTrue(text.contains("Threads    3 seen in events"), text);
+        assertTrue(text.contains("Threads    4 seen in events"), text);
         assertTrue(text.contains("milo-shared-thread-pool-N*"), text);
         assertTrue(text.contains("main"), text);
-    }
-
-    @Test
-    void threadFamiliesFoldEveryNumberAPoolVaries() {
-        assertEquals("pool-N-thread-N", Text.family("pool-36-thread-2"));
-        assertEquals("milo-shared-thread-pool-N", Text.family("milo-shared-thread-pool-17"));
-        assertEquals("main", Text.family("main"));
-        assertEquals("RMI TCP Connection(N)-N.N.N.N", Text.family("RMI TCP Connection(1)-192.168.1.120"));
+        // A family of one is named by its thread: "event-loop-N" is not a name --thread can match.
+        assertTrue(text.contains("  event-loop-1 "), text);
+        assertFalse(text.contains("event-loop-N"), text);
     }
 
     @Test
     void locksSaysNothingWhenEveryWaitIsInsideTheWindow() {
         final String text = Text.locks(new ContentionReport(window(), List.of(blocked(1_100, 1_400))), 15, false);
         assertFalse(text.contains("Note"), text);
-        assertTrue(text.contains("Blocked    300 ms across 1 waits"), text);
+        assertTrue(text.contains("Blocked    300 ms across 1 wait\n"), text);
     }
 
     /** The part of a report under one heading, up to the blank line that ends it. */
@@ -192,6 +191,89 @@ class TextTest {
         assertTrue(text.contains("LinkedBlockingQueue"), text);
     }
 
+    /** Three pool workers idle on their own queues for the whole window. */
+    static List<Wait> idleWorkers() {
+        final Stack noWork = new Stack(List.of(
+                new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
+                new Frame("java.util.concurrent.locks.LockSupport", "park", 341, "JIT compiled"),
+                new Frame("java.util.concurrent.LinkedBlockingQueue", "take", 435, "JIT compiled"),
+                new Frame("java.util.concurrent.ThreadPoolExecutor", "getTask", 1070, "JIT compiled")), false);
+        final List<Wait> parks = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            parks.add(new Wait(new Interval(1_000 * MS, 2_000 * MS), new ThreadRef(i, "worker-" + i),
+                    new Wait.LockKey("java.util.concurrent.LinkedBlockingQueue", 0x20 + i, Wait.Kind.PARK),
+                    null, noWork));
+        }
+        return parks;
+    }
+
+    @Test
+    void anIdleAnswerUnderFiltersSaysItIsAboutWhatMatched() {
+        // logback-4 waited 300 ms for the registry; --thread 'worker-*' left it out. What is
+        // left is only idle workers, and "every wait was a worker waiting for work" would be
+        // a claim about the recording that the recording contradicts.
+        final List<Wait> waits = new ArrayList<>(idleWorkers());
+        waits.add(blocked(1_100, 1_400));
+        final String text = Text.locks(new ContentionReport(window(), waits, 0, name -> name.startsWith("worker-")),
+                15, false);
+        assertTrue(text.contains("No contention: every wait that matches the filters (--thread, --min, --lock) was "
+                + "a worker waiting for work, not a thread held up by another; 4 in the recording.\n"), text);
+        assertFalse(text.contains("every wait was a worker"), text);
+        assertTrue(text.contains("WAITING FOR WORK"), text);
+    }
+
+    @Test
+    void textAndHtmlGiveTheSameAnswerWhenThereIsNoContention() {
+        final List<ContentionReport> reports = List.of(
+                new ContentionReport(window(), List.of()),
+                new ContentionReport(window(), idleWorkers()),
+                new ContentionReport(window(), List.of(blocked(1_100, 1_400)), 0, _ -> false),
+                new ContentionReport(window(), List.of(blocked(1_100, 1_400)), 500 * MS, _ -> true));
+        for (final ContentionReport r : reports) {
+            final String answer = r.noContention();
+            final String text = Text.locks(r, 15, false);
+            final String html = Html.locks(r, 15, false);
+            assertTrue(text.contains("\n" + answer + "\n"), text);
+            assertTrue(html.contains("<p>" + answer + "</p>"), html);
+            // An empty page is not a report of nothing: no zero totals, no empty tables.
+            assertFalse(html.contains("Total blocked time"), html);
+            assertFalse(html.contains("Locks by total wait"), html);
+            assertEquals(r.workWaits().isEmpty(), !html.contains("Waiting for work"), html);
+            assertEquals(r.workWaits().isEmpty(), !text.contains("WAITING FOR WORK"), text);
+        }
+        assertTrue(reports.get(0).noContention().startsWith("No contended monitor enters or parks in the recording"));
+        assertTrue(reports.get(1).noContention().startsWith("No contention: every wait was a worker"));
+        assertTrue(reports.get(2).noContention().contains("match the filters"));
+        assertTrue(reports.get(3).noContention().contains("match the filters"));
+    }
+
+    @Test
+    void textAndHtmlAddUpTheSameLockSites() {
+        // Two queues whose stacks differ only below the frames a site is compared on: one site
+        // with two instances in both reports, whatever depth each prints its other stacks at.
+        final List<Wait> waits = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            final List<Frame> frames = new ArrayList<>();
+            for (int f = 0; f < 10; f++) {
+                frames.add(new Frame("dev.app.Layer" + f, "call", f == 8 ? 100 + i : 1, "JIT compiled"));
+            }
+            waits.add(new Wait(new Interval(1_100 * MS, 1_200 * MS), new ThreadRef(10 + i, "browse-" + i),
+                    new Wait.LockKey("dev.app.Queue", 0x100 + i, Wait.Kind.PARK), null, new Stack(frames, false)));
+        }
+        final ContentionReport r = new ContentionReport(window(), waits);
+        final String text = section(Text.locks(r, 15, true), "LOCK SITES BY TOTAL WAIT");
+        final String page = Html.locks(r, 15, true);
+        final int from = page.indexOf("<h2>Lock sites by total wait");
+        final String html = page.substring(from, page.indexOf("<h2>", from + 1));
+        assertTrue(text.contains("2 lock instances"), text);
+        assertEquals(1, occurrences(text, "Layer0.call"), text);
+        assertTrue(html.contains("2 lock instances"), html);
+        assertEquals(1, occurrences(html, "Layer0.call"), html);
+        // Neither prints the frame the grouping did not look at.
+        assertFalse(text.contains("Layer8"), text);
+        assertFalse(html.contains("Layer8"), html);
+    }
+
     @Test
     void locksBySiteRankOneRowPerStackWithItsInstanceCount() {
         final Stack mailbox = new Stack(List.of(new Frame("dev.app.DefaultMailbox", "awaitNextMessage", 92, "JIT compiled"),
@@ -211,6 +293,19 @@ class TextTest {
         // Everything that does not group by stack stays where it was.
         assertTrue(text.contains("THREADS BY TIME BLOCKED"), text);
         assertTrue(text.contains("LONGEST WAITS"), text);
+    }
+
+    @Test
+    void allocWarnsThatVirtualThreadsAreUnderCounted() {
+        final AllocationReport r = new AllocationReport(window(), "jdk.ObjectAllocationSample", 1000, 1, 2,
+                Map.of(), Map.of("vt-1", 1000L), Map.of(), Map.of(), Map.of(), Map.of(), AllocationReport.Support.NONE,
+                new AllocationReport.Dropped(1, 2048));
+        final String text = Text.alloc(r, 15, false, SiteKey.culpritMethod());
+        assertTrue(text.contains("\nWARNING    allocation on virtual threads is under-counted, and can still be "
+                + "over-counted: 1 first sample of virtual threads, 2.05 KB, not counted"), text);
+        final String diff = Text.allocDiff(new AllocationDiff(r, r), 15, false, SiteKey.culpritMethod());
+        assertTrue(diff.contains("WARNING    baseline: allocation on virtual threads"), diff);
+        assertTrue(diff.contains("WARNING    current: allocation on virtual threads"), diff);
     }
 
     @Test
@@ -280,5 +375,22 @@ class TextTest {
         assertTrue(text.contains("jdk.SocketWrite"), text);
         // Both kinds still count in the totals.
         assertTrue(section(text, "BY VERDICT").contains("UNEXPLAINED"), text);
+    }
+
+    @Test
+    void stallsWithNoThreadNameWhatMatchedAndStillListThePauses() {
+        // `jfrq info` lists the VM Thread; stalls has nothing to judge it by. Saying "use jfrq
+        // info" back sent the reader round in a circle, and the pauses that stopped every
+        // thread were dropped with the rest.
+        final Pause gc = new Pause(new Interval(1_100 * MS, 1_400 * MS), PauseKind.GC, "Full (gcId 9)");
+        final StallReport r = new StallReport(window(), 50 * MS, List.of(), List.of(), List.of(gc),
+                List.of("1 matching thread has no samples and no blocking events, so nothing to judge by (VM Thread)"));
+        final String text = Text.stalls(r, 15);
+        assertTrue(text.contains("WARNING    1 matching thread has no samples"), text);
+        assertTrue(text.contains(StallReport.NO_THREAD + "\n"), text);
+        assertTrue(text.contains("JVM-WIDE PAUSES >= gap"), text);
+        assertTrue(text.contains("Full (gcId 9)"), text);
+        assertFalse(text.contains("PER THREAD"), text);
+        assertTrue(text.endsWith("\n"), text);
     }
 }

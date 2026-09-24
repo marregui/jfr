@@ -24,31 +24,24 @@ import io.netty.channel.SimpleChannelInboundHandler;
  */
 final class RequestHandler extends SimpleChannelInboundHandler<String> {
 
-    private static final AtomicLong REQUESTS = new AtomicLong();
-    private static final AtomicLong LOOKUPS = new AtomicLong();
-
     private final Scenario scenario;
     private final SessionRegistry registry;
     private final int backendPort;
+    private final Counters counters;
 
-    private Socket backend;
-    private BufferedReader backendIn;
-    private OutputStream backendOut;
+    /** This connection's own link to the backend: opened by the first lookup, closed with the channel. */
+    private Backend backend;
 
-    RequestHandler(final Scenario scenario, final SessionRegistry registry, final int backendPort) {
+    RequestHandler(final Scenario scenario, final SessionRegistry registry, final int backendPort, final Counters counters) {
         this.scenario = scenario;
         this.registry = registry;
         this.backendPort = backendPort;
-    }
-
-    /** Synchronous backend lookups made on event loop threads. */
-    static long lookups() {
-        return LOOKUPS.get();
+        this.counters = counters;
     }
 
     @Override
     protected void channelRead0(final ChannelHandlerContext ctx, final String line) throws Exception {
-        final long n = REQUESTS.incrementAndGet();
+        final long n = counters.requests.incrementAndGet();
         final String session = "session-" + ctx.channel().id().asShortText();
 
         if (scenario.lock()) {
@@ -58,7 +51,7 @@ final class RequestHandler extends SimpleChannelInboundHandler<String> {
         if (scenario.blockingIo() && n % 400 == 0) {
             // Bug: a synchronous round-trip on the event loop thread.
             if (lookup(line) != null) {
-                LOOKUPS.incrementAndGet();
+                counters.lookups.incrementAndGet();
             }
         }
         if (scenario.cpu() && n % 1000 == 0) {
@@ -77,26 +70,74 @@ final class RequestHandler extends SimpleChannelInboundHandler<String> {
 
     private String lookup(final String key) throws IOException {
         if (backend == null) {
-            backend = new Socket(InetAddress.getLoopbackAddress(), backendPort);
-            backend.setTcpNoDelay(true);
-            backendIn = new BufferedReader(new InputStreamReader(backend.getInputStream(), StandardCharsets.UTF_8));
-            backendOut = backend.getOutputStream();
+            backend = new Backend(backendPort);
         }
-        backendOut.write((key + "\n").getBytes(StandardCharsets.UTF_8));
-        backendOut.flush();
-        return backendIn.readLine();
+        backend.out.write((key + "\n").getBytes(StandardCharsets.UTF_8));
+        backend.out.flush();
+        return backend.in.readLine();
     }
 
     @Override
     public void channelInactive(final ChannelHandlerContext ctx) throws Exception {
-        if (backend != null) {
-            backend.close();
+        try {
+            backend = Backend.free(backend);
+        } finally {
+            super.channelInactive(ctx);
         }
-        super.channelInactive(ctx);
     }
 
     @Override
     public void exceptionCaught(final ChannelHandlerContext ctx, final Throwable cause) {
         ctx.close();
+    }
+
+    /**
+     * What one server run counts across all its connections. One instance per {@link Server},
+     * so a second run in the same JVM starts from zero.
+     */
+    static final class Counters {
+        private final AtomicLong requests = new AtomicLong();
+        private final AtomicLong lookups = new AtomicLong();
+
+        /** Synchronous backend lookups made on event loop threads. */
+        long lookups() {
+            return lookups.get();
+        }
+    }
+
+    /** A blocking line-protocol connection to {@link SlowBackend}; the socket owns both streams. */
+    private static final class Backend implements AutoCloseable {
+        private final Socket socket;
+        private final BufferedReader in;
+        private final OutputStream out;
+
+        Backend(final int port) throws IOException {
+            socket = new Socket(InetAddress.getLoopbackAddress(), port);
+            try {
+                socket.setTcpNoDelay(true);
+                in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+                out = socket.getOutputStream();
+            } catch (final Throwable e) {
+                try {
+                    close();
+                } catch (final IOException c) {
+                    e.addSuppressed(c);
+                }
+                throw e;
+            }
+        }
+
+        /** Closes {@code b} if there is one; returns {@code null} for the caller to store (G-4.3). */
+        static Backend free(final Backend b) throws IOException {
+            if (b != null) {
+                b.close();
+            }
+            return null;
+        }
+
+        @Override
+        public void close() throws IOException {
+            socket.close();
+        }
     }
 }

@@ -3,9 +3,10 @@
 
 package dev.jfrq.core.util;
 
-import java.util.Locale;
-
-/** Byte-count formatting for tables: {@code 12.3 MB}, {@code 1.02 GB}, {@code 850 B}. */
+/**
+ * Byte-count formatting for tables: {@code 12.3 MB}, {@code 1.02 GB}, {@code 850 B}. The
+ * unit is chosen after rounding to three digits, so 999,999 bytes is {@code 1.00 MB}.
+ */
 public final class Bytes {
 
     private static final String[] UNITS = {"B", "KB", "MB", "GB", "TB"};
@@ -29,9 +30,12 @@ public final class Bytes {
         if (unit == 0) {
             return bytes + " B";
         }
-        final String num = v >= 100 ? String.format(Locale.ROOT, "%.0f", v)
-                : v >= 10 ? String.format(Locale.ROOT, "%.1f", v)
-                : String.format(Locale.ROOT, "%.2f", v);
+        String num = Durations.threeDigits(v);
+        if (num.equals("1000") && unit < UNITS.length - 1) {
+            // Rounded up to 1000 of this unit (999.9 KB): that is 1.00 of the next.
+            num = Durations.threeDigits(v / 1000);
+            unit++;
+        }
         return num + " " + UNITS[unit];
     }
 

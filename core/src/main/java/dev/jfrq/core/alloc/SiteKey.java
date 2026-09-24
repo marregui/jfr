@@ -54,8 +54,13 @@ public interface SiteKey {
     }
 
     /**
-     * The innermost frame whose class starts with one of {@code prefixes}, falling back to
-     * {@link #culpritMethod()} for a stack that never enters them.
+     * The innermost frame whose class is in one of the packages {@code prefixes} names,
+     * falling back to {@link #culpritMethod()} for a stack that never enters them. A prefix
+     * matches on a name boundary, a {@code '.'} or a {@code '$'}: {@code io.netty} is the
+     * class or package {@code io.netty} and everything under {@code io.netty.}, never
+     * {@code io.nettyx}; {@code com.x.Handler} covers its nested classes and lambdas
+     * ({@code com.x.Handler$Inner}, {@code com.x.Handler$$Lambda}), never
+     * {@code com.x.HandlerFactory}. A prefix that ends in either already is its own boundary.
      */
     static SiteKey inPackages(final List<String> prefixes) {
         return new SiteKey() {
@@ -65,7 +70,7 @@ public interface SiteKey {
                 for (int i = 0, n = stack.depth(); i < n; i++) {
                     final Frame frame = stack.frameQuick(i);
                     for (final String prefix : prefixes) {
-                        if (frame.type().startsWith(prefix)) {
+                        if (inPackage(frame.type(), prefix)) {
                             return method(frame);
                         }
                     }
@@ -79,6 +84,18 @@ public interface SiteKey {
                         + ", or outside the JDK where there is none";
             }
         };
+    }
+
+    /** Whether {@code type} is {@code prefix} itself or a name under it: a member, a nested class, a lambda. */
+    private static boolean inPackage(final String type, final String prefix) {
+        if (!type.startsWith(prefix)) {
+            return false;
+        }
+        if (type.length() == prefix.length() || prefix.endsWith(".") || prefix.endsWith("$")) {
+            return true;
+        }
+        final char next = type.charAt(prefix.length());
+        return next == '.' || next == '$';
     }
 
     private static String method(final Frame frame) {

@@ -5,17 +5,36 @@ package dev.jfrq.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.io.PrintStream;
+import java.io.Serial;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.Queue;
+import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
+import dev.jfrq.core.jfr.JfrReader;
+import dev.jfrq.core.jfr.Transient;
+import dev.jfrq.core.model.Interner;
+import dev.jfrq.core.model.Interval;
+import dev.jfrq.core.model.Stack;
+import dev.jfrq.core.model.ThreadRef;
+import dev.jfrq.core.stalls.Stall;
 import jdk.jfr.Recording;
+import jdk.jfr.consumer.RecordedEvent;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -44,6 +63,9 @@ class MainTest {
     static void record() throws Exception {
         recording = dir.resolve("cli.jfr");
         final Object lock = new Object();
+        // A wait that times out inside the fixture's threads is recorded here and failed on below:
+        // an assertion thrown on another thread would only end that thread.
+        final Queue<String> stuck = new ConcurrentLinkedQueue<>();
         try (final Recording r = new Recording()) {
             r.enable("jdk.ActiveSetting");
             r.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(10));
@@ -80,20 +102,28 @@ class MainTest {
                         sleep();
                     }, "holder-cli");
                     holder.start();
-                    held.await();
+                    if (!held.await(30, TimeUnit.SECONDS)) {
+                        stuck.add("holder-cli never took the lock");
+                    }
                     Thread.sleep(20);
                     synchronized (lock) {
                         lock.notifyAll();
                     }
-                    holder.join();
+                    holder.join(Duration.ofSeconds(30));
+                    if (holder.isAlive()) {
+                        stuck.add("holder-cli never finished");
+                    }
                     Loop.idle();
                 } catch (final InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
             }, "loop-cli");
             loop.start();
-            loop.join();
-            allocator.join();
+            loop.join(Duration.ofSeconds(60));
+            assertFalse(loop.isAlive(), "loop-cli never finished");
+            allocator.join(Duration.ofSeconds(60));
+            assertFalse(allocator.isAlive(), "alloc-cli never finished");
+            assertTrue(stuck.isEmpty(), stuck.toString());
             r.stop();
         }
     }
@@ -107,6 +137,20 @@ class MainTest {
     }
 
     record Run(int status, String out, String err) {
+    }
+
+    /** Standard output that is gone: a closed descriptor, a full disk, a reader that quit. */
+    static final class Broken extends OutputStream {
+        @Override
+        public void write(final int b) throws IOException {
+            throw new IOException("Broken pipe");
+        }
+    }
+
+    /** An error no reader should swallow or rename. */
+    static final class Boom extends Error {
+        @Serial
+        private static final long serialVersionUID = 1L;
     }
 
     static Run run(final String... argv) {
@@ -125,6 +169,11 @@ class MainTest {
         assertTrue(run("-h").out().contains("locks"));
         assertTrue(run("help").out().contains("alloc"));
         assertTrue(run("info", "--help").out().contains("usage: jfrq"));
+        // -h after the command is help too, not a recording named "-h".
+        final Run h = run("info", "-h");
+        assertEquals(0, h.status(), h.err());
+        assertTrue(h.out().contains("usage: jfrq"), h.out());
+        assertEquals(0, run("stalls", recording.toString(), "-h").status());
         assertEquals("jfrq " + Main.VERSION + "\n", run("--version").out());
         assertEquals("jfrq " + Main.VERSION + "\n", run("info", recording.toString(), "--version").out());
     }
@@ -160,13 +209,120 @@ class MainTest {
         final Run directory = run("info", dir.toString());
         assertEquals(2, directory.status());
         assertTrue(directory.err().contains("is a directory"), directory.err());
+
+        // A quoted "50 " is a slip, not 50 of anything.
+        final Run spaced = run("stalls", recording.toString(), "--thread", "x", "--gap", "50ms ");
+        assertEquals(2, spaced.status());
+        assertTrue(spaced.err().contains("spaces around it"), spaced.err());
+        // A single-dash token is a mistyped option, not a recording that does not exist.
+        final Run dash = run("info", "-x", recording.toString());
+        assertEquals(2, dash.status());
+        assertTrue(dash.err().contains("unknown option -x"), dash.err());
+        // Which of two values was meant is a guess.
+        final Run twice = run("alloc", recording.toString(), "--top", "3", "--top", "4");
+        assertEquals(2, twice.status());
+        assertTrue(twice.err().contains("--top given twice"), twice.err());
+        // An empty --html is found before the analysis, not after the report is printed.
+        final Run emptyHtml = run("stalls", recording.toString(), "--thread", "loop-*", "--html=");
+        assertEquals(2, emptyHtml.status());
+        assertTrue(emptyHtml.err().contains("--html needs a value"), emptyHtml.err());
+        assertEquals("", emptyHtml.out());
+    }
+
+    @Test
+    void theReportNeverReplacesARecordingBeingRead() throws Exception {
+        final Path copy = dir.resolve("copy.jfr");
+        Files.copy(recording, copy);
+        final long size = Files.size(copy);
+        final Run self = run("info", copy.toString(), "--html", copy.toString());
+        assertEquals(2, self.status());
+        assertTrue(self.err().contains("is a recording being read"), self.err());
+        assertEquals(size, Files.size(copy));
+        // The same file by another name is the same file.
+        final Run dotted = run("locks", copy.toString(), "--html", dir.resolve(".").resolve("copy.jfr").toString());
+        assertEquals(2, dotted.status());
+        final Run baseline = run("alloc", recording.toString(), "--baseline", copy.toString(), "--html", copy.toString());
+        assertEquals(2, baseline.status());
+        assertEquals(size, Files.size(copy));
+        assertEquals("", baseline.out());
+    }
+
+    @Test
+    void aStandardOutputThatCannotBeWrittenIsAFailure() {
+        final ByteArrayOutputStream err = new ByteArrayOutputStream();
+        final int status = new Main(new PrintStream(new Broken(), true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8)).run(new String[] {"info", recording.toString()});
+        assertEquals(1, status);
+        assertTrue(err.toString(StandardCharsets.UTF_8).contains("cannot write the report to standard output"),
+                err.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void aQuestionIsCheckedWithoutItsRecording() throws Exception {
+        final Path later = dir.resolve("not-yet.jfr");
+        Main.check(new String[] {"stalls", "--thread", "x", "--gap", "10ms"}, later);
+        Main.check(new String[] {"info"}, later);
+        assertThrows(Args.UsageException.class, () -> Main.check(new String[] {"stalls"}, later));
+        assertThrows(Args.UsageException.class, () -> Main.check(new String[] {"stalls", "--thread", "x", "--gap", "50"}, later));
+        assertThrows(Args.UsageException.class, () -> Main.check(new String[] {"frobnicate"}, later));
+        assertThrows(Args.UsageException.class, () -> Main.check(new String[] {"info", "extra"}, later));
+        assertThrows(Args.UsageException.class, () -> Main.check(new String[] {"locks", "--html", later.toString()}, later));
+        assertThrows(NoSuchFileException.class, () -> Main.check(new String[] {"alloc", "--baseline",
+                dir.resolve("gone.jfr").toString()}, later));
+        // The file about to be written cannot be the baseline: the dump would replace it before it is read.
+        final Path t1 = dir.resolve("t1.jfr");
+        Files.writeString(t1, "an earlier dump");
+        final Args.UsageException overBaseline = assertThrows(Args.UsageException.class,
+                () -> Main.check(new String[] {"alloc", "--baseline", t1.toString()}, t1));
+        assertTrue(overBaseline.getMessage().contains("--baseline " + t1 + " is the file the dump is written to"),
+                overBaseline.getMessage());
+        assertThrows(Args.UsageException.class, () -> Main.check(new String[] {"alloc", "--baseline",
+                dir.resolve(".").resolve("t1.jfr").toString()}, t1));
+        Main.check(new String[] {"alloc", "--baseline", t1.toString()}, later);
+    }
+
+    @Test
+    void aFailedDiffNamesTheFileAndKeepsBothFailures() throws Exception {
+        final Path a = dir.resolve("junk-a.jfr");
+        final Path b = dir.resolve("junk-b.jfr");
+        Files.writeString(a, "definitely not a recording, but long enough to have a header");
+        Files.writeString(b, "not a recording either, and also long enough to have a header");
+        final IOException both = assertThrows(IOException.class, () -> Main.readBoth(a, new Nothing(), b, new Nothing()));
+        assertTrue(both.getMessage().startsWith(a + ": "), both.getMessage());
+        assertEquals(1, both.getSuppressed().length);
+        assertTrue(both.getSuppressed()[0].getMessage().startsWith(b + ": "), both.getSuppressed()[0].getMessage());
+        // An Error is not a damaged file: it leaves as itself.
+        assertThrows(Boom.class, () -> Main.readBoth(recording, new Exploding(), recording, new Nothing()));
+
+        final Run cli = run("alloc", recording.toString(), "--baseline", b.toString());
+        assertEquals(1, cli.status());
+        assertTrue(cli.err().contains(b.toString()), cli.err());
+    }
+
+    /** A sink that wants nothing: the read is all that is being tested. */
+    static class Nothing implements JfrReader.Sink {
+        @Override
+        public Set<String> eventTypes() {
+            return Set.of("jdk.ThreadSleep");
+        }
+
+        @Override
+        public void accept(@Transient final RecordedEvent event) {
+        }
+    }
+
+    static final class Exploding extends Nothing {
+        @Override
+        public void begin(final Interner interner) {
+            throw new Boom();
+        }
     }
 
     @Test
     void damagedRecordingsExitWithOneAndSayWhy() throws Exception {
         final byte[] bytes = Files.readAllBytes(recording);
         final Path cut = dir.resolve("cut.jfr");
-        Files.write(cut, java.util.Arrays.copyOf(bytes, bytes.length / 2));
+        Files.write(cut, Arrays.copyOf(bytes, bytes.length / 2));
         final Run r = run("stalls", cut.toString(), "--thread", "loop-*");
         assertEquals(1, r.status(), r.out());
         assertTrue(r.err().contains("truncated"), r.err());
@@ -178,7 +334,7 @@ class MainTest {
         assertEquals(1, j.status());
         assertTrue(j.err().contains("not a Flight Recorder file"), j.err());
 
-        java.nio.ByteBuffer.wrap(bytes).putLong(8, 0);
+        ByteBuffer.wrap(bytes).putLong(8, 0);
         final Path live = dir.resolve("live.jfr");
         Files.write(live, bytes);
         final Run l = run("alloc", live.toString());
@@ -187,20 +343,34 @@ class MainTest {
     }
 
     @Test
-    void unwritableHtmlTargetIsReportedAsSuch() {
+    void unwritableHtmlTargetIsReportedAsSuch() throws Exception {
         final Run r = run("info", recording.toString());
         assertEquals(0, r.status());
+        // Found before the analysis: nothing on standard output.
         final Run bad = run("locks", recording.toString(), "--html", dir.resolve("no-such-dir").resolve("x.html").toString());
-        assertEquals(1, bad.status());
-        assertTrue(bad.err().contains("cannot write HTML report"), bad.err());
-        assertFalse(bad.err().contains("cannot read recording"), bad.err());
+        assertEquals(2, bad.status());
+        assertTrue(bad.err().contains("no such directory"), bad.err());
+        assertEquals("", bad.out());
+        assertEquals(2, run("locks", recording.toString(), "--html", dir.toString()).status());
+        // A file that refuses the write fails at the write, and says it was the report.
+        final Path readOnly = dir.resolve("read-only.html");
+        Files.writeString(readOnly, "");
+        assertTrue(readOnly.toFile().setWritable(false));
+        try {
+            final Run refused = run("info", recording.toString(), "--html", readOnly.toString());
+            assertEquals(1, refused.status());
+            assertTrue(refused.err().contains("cannot write HTML report " + readOnly + ": permission denied"), refused.err());
+            assertFalse(refused.err().contains("cannot read recording"), refused.err());
+        } finally {
+            assertTrue(readOnly.toFile().setWritable(true));
+        }
     }
 
     @Test
     void missingRecordingExitsWithOne() {
         final Run r = run("info", dir.resolve("missing.jfr").toString());
         assertEquals(1, r.status());
-        assertTrue(r.err().contains("no such file"), r.err());
+        assertTrue(r.err().contains("no such file or directory: " + dir.resolve("missing.jfr")), r.err());
         assertEquals(1, run("alloc", recording.toString(), "--baseline", "nope.jfr").status());
     }
 
@@ -259,7 +429,9 @@ class MainTest {
     void locksBySite() {
         final Run r = run("locks", recording.toString(), "--by-site");
         assertEquals(0, r.status(), r.err());
-        assertTrue(r.out().contains("LOCK SITES BY TOTAL WAIT") || r.out().contains("No contended"), r.out());
+        // The fixture's loop thread waited on holder-cli's monitor, so there is a site to rank.
+        assertTrue(r.out().contains("\nLOCK SITES BY TOTAL WAIT ("), r.out());
+        assertTrue(r.out().contains("loop-cli"), r.out());
         assertFalse(r.out().contains("\nLOCKS BY TOTAL WAIT\n"), r.out());
     }
 
@@ -282,7 +454,7 @@ class MainTest {
         // A damaged baseline is said so on the diff, text and HTML.
         final byte[] bytes = Files.readAllBytes(recording);
         final Path cut = dir.resolve("cut-baseline.jfr");
-        Files.write(cut, java.util.Arrays.copyOf(bytes, bytes.length + 20));
+        Files.write(cut, Arrays.copyOf(bytes, bytes.length + 20));
         final Path cutHtml = dir.resolve("cut-diff.html");
         final Run damaged = run("alloc", recording.toString(), "--baseline", cut.toString(), "--html", cutHtml.toString());
         assertEquals(0, damaged.status(), damaged.err());
@@ -329,15 +501,15 @@ class MainTest {
         assertTrue(r.out().contains("BLOCKED_MONITOR"), r.out());
         // Event-based stalls carry no evidence tag; the less exact kinds do.
         assertFalse(r.out().contains("Thread.sleep ["), r.out());
-        final dev.jfrq.core.model.ThreadRef t = new dev.jfrq.core.model.ThreadRef(1, "t");
-        final dev.jfrq.core.model.Interval i = new dev.jfrq.core.model.Interval(0, 1);
-        assertEquals("", Text.evidence(new dev.jfrq.core.stalls.Stall(t, i, dev.jfrq.core.stalls.Stall.Verdict.SLEEP, "",
-                dev.jfrq.core.model.Stack.EMPTY, dev.jfrq.core.stalls.Stall.Evidence.EVENT, 0)));
-        assertEquals(" [samples]", Text.evidence(new dev.jfrq.core.stalls.Stall(t, i, dev.jfrq.core.stalls.Stall.Verdict.BUSY,
-                "", dev.jfrq.core.model.Stack.EMPTY, dev.jfrq.core.stalls.Stall.Evidence.SAMPLES, 3)));
-        assertEquals(" [silence]", Text.evidence(new dev.jfrq.core.stalls.Stall(t, i,
-                dev.jfrq.core.stalls.Stall.Verdict.UNEXPLAINED, "", dev.jfrq.core.model.Stack.EMPTY,
-                dev.jfrq.core.stalls.Stall.Evidence.SILENCE, 0)));
+        final ThreadRef t = new ThreadRef(1, "t");
+        final Interval i = new Interval(0, 1);
+        assertEquals("", Text.evidence(new Stall(t, i, Stall.Verdict.SLEEP, "",
+                Stack.EMPTY, Stall.Evidence.EVENT, 0)));
+        assertEquals(" [samples]", Text.evidence(new Stall(t, i, Stall.Verdict.BUSY,
+                "", Stack.EMPTY, Stall.Evidence.SAMPLES, 3)));
+        assertEquals(" [silence]", Text.evidence(new Stall(t, i,
+                Stall.Verdict.UNEXPLAINED, "", Stack.EMPTY,
+                Stall.Evidence.SILENCE, 0)));
         assertTrue(r.out().contains("held by holder-cli"), r.out());
         assertTrue(r.out().contains("BY VERDICT"));
         assertTrue(r.out().contains("PER THREAD"));

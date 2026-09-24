@@ -27,11 +27,14 @@ public final class IdleMatcher {
     static final int DEPTH = 3;
     /**
      * Innermost frames examined for a blocking event. The pool's own idle frame sits under
-     * the park and the queue: {@code Unsafe.park}, {@code LockSupport.park},
-     * {@code ConditionObject.await}, {@code LinkedBlockingQueue.take},
-     * {@code ThreadPoolExecutor.getTask} is already five deep.
+     * the park and the queue, and on JDK 25 an untimed {@code Condition.await} goes through
+     * the managed-blocker machinery: {@code Unsafe.park}, {@code LockSupport.park},
+     * {@code ConditionNode.block}, {@code ForkJoinPool.unmanagedBlock},
+     * {@code ForkJoinPool.managedBlock}, {@code ConditionObject.await},
+     * {@code LinkedBlockingQueue.take} puts {@code ThreadPoolExecutor.getTask} at index 7.
+     * Ten leaves two frames of margin for a queue that adds a level of its own.
      */
-    static final int BLOCK_DEPTH = 8;
+    static final int BLOCK_DEPTH = 10;
 
     /**
      * Stacks that mean "this thread is parked because there is no work", as opposed to
@@ -39,12 +42,14 @@ public final class IdleMatcher {
      * frame, never the queue it parks on and never the worker loop: a thread running a task
      * still has {@code ThreadPoolExecutor.runWorker} beneath it, and a request thread
      * waiting for a reply on a {@code SynchronousQueue} is a real wait, so neither can be
-     * used to tell the two apart.
+     * used to tell the two apart. {@code ForkJoinPool.managedBlock} is not one either: on
+     * JDK 25 it is under every {@code CompletableFuture.get}/{@code join} and every untimed
+     * {@code Condition.await}, which is a caller waiting for a result as often as a worker
+     * waiting for work.
      */
     public static final List<String> WORK_WAIT_PATTERNS = List.of(
             "java\\.util\\.concurrent\\.ThreadPoolExecutor\\.getTask",
             "java\\.util\\.concurrent\\.ForkJoinPool\\.awaitWork",
-            "java\\.util\\.concurrent\\.ForkJoinPool\\.managedBlock\\w*",
             "java\\.util\\.concurrent\\.ScheduledThreadPoolExecutor\\$DelayedWorkQueue\\.take",
             "io\\.netty\\.util\\.concurrent\\.SingleThreadEventExecutor\\.takeTask",
             "ch\\.qos\\.logback\\.core\\.AsyncAppenderBase\\$Worker\\.run");
@@ -59,6 +64,19 @@ public final class IdleMatcher {
             "jdk\\.internal\\.misc\\.Unsafe\\.park",
             "java\\.util\\.concurrent\\.locks\\.LockSupport\\.park\\w*",
             "java\\.lang\\.Object\\.wait\\w*");
+
+    /** The frames a thread blocks in, whatever it waits for: never an idle point of their own for an event. */
+    private static final List<String> WAIT_PRIMITIVES = List.of(
+            "jdk.internal.misc.Unsafe.park",
+            "java.util.concurrent.locks.LockSupport.park",
+            "java.util.concurrent.locks.LockSupport.parkNanos",
+            "java.util.concurrent.locks.LockSupport.parkUntil",
+            "java.lang.Object.wait",
+            "java.lang.Object.wait0",
+            "java.lang.Thread.sleep",
+            "java.lang.Thread.sleep0",
+            "java.lang.Thread.sleepNanos",
+            "java.lang.Thread.sleepNanos0");
 
     private static final long IDLE = 1;
     private static final long BUSY = 0;
@@ -86,6 +104,33 @@ public final class IdleMatcher {
      */
     public static IdleMatcher forWorkWaits() {
         return workWaits(String.join(",", WORK_WAIT_PATTERNS));
+    }
+
+    /**
+     * {@link #forWorkWaits()} plus the idle points a caller named for samples, for
+     * {@code stalls}: a sleep, a wait or a park under a loop's own idle frame is that loop
+     * with nothing to do, exactly as a sample there is. A named frame is only added when it is
+     * the caller's own: the default sample patterns, and any pattern naming the wait itself
+     * ({@code Unsafe.park}, {@code LockSupport.park*}, {@code Object.wait*},
+     * {@code Thread.sleep*}), are under every wait of their kind and would make all of them idle.
+     */
+    public static IdleMatcher forWorkWaits(final IdleMatcher sampleIdle) {
+        final StringBuilder spec = new StringBuilder(String.join(",", WORK_WAIT_PATTERNS));
+        for (final Pattern p : sampleIdle.patterns) {
+            if (!DEFAULT_PATTERNS.contains(p.pattern()) && !namesAWait(p)) {
+                spec.append(',').append(p.pattern());
+            }
+        }
+        return workWaits(spec.toString());
+    }
+
+    private static boolean namesAWait(final Pattern p) {
+        for (final String primitive : WAIT_PRIMITIVES) {
+            if (p.matcher(primitive).matches()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** {@link #forWorkWaits()} with the caller's patterns in place of the defaults. */

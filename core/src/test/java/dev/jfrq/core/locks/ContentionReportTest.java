@@ -8,18 +8,19 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import dev.jfrq.core.jfr.RecordingInfo;
+import dev.jfrq.core.locks.Wait.Kind;
+import dev.jfrq.core.locks.Wait.LockKey;
 import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.stalls.IdleMatcher;
-import dev.jfrq.core.locks.Wait.Kind;
-import dev.jfrq.core.locks.Wait.LockKey;
 import org.junit.jupiter.api.Test;
 
 class ContentionReportTest {
@@ -136,6 +137,60 @@ class ContentionReportTest {
     }
 
     @Test
+    void anIntermediaryThatHeldTheLockForMostOfTheWaitIsTheHolder() {
+        // The housekeeper held the registry for the first half millisecond of the wait and
+        // handed it to event-loop-2, which then held it for 299.5 ms while event-loop-1 waited.
+        // JFR names event-loop-2 as the one that released it to event-loop-1, and it was:
+        // walking back through its one-millisecond wait would blame the housekeeper for 299 ms
+        // it did not hold.
+        final Wait loop1 = new Wait(new Interval(MS / 2, 300 * MS), LOOP1, REGISTRY, LOOP2, Stack.EMPTY);
+        final ContentionReport r = new ContentionReport(info(), List.of(
+                wait(0, 1, LOOP2, REGISTRY, HOUSEKEEPER), loop1));
+        final Wait resolved = r.waits().stream().filter(w -> w.waiter().equals(LOOP1)).findFirst().orElseThrow();
+        assertEquals(LOOP2, resolved.owner());
+        assertEquals(List.of(HOUSEKEEPER), resolved.via());
+        assertEquals("held by event-loop-2 (handed on through housekeeper)", resolved.heldBy());
+
+        // The longer hold wins: event-loop-2 got the lock at 201 ms and held it 99 ms, the
+        // housekeeper held it the 101 ms before.
+        final ContentionReport late = new ContentionReport(info(), List.of(
+                wait(100, 201, LOOP2, REGISTRY, HOUSEKEEPER), wait(100, 300, LOOP1, REGISTRY, LOOP2)));
+        final Wait walked = late.waits().stream().filter(w -> w.waiter().equals(LOOP1)).findFirst().orElseThrow();
+        assertEquals(HOUSEKEEPER, walked.owner());
+        assertEquals(List.of(LOOP2), walked.via());
+        // A tie names the thread nearer the waiter.
+        final ContentionReport half = new ContentionReport(info(), List.of(
+                wait(100, 200, LOOP2, REGISTRY, HOUSEKEEPER), wait(100, 300, LOOP1, REGISTRY, LOOP2)));
+        assertEquals(LOOP2, half.waits().stream().filter(w -> w.waiter().equals(LOOP1)).findFirst().orElseThrow()
+                .owner());
+    }
+
+    @Test
+    void theHolderIsTheThreadThatHeldTheLockLongestInsideTheWait() {
+        // Ping-pong between event-loop-2 and the housekeeper while event-loop-1 waited 0-100 ms:
+        // event-loop-2's longest wait ended at 5 ms, but the one it got the lock from before
+        // handing it over ended at 99. The housekeeper held it from 6 to 99 and from 0 to 5.
+        final ContentionReport pingPong = new ContentionReport(info(), List.of(
+                wait(0, 100, LOOP1, REGISTRY, LOOP2),
+                wait(-200, 5, LOOP2, REGISTRY, HOUSEKEEPER),
+                wait(5, 6, HOUSEKEEPER, REGISTRY, LOOP2),
+                wait(7, 99, LOOP2, REGISTRY, HOUSEKEEPER)));
+        final Wait c = pingPong.waits().stream().filter(w -> w.waiter().equals(LOOP1)).findFirst().orElseThrow();
+        assertEquals(HOUSEKEEPER, c.owner());
+        assertEquals(List.of(LOOP2), c.via());
+
+        // Three holds inside a 97 ms wait: the flusher 36 ms, event-loop-2 21, the housekeeper
+        // the last 40. The one to name is the housekeeper, not the first thread to get the lock
+        // before the middle of the wait.
+        final ContentionReport hop = new ContentionReport(info(), List.of(
+                wait(0, 97, LOOP1, REGISTRY, HOUSEKEEPER),
+                wait(2, 36, LOOP2, REGISTRY, FLUSHER),
+                wait(4, 57, HOUSEKEEPER, REGISTRY, LOOP2)));
+        final Wait a = hop.waits().stream().filter(w -> w.waiter().equals(LOOP1)).findFirst().orElseThrow();
+        assertEquals("held by housekeeper (handed on through flusher, event-loop-2)", a.heldBy());
+    }
+
+    @Test
     void resolutionStopsAtCyclesAndAtUnknownOwners() {
         final ContentionReport r = new ContentionReport(info(), List.of(
                 wait(100, 300, LOOP1, REGISTRY, LOOP2),
@@ -189,7 +244,7 @@ class ContentionReportTest {
         assertEquals(REGISTRY, r.longest(1).getFirst().lock());
         // The invariant the 112.5 % in the report broke: no thread is blocked for longer than the window.
         for (final ContentionReport.ThreadStats t : r.waiters(10)) {
-            assertTrue(t.totalNanos() <= info.span().length(), t.thread() + " " + t.totalNanos());
+            assertTrue(t.totalNanos() <= info.span().duration(), t.thread() + " " + t.totalNanos());
         }
         assertEquals(1_000 * MS, r.longest(2).getFirst().start());
         assertEquals(2_000 * MS, r.longest(2).get(1).end());
@@ -314,6 +369,24 @@ class ContentionReportTest {
     }
 
     @Test
+    void theLockFilterNarrowsTheListNotTheConvoysBehindIt() {
+        // --lock Registry: the housekeeper's own wait for the store is not a row of this
+        // report, and it is exactly the link that says why the registry was held so long.
+        final List<Wait> all = List.of(
+                wait(100, 300, LOOP1, REGISTRY, HOUSEKEEPER),
+                wait(150, 200, HOUSEKEEPER, STORE, FLUSHER));
+        final ContentionReport r = new ContentionReport(info(), all, 0, _ -> true, IdleMatcher.forWorkWaits(),
+                lock -> lock.prettyClass().equals("dev.app.Registry"));
+        assertEquals(1, r.waits().size());
+        assertTrue(r.isFiltered());
+        final List<ContentionReport.Convoy> convoys = r.convoys(5, 10);
+        assertEquals(1, convoys.size());
+        assertEquals(LOOP1, convoys.getFirst().head().waiter());
+        assertEquals(STORE, convoys.getFirst().links().get(1).lock());
+        assertEquals(FLUSHER, convoys.getFirst().links().get(1).owner());
+    }
+
+    @Test
     void lockKeyPrettyPrinting() {
         assertEquals("dev.app.Registry@abc", REGISTRY.pretty());
         assertEquals("dev.app.Registry", REGISTRY.prettyClass());
@@ -369,7 +442,7 @@ class ContentionReportTest {
      * of work between them: a loop that is parked for all but a fraction of its own span.
      */
     static List<Wait> perch(final LockKey lock, final ThreadRef waiter, final int parks, final long eachMs) {
-        final List<Wait> out = new java.util.ArrayList<>(parks);
+        final List<Wait> out = new ArrayList<>(parks);
         for (int i = 0; i < parks; i++) {
             final long from = i * (eachMs + 10);
             out.add(new Wait(new Interval(from * MS, (from + eachMs) * MS), waiter, lock, null, MAILBOX));
@@ -396,10 +469,10 @@ class ContentionReportTest {
         assertEquals(0, busy.perchCount());
 
         // Two threads on it is contention whatever the share, and so is one holder.
-        final List<Wait> shared = new java.util.ArrayList<>(perch(mailbox, LOOP1, 50, 90));
+        final List<Wait> shared = new ArrayList<>(perch(mailbox, LOOP1, 50, 90));
         shared.add(new Wait(new Interval(0, 5_000 * MS), LOOP2, mailbox, null, MAILBOX));
         assertEquals(51, new ContentionReport(window(0, 10_000), shared).waits().size());
-        final List<Wait> held = new java.util.ArrayList<>(perch(mailbox, LOOP1, 50, 90));
+        final List<Wait> held = new ArrayList<>(perch(mailbox, LOOP1, 50, 90));
         held.add(new Wait(new Interval(0, 5_000 * MS), LOOP1, mailbox, HOUSEKEEPER, MAILBOX));
         assertEquals(51, new ContentionReport(window(0, 10_000), held).waits().size());
 
@@ -420,7 +493,7 @@ class ContentionReportTest {
         // thirds of the recording. Its lock is under the share on its own, and a rule that let
         // the threshold decide would put that one lock, alone, at the top of the contention it
         // is not part of. The stack the measurement found answers for it.
-        final List<Wait> waits = new java.util.ArrayList<>();
+        final List<Wait> waits = new ArrayList<>();
         for (int i = 0; i < 12; i++) {
             waits.addAll(perch(new LockKey("dev.app.DefaultMailbox", 0x10 + i, Kind.PARK),
                     new ThreadRef(10 + i, "dispatcher-" + i), 100, 60));
@@ -432,23 +505,100 @@ class ContentionReportTest {
         assertEquals(13, r.perchCount());
 
         // The propagation follows the stack, not the class: a lock nobody idles on keeps its row.
-        final List<Wait> withReal = new java.util.ArrayList<>(waits);
+        final List<Wait> withReal = new ArrayList<>(waits);
         withReal.add(new Wait(new Interval(0, 2_000 * MS), FLUSHER, STORE, HOUSEKEEPER, AWAITING_RESULT));
         assertEquals(1, new ContentionReport(window(0, 10_000), withReal).waits().size());
     }
 
     @Test
+    void aStacklessPerchSpeaksForNoOtherLock() {
+        // A perch whose parks carry no stack names no loop. Every other stackless lock prints
+        // the same nothing, and one of them here is two threads' real 400 ms wait.
+        final LockKey mailbox = new LockKey("dev.app.DefaultMailbox", 0x1, Kind.PARK);
+        final LockKey other = new LockKey("dev.app.Reply", 0x2, Kind.PARK);
+        final List<Wait> waits = new ArrayList<>();
+        for (final Wait w : perch(mailbox, LOOP1, 100, 60)) {
+            waits.add(new Wait(w.interval(), w.waiter(), w.lock(), null, Stack.EMPTY));
+        }
+        waits.add(wait(100, 300, LOOP2, other, null));
+        waits.add(wait(400, 600, LOOP2, other, null));
+        final ContentionReport r = new ContentionReport(window(0, 10_000), waits);
+        assertEquals(2, r.waits().size(), "a stackless perch swallowed an unrelated stackless lock");
+        assertEquals(other, r.locks(10).getFirst().lock());
+        // The perch itself is still recognised by its own shape.
+        assertEquals(100, r.workWaits().size());
+        assertEquals(1, r.perchCount());
+    }
+
+    @Test
+    void aLoopIsTheStackAsItPrintsWhateverTheFrameKinds() {
+        // The busy dispatcher's stack is the idle ones' with one frame inlined rather than
+        // compiled: it prints the same, so it is the same loop and answers to the same verdict.
+        final List<Wait> waits = new ArrayList<>();
+        for (int i = 0; i < 12; i++) {
+            waits.addAll(perch(new LockKey("dev.app.DefaultMailbox", 0x10 + i, Kind.PARK),
+                    new ThreadRef(10 + i, "dispatcher-" + i), 100, 60));
+        }
+        final Stack inlined = stack(
+                new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
+                new Frame("java.util.concurrent.locks.LockSupport", "parkNanos", 271, "Inlined"),
+                new Frame("dev.app.DefaultMailbox", "awaitNextMessage", 92, "JIT compiled"),
+                new Frame("dev.app.SystemDispatcher$DispatchLoop", "run", 80, "JIT compiled"));
+        assertEquals(MAILBOX.pretty("", 10), inlined.pretty("", 10));
+        final LockKey busyOne = new LockKey("dev.app.DefaultMailbox", 0x99, Kind.PARK);
+        for (final Wait w : perch(busyOne, new ThreadRef(99, "dispatcher-12"), 20, 60)) {
+            waits.add(new Wait(w.interval(), w.waiter(), w.lock(), null, inlined));
+        }
+        final ContentionReport r = new ContentionReport(window(0, 10_000), waits);
+        assertTrue(r.waits().isEmpty(), "the busy worker's mailbox is reported as contention");
+        assertEquals(13, r.perchCount());
+    }
+
+    @Test
+    void recognisedByShapeCountsTheListedLocksTheIdleListDidNotName() {
+        // Three locks with a perch's shape: the flusher's is a pool worker the idle list names,
+        // and the two mailboxes are not in any list. Only the mailboxes were found by shape.
+        final LockKey pool = new LockKey("java.util.concurrent.LinkedBlockingQueue", 0x1, Kind.PARK);
+        final LockKey mailbox1 = new LockKey("dev.app.DefaultMailbox", 0x2, Kind.PARK);
+        final LockKey mailbox2 = new LockKey("dev.app.DefaultMailbox", 0x3, Kind.PARK);
+        final List<Wait> waits = new ArrayList<>();
+        for (final Wait w : perch(pool, FLUSHER, 100, 60)) {
+            waits.add(new Wait(w.interval(), w.waiter(), w.lock(), null, NO_WORK));
+        }
+        waits.addAll(perch(mailbox1, LOOP1, 100, 60));
+        waits.addAll(perch(mailbox2, LOOP2, 100, 60));
+        final ContentionReport all = new ContentionReport(window(0, 10_000), waits);
+        assertEquals(300, all.workWaits().size());
+        assertEquals(2, all.perchCount());
+        // --thread leaves event-loop-2 out: its mailbox is not a row, so it is not counted.
+        final ContentionReport one = new ContentionReport(window(0, 10_000), waits, 0,
+                name -> !name.equals("event-loop-2"));
+        assertEquals(200, one.workWaits().size());
+        assertEquals(1, one.perchCount());
+    }
+
+    @Test
     void aPerchIsDecidedBeforeTheFiltersNarrowTheReport() {
         // --min hides the short parks that prove the lock is a perch; the verdict is reached
-        // on every wait in the file, so what the reader passes cannot change what it is.
+        // on every wait in the file, so what the reader passes cannot change what it is. The
+        // three long parks that pass --min are a small share of the window on their own.
         final LockKey mailbox = new LockKey("dev.app.DefaultMailbox", 0x1, Kind.PARK);
-        final List<Wait> waits = perch(mailbox, LOOP1, 100, 60);
+        final List<Wait> waits = new ArrayList<>(perch(mailbox, LOOP1, 100, 60));
+        for (int i = 0; i < 3; i++) {
+            final long from = 7_000 + i * 210;
+            waits.add(new Wait(new Interval(from * MS, (from + 200) * MS), LOOP1, mailbox, null, MAILBOX));
+        }
         final ContentionReport r = new ContentionReport(window(0, 11_000), waits, 100 * MS, _ -> true);
+        assertTrue(r.waits().isEmpty(), "--min turned the perch back into contention");
+        assertEquals(3, r.workWaits().size());
         assertEquals(1, r.perchCount());
-        assertTrue(r.waits().isEmpty());
-        // Nothing is reported either way here; what must not happen is the lock coming back as
-        // contention because --min hid the evidence.
-        assertTrue(r.workWaits().isEmpty());
+
+        // When the filters list none of its parks, the lock is not a row the reader can see,
+        // and "recognised by shape" does not count it.
+        final ContentionReport hidden = new ContentionReport(window(0, 11_000), waits, 300 * MS, _ -> true);
+        assertTrue(hidden.waits().isEmpty());
+        assertTrue(hidden.workWaits().isEmpty());
+        assertEquals(0, hidden.perchCount());
     }
 
     @Test
@@ -489,7 +639,7 @@ class ContentionReportTest {
         final Stack queue = stack(
                 new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
                 new Frame("dev.app.ChannelBrowseSink", "take", 154, "JIT compiled"));
-        final List<Wait> waits = new java.util.ArrayList<>();
+        final List<Wait> waits = new ArrayList<>();
         for (int i = 0; i < 6; i++) {
             waits.add(new Wait(new Interval(100 * MS, 200 * MS), new ThreadRef(10 + i, "browse-" + i),
                     new LockKey("java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject",
@@ -500,7 +650,7 @@ class ContentionReportTest {
 
         // Per instance, the registry's single 300 ms wait outranks every 100 ms queue.
         assertEquals(REGISTRY, r.locks(10).getFirst().lock());
-        final List<ContentionReport.SiteStats> sites = r.lockSites(10, 6);
+        final List<ContentionReport.SiteStats> sites = r.lockSites(10);
         assertEquals(2, sites.size());
         final ContentionReport.SiteStats first = sites.getFirst();
         assertEquals(6, first.locks().size());
@@ -508,13 +658,35 @@ class ContentionReportTest {
         assertEquals(6, first.count());
         assertEquals(100 * MS, first.maxNanos());
         assertEquals(6, first.waiters().size());
+        // Named in the order they came, the same on every run.
+        assertEquals(List.of("browse-0", "browse-1", "browse-2", "browse-3", "browse-4", "browse-5"),
+                first.waiters().stream().map(ThreadRef::name).toList());
         assertTrue(first.owners().isEmpty());
         assertEquals(Kind.PARK, first.kind());
         // The registry is the second site, with its holder kept.
         assertEquals(List.of(REGISTRY), sites.get(1).locks());
         assertEquals(Set.of(FLUSHER), sites.get(1).owners());
         // --top caps the sites, not the instances behind them.
-        assertEquals(1, r.lockSites(1, 6).size());
-        assertEquals(6, r.lockSites(1, 6).getFirst().locks().size());
+        assertEquals(1, r.lockSites(1).size());
+        assertEquals(6, r.lockSites(1).getFirst().locks().size());
+    }
+
+    @Test
+    void aSiteIsTheStackToOneDepthWhoeverPrintsIt() {
+        // Two queues whose stacks differ only in their ninth frame: one site at the depth sites
+        // are compared, which is the depth both renderers print them at.
+        final List<Wait> waits = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            final List<Frame> frames = new ArrayList<>();
+            for (int f = 0; f < 10; f++) {
+                frames.add(new Frame("dev.app.Layer" + f, "call", f == 8 ? 100 + i : 1, "JIT compiled"));
+            }
+            waits.add(new Wait(new Interval(100 * MS, 200 * MS), new ThreadRef(10 + i, "browse-" + i),
+                    new LockKey("dev.app.Queue", 0x100 + i, Kind.PARK), null, new Stack(frames, false)));
+        }
+        final ContentionReport r = new ContentionReport(info(), waits, 0, _ -> true, IdleMatcher.none());
+        assertTrue(ContentionReport.SITE_FRAMES < 9);
+        assertEquals(1, r.lockSites(10).size());
+        assertEquals(2, r.lockSites(10).getFirst().locks().size());
     }
 }

@@ -4,29 +4,38 @@
 package dev.jfrq.core.model;
 
 import jdk.jfr.consumer.RecordedFrame;
-import jdk.jfr.consumer.RecordedMethod;
 
 /**
- * One stack frame: declaring type, method name and line. The frame kind
- * ({@code Interpreted}, {@code JIT compiled}, {@code Inlined}, {@code Native}) is kept
- * because a native top frame is how an idle event loop looks.
+ * One stack frame: declaring type, method name and line, and whether the method is native.
+ *
+ * <p>JFR also records how the method was running when the stack was taken
+ * ({@code Interpreted}, {@code JIT compiled}, {@code Inlined}, {@code Native}). Only the
+ * native bit is kept, because it is how a frame without a line prints
+ * ({@code Native Method}). The other three say what the JIT had done with the method at
+ * that instant, not where the code is: kept, the same line sampled before and after it was
+ * compiled was two frames, so one site was split into several stacks that print
+ * identically, and the biggest of them was not the one a reader would pick.
+ *
+ * @param isNative whether JFR recorded the frame as {@code Native}
  */
-public record Frame(String type, String method, int line, String kind) {
+public record Frame(String type, String method, int line, boolean isNative) {
 
-    public static Frame of(final RecordedFrame f) {
-        final RecordedMethod m = f.getMethod();
-        final String type = m != null && m.getType() != null ? m.getType().getName() : "?";
-        final String method = m != null ? m.getName() : "?";
-        return new Frame(type, method, f.getLineNumber(), f.getType());
+    /** The frame type JFR gives a native method. */
+    public static final String NATIVE = "Native";
+
+    /** A frame from the type JFR names it with; only {@link #NATIVE} is kept of it. */
+    public Frame(final String type, final String method, final int line, final String kind) {
+        this(type, method, line, isNativeKind(kind));
+    }
+
+    /** Whether a JFR frame type ({@link RecordedFrame#getType()}) is the native one. */
+    public static boolean isNativeKind(final String kind) {
+        return NATIVE.equals(kind);
     }
 
     /** {@code java.lang.Thread.sleep}. */
     public String qualifiedName() {
         return type + "." + method;
-    }
-
-    public boolean isNative() {
-        return "Native".equals(kind);
     }
 
     /**
@@ -55,7 +64,7 @@ public record Frame(String type, String method, int line, String kind) {
         if (inner > 0) {
             file = file.substring(0, inner);
         }
-        final String location = line > 0 ? file + ".java:" + line : isNative() ? "Native Method" : file + ".java";
+        final String location = line > 0 ? file + ".java:" + line : isNative ? "Native Method" : file + ".java";
         return qualifiedName() + "(" + location + ")";
     }
 

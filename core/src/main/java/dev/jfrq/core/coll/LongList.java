@@ -17,6 +17,7 @@ public final class LongList implements Mutable {
     private static final int DEFAULT_CAPACITY = 16;
     private static final long DEFAULT_NO_ENTRY_VALUE = -1L;
 
+    // A field added below that holds contents must be reset in clear() too (G-3.2); the array is kept for reuse.
     private final long noEntryValue;
     private long[] data;
     private int pos;

@@ -41,7 +41,9 @@ public final class EventKinds {
     public static final int OBJECT_ALLOCATION_IN_NEW_TLAB = OBJECT_ALLOCATION_SAMPLE + 1;
     public static final int OBJECT_ALLOCATION_OUTSIDE_TLAB = OBJECT_ALLOCATION_IN_NEW_TLAB + 1;
     public static final int THREAD_ALLOCATION_STATISTICS = OBJECT_ALLOCATION_OUTSIDE_TLAB + 1;
-    public static final int COUNT = THREAD_ALLOCATION_STATISTICS + 1;
+    public static final int THREAD_START = THREAD_ALLOCATION_STATISTICS + 1;
+    public static final int THREAD_END = THREAD_START + 1;
+    public static final int COUNT = THREAD_END + 1;
 
     private static final String[] NAMES = new String[COUNT];
     private static final ObjLongHashMap<String> BY_NAME = new ObjLongHashMap<>(COUNT, UNKNOWN);
@@ -67,6 +69,8 @@ public final class EventKinds {
         NAMES[OBJECT_ALLOCATION_IN_NEW_TLAB] = "jdk.ObjectAllocationInNewTLAB";
         NAMES[OBJECT_ALLOCATION_OUTSIDE_TLAB] = "jdk.ObjectAllocationOutsideTLAB";
         NAMES[THREAD_ALLOCATION_STATISTICS] = "jdk.ThreadAllocationStatistics";
+        NAMES[THREAD_START] = "jdk.ThreadStart";
+        NAMES[THREAD_END] = "jdk.ThreadEnd";
         for (int kind = 0; kind < COUNT; kind++) {
             assert NAMES[kind] != null : kind;
             BY_NAME.put(NAMES[kind], kind);

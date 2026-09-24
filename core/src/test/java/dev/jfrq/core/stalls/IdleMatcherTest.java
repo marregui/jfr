@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import dev.jfrq.core.model.Frame;
@@ -67,6 +68,28 @@ class IdleMatcherTest {
                 new Frame("sun.nio.ch.KQueue", "poll", 0, "Native")), false);
         assertTrue(IdleMatcher.defaults().isIdle(thirdFrame));
         assertFalse(IdleMatcher.defaults().isIdle(Stack.EMPTY));
+    }
+
+    @Test
+    void aCallerBlockedInManagedBlockIsNotWaitingForWork() {
+        // JDK 25 routes CompletableFuture.get and every untimed Condition.await through
+        // ForkJoinPool.managedBlock: the frame says nothing about who is waiting for what.
+        final IdleMatcher workWaits = IdleMatcher.forWorkWaits();
+        assertFalse(workWaits.isIdle(StallAnalysisTest.AWAITING_RESULT));
+        // The pool's own frame is still found under the same machinery, eight frames down.
+        assertTrue(workWaits.isIdle(StallAnalysisTest.NO_WORK));
+    }
+
+    @Test
+    void workWaitsLookTenFramesDeep() {
+        final List<Frame> frames = new ArrayList<>();
+        for (int i = 0; i < 9; i++) {
+            frames.add(new Frame("dev.app.Wrapper", "level" + i, 1, "JIT compiled"));
+        }
+        frames.add(new Frame("java.util.concurrent.ThreadPoolExecutor", "getTask", 1016, "JIT compiled"));
+        assertTrue(IdleMatcher.forWorkWaits().isIdle(new Stack(frames, false)));
+        frames.addFirst(new Frame("dev.app.Wrapper", "deeper", 1, "JIT compiled"));
+        assertFalse(IdleMatcher.forWorkWaits().isIdle(new Stack(frames, false)));
     }
 
     @Test

@@ -24,6 +24,11 @@ import dev.jfrq.core.stalls.Timeline.Pause;
 public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary> threads, List<Stall> stalls,
                           List<Pause> pauses, List<String> warnings) {
 
+    /** What both renderers say when no watched thread has anything to judge it by. */
+    public static final String NO_THREAD = "No thread matched that has a sample or a blocking event. `jfrq info` "
+            + "lists every thread seen in any event, the JVM's own included; stalls can judge only a thread the "
+            + "sampler or a blocking event saw.";
+
     /**
      * Per-thread facts.
      *
@@ -33,7 +38,8 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
      * @param nativeCadenceNanos median interval between consecutive native samples (which is
      *                           how an idle event loop is seen); 0 if unknown
      * @param stalls             stalls attributed to the thread
-     * @param stalledNanos       sum of stall lengths (stalls may nest, so this can exceed wall time)
+     * @param stalledNanos       sum of stall lengths; a thread's stalls are disjoint, so this never
+     *                           exceeds its life in the recording
      * @param worstNanos         the longest stall
      */
     public record ThreadSummary(ThreadRef thread, int samples, long javaCadenceNanos, long nativeCadenceNanos,
@@ -48,6 +54,11 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
         threads = List.copyOf(threads);
         pauses = List.copyOf(pauses);
         warnings = List.copyOf(warnings);
+    }
+
+    /** Whether no watched thread had anything to judge it by: both renderers then say {@link #NO_THREAD}. */
+    public boolean isNoThreadMatched() {
+        return threads.isEmpty() && stalls.isEmpty();
     }
 
     public List<Stall> top(final int n) {
@@ -88,7 +99,10 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
     public record VerdictSummary(Stall.Verdict verdict, int count, long totalNanos, long worstNanos) {
     }
 
-    /** Totals per verdict, indexed by ordinal (G-1.9): three longs per verdict. */
+    /**
+     * Totals per verdict, flat and indexed by ordinal (G-1.8, G-1.9): three longs per verdict
+     * in a power-of-two stride, the fourth slot unused.
+     */
     private static final int TOTALS_STRIDE = 4;
     private static final int COUNT = 0;
     private static final int TOTAL = 1;

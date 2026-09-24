@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 class ArgsTest {
 
     static final Set<String> VALUED = Set.of("top", "gap", "thread");
-    static final Set<String> FLAGS = Set.of("sites");
+    static final Set<String> FLAGS = Set.of("sites", "help");
 
     static Args parse(final String... argv) {
         return Args.parse(argv, VALUED, FLAGS);
@@ -57,5 +57,26 @@ class ArgsTest {
         assertThrows(Args.UsageException.class, () -> parse("--gap", "-1ms").durationOption("gap", "1s", true));
         final String message = assertThrows(Args.UsageException.class, () -> parse("--bogus")).getMessage();
         assertEquals("unknown option --bogus", message);
+    }
+
+    @Test
+    void slipsThatUsedToPassAreUsageErrors() {
+        assertEquals("--gap has spaces around it: '50ms '",
+                assertThrows(Args.UsageException.class, () -> parse("--gap", "50ms ").durationOption("gap", "1s", false))
+                        .getMessage());
+        assertThrows(Args.UsageException.class, () -> parse("--gap", " 50ms").durationOption("gap", "1s", false));
+        assertThrows(Args.UsageException.class, () -> parse("--gap", "50 ").durationOption("gap", "1s", false));
+        assertEquals("--thread needs a value", assertThrows(Args.UsageException.class, () -> parse("--thread=")).getMessage());
+        assertThrows(Args.UsageException.class, () -> parse("--thread", ""));
+        assertEquals("--top given twice", assertThrows(Args.UsageException.class, () -> parse("--top", "1", "--top=2"))
+                .getMessage());
+        assertThrows(Args.UsageException.class, () -> parse("--sites", "--sites"));
+        assertEquals("unknown option -x", assertThrows(Args.UsageException.class, () -> parse("-x", "rec.jfr")).getMessage());
+        // -h is --help where there is one; a lone '-' stays a positional.
+        assertTrue(parse("rec.jfr", "-h").flag("help"));
+        assertThrows(Args.UsageException.class, () -> Args.parse(new String[] {"-h"}, VALUED, Set.of()));
+        assertEquals(List.of("-"), parse("-").positional());
+        // A value that looks like an option is still the value of the option before it.
+        assertEquals("-1", parse("--top", "-1").option("top").orElseThrow());
     }
 }

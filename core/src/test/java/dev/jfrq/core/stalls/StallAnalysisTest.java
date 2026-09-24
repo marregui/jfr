@@ -10,8 +10,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 
 import dev.jfrq.core.coll.LongList;
@@ -62,7 +65,7 @@ class StallAnalysisTest {
     }
 
     static RecordingInfo info(final long spanMillis, final Map<String, Map<String, String>> settings, final String... presentTypes) {
-        final Map<String, Long> counts = new java.util.HashMap<>();
+        final Map<String, Long> counts = new HashMap<>();
         for (final String t : presentTypes) {
             counts.put(t, 1L);
         }
@@ -100,25 +103,38 @@ class StallAnalysisTest {
         return new Block(new Interval(fromMs * MS, toMs * MS), kind, detail, stack, null);
     }
 
-    /** A fixed pool's worker with nothing to do: the frame that says so is five deep. */
+    /**
+     * A fixed pool's worker with nothing to do, as JDK 25 records it: an untimed await goes
+     * through the managed-blocker frames, so the frame that says so is eight deep.
+     */
     static final Stack NO_WORK = stack(
             new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
-            new Frame("java.util.concurrent.locks.LockSupport", "park", 341, "JIT compiled"),
-            new Frame("java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject", "await", 1761, "JIT compiled"),
+            new Frame("java.util.concurrent.locks.LockSupport", "park", 369, "JIT compiled"),
+            new Frame("java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionNode", "block", 520, "JIT compiled"),
+            new Frame("java.util.concurrent.ForkJoinPool", "unmanagedBlock", 4364, "JIT compiled"),
+            new Frame("java.util.concurrent.ForkJoinPool", "managedBlock", 4310, "JIT compiled"),
+            new Frame("java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject", "await", 1752, "JIT compiled"),
             new Frame("java.util.concurrent.LinkedBlockingQueue", "take", 435, "JIT compiled"),
-            new Frame("java.util.concurrent.ThreadPoolExecutor", "getTask", 1070, "JIT compiled"),
-            new Frame("java.util.concurrent.ThreadPoolExecutor", "runWorker", 1130, "JIT compiled"),
-            new Frame("java.lang.Thread", "run", 1583, "Interpreted"));
+            new Frame("java.util.concurrent.ThreadPoolExecutor", "getTask", 1016, "JIT compiled"),
+            new Frame("java.util.concurrent.ThreadPoolExecutor", "runWorker", 1076, "JIT compiled"),
+            new Frame("java.lang.Thread", "run", 1474, "Interpreted"));
 
-    /** The same pool, running a task that waits for a result: the wait is real and costs a caller. */
+    /**
+     * The same pool, running a task that waits for a result: the wait is real and costs a
+     * caller. JDK 25 blocks a {@code CompletableFuture.get} through the same
+     * {@code ForkJoinPool.managedBlock} frame as the idle worker above.
+     */
     static final Stack AWAITING_RESULT = stack(
             new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
-            new Frame("java.util.concurrent.locks.LockSupport", "park", 341, "JIT compiled"),
-            new Frame("java.util.concurrent.CompletableFuture$Signaller", "block", 1864, "JIT compiled"),
-            new Frame("java.util.concurrent.CompletableFuture", "timedGet", 1960, "JIT compiled"),
+            new Frame("java.util.concurrent.locks.LockSupport", "park", 223, "JIT compiled"),
+            new Frame("java.util.concurrent.CompletableFuture$Signaller", "block", 1885, "JIT compiled"),
+            new Frame("java.util.concurrent.ForkJoinPool", "unmanagedBlock", 4364, "JIT compiled"),
+            new Frame("java.util.concurrent.ForkJoinPool", "managedBlock", 4310, "JIT compiled"),
+            new Frame("java.util.concurrent.CompletableFuture", "waitingGet", 1918, "JIT compiled"),
+            new Frame("java.util.concurrent.CompletableFuture", "get", 2094, "JIT compiled"),
             new Frame("dev.app.Browser", "browse", 163, "JIT compiled"),
-            new Frame("java.util.concurrent.ThreadPoolExecutor", "runWorker", 1130, "JIT compiled"),
-            new Frame("java.lang.Thread", "run", 1583, "Interpreted"));
+            new Frame("java.util.concurrent.ThreadPoolExecutor", "runWorker", 1076, "JIT compiled"),
+            new Frame("java.lang.Thread", "run", 1474, "Interpreted"));
 
     static StallReport analyse(final List<Sample> samples, final List<Block> blocks, final List<Pause> pauses) {
         return analyse(sampledInfo(), samples, blocks, pauses);
@@ -127,7 +143,7 @@ class StallAnalysisTest {
     static StallReport analyse(final RecordingInfo info, final List<Sample> samples, final List<Block> blocks,
                                final List<Pause> pauses) {
         final List<Sample> sorted = new ArrayList<>(samples);
-        sorted.sort(java.util.Comparator.comparingLong(Sample::time));
+        sorted.sort(Comparator.comparingLong(Sample::time));
         return new StallAnalysis(50 * MS).analyse(info, List.of(new ThreadTimeline(LOOP, sorted, blocks)), pauses);
     }
 
@@ -239,7 +255,7 @@ class StallAnalysisTest {
                 idle(0, 200, 10), List.of(idlePool), List.of());
 
         assertTrue(r.stalls().isEmpty(), r.stalls().toString());
-        assertTrue(r.warnings().stream().anyMatch(w -> w.contains("1 park totalling 1m10s were workers waiting")),
+        assertTrue(r.warnings().stream().anyMatch(w -> w.contains("1 wait totalling 1m10s were workers waiting")),
                 r.warnings().toString());
     }
 
@@ -527,7 +543,9 @@ class StallAnalysisTest {
         final Stall s = r.stalls().getFirst();
         assertEquals(Verdict.GC_PAUSE, s.verdict());
         assertEquals(Evidence.SILENCE, s.evidence());
-        assertEquals(new Interval(900 * MS, 1150 * MS), s.interval());
+        // What the pause accounts for, not the whole silence around it: the thread may have
+        // been running on either side of it.
+        assertEquals(gc.interval(), s.interval());
         // The same silence with nothing to explain it is below the threshold: not reported.
         assertTrue(analyse(samples, List.of(), List.of()).stalls().isEmpty());
         // Below the threshold the explanation must cover a whole gap by itself: a 40 ms pause
@@ -649,5 +667,424 @@ class StallAnalysisTest {
         assertEquals(List.of(gap), r.unexplained());
         assertEquals(List.of(parked), StallReport.top(r.explained(), 5));
         assertEquals(List.of(), StallReport.top(r.explained(), 0));
+    }
+
+    /** A consumer loop parked on a queue: nothing in any idle list. */
+    static final Stack CONSUMER = stack(
+            new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
+            new Frame("java.util.concurrent.locks.LockSupport", "park", 341, "JIT compiled"),
+            new Frame("java.util.concurrent.ArrayBlockingQueue", "take", 420, "JIT compiled"),
+            new Frame("dev.app.Consumer", "awaitData", 40, "JIT compiled"),
+            new Frame("dev.app.Consumer", "run", 20, "JIT compiled"));
+
+    static final ThreadRef CONSUMER_2 = new ThreadRef(4, "consumer-2");
+
+    @Test
+    void aPerchIsJudgedOnEveryThreadsParksNotOnlyOnTheWatchedOnes() {
+        // 6 s of a 10 s window parked in two parks: alone, that is the loop's perch. But a
+        // second thread parks on the same queue, so it is a queue two threads wait on, and
+        // which of them --thread selected must not change that.
+        final String queue = "on dev.app.Queue@1f";
+        final List<Block> mine = List.of(blockWith(1_000, 4_000, BlockKind.PARK, queue, CONSUMER),
+                blockWith(5_000, 8_000, BlockKind.PARK, queue, CONSUMER));
+        final ParkShapes everyone = new ParkShapes();
+        for (final Block b : mine) {
+            everyone.add(LOOP, b.detail(), b.start(), b.interval().end(), b.stack());
+        }
+        final ParkShapes alone = new ParkShapes();
+        for (final Block b : mine) {
+            alone.add(LOOP, b.detail(), b.start(), b.interval().end(), b.stack());
+        }
+        everyone.add(CONSUMER_2, queue, 8_500 * MS, 8_600 * MS, CONSUMER);
+        final List<ThreadTimeline> watched = List.of(new ThreadTimeline(LOOP, List.of(), mine));
+
+        final StallReport shared = new StallAnalysis(50 * MS).analyse(sampledInfo(), watched, List.of(), everyone, List.of());
+        assertEquals(2, shared.stalls().size(), shared.stalls().toString());
+        assertEquals(Verdict.PARKED, shared.stalls().getFirst().verdict());
+
+        final StallReport own = new StallAnalysis(50 * MS).analyse(sampledInfo(), watched, List.of(), alone, List.of());
+        assertTrue(own.stalls().isEmpty(), own.stalls().toString());
+    }
+
+    @Test
+    void parksWithNoBlockerObjectNeverMakeAPerch() {
+        // A retry loop's parkNanos backoff: 6 s of a 10 s window in three parks, on no object.
+        // Every blocker-less park in the JVM shares that "lock"; it is not the thread's idle point.
+        final Stack backoff = stack(
+                new Frame("jdk.internal.misc.Unsafe", "park", 0, "Native"),
+                new Frame("java.util.concurrent.locks.LockSupport", "parkNanos", 400, "JIT compiled"),
+                new Frame("dev.app.Loop", "retryWithBackoff", 77, "JIT compiled"),
+                new Frame("dev.app.Loop", "run", 20, "JIT compiled"));
+        final List<Block> parks = List.of(
+                blockWith(1_000, 3_000, BlockKind.PARK, ParkShapes.NO_BLOCKER, backoff),
+                blockWith(4_000, 6_000, BlockKind.PARK, ParkShapes.NO_BLOCKER, backoff),
+                blockWith(7_000, 9_000, BlockKind.PARK, ParkShapes.NO_BLOCKER, backoff));
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(new ThreadTimeline(LOOP, List.of(), parks)), List.of());
+        assertEquals(3, r.stalls().size(), r.stalls().toString());
+        assertTrue(r.warnings().stream().noneMatch(w -> w.contains("waiting for their own queue")), r.warnings().toString());
+    }
+
+    /** A thread whose life the recording bounds: here the whole 10 s span. */
+    static ThreadTimeline lived(final List<Sample> samples, final List<Block> blocks, final long fromMs, final long toMs) {
+        return new ThreadTimeline(LOOP, samples, blocks, fromMs * MS, toMs * MS);
+    }
+
+    @Test
+    void aThreadStuckFromTheMiddleToTheEndIsReported() {
+        // Idle at its selector for a second, then nothing: the monitor it blocked on was still
+        // held when the recording stopped, so no event was ever written for it.
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(idle(0, 1_000, 10), List.of(), 0, 10_000)), List.of());
+        assertEquals(1, r.stalls().size(), r.stalls().toString());
+        final Stall s = r.stalls().getFirst();
+        assertEquals(Verdict.UNEXPLAINED, s.verdict());
+        assertEquals(new Interval(990 * MS, 10_000 * MS), s.interval());
+        assertTrue(s.detail().contains("runs to the thread's last moment in the recording"), s.detail());
+        assertTrue(s.detail().contains("still in progress when the recording stopped"), s.detail());
+
+        // The same stretch at the start of the recording.
+        final StallReport lead = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(idle(9_000, 10_000, 10), List.of(), 0, 10_000)), List.of());
+        assertEquals(new Interval(0, 9_000 * MS), lead.stalls().getFirst().interval());
+        assertTrue(lead.stalls().getFirst().detail().contains("from the thread's first moment"),
+                lead.stalls().getFirst().detail());
+    }
+
+    @Test
+    void aWorkerThatWentBackToItsQueueIsNotStuckToTheEnd() {
+        // A pool worker busy for a second, then parked for work until after the recording
+        // stopped: that park has no event yet. Seen waiting for work earlier, the stretch after
+        // its last sample is most likely the same wait, and nothing says otherwise.
+        final List<Sample> samples = new ArrayList<>(busy(3_000, 4_000, 10, BURN, false));
+        final Block earlier = blockWith(100, 2_900, BlockKind.PARK, "on q@1", NO_WORK);
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(samples, List.of(earlier), 0, 10_000)), List.of());
+        assertTrue(r.stalls().stream().noneMatch(st -> st.verdict() == Verdict.UNEXPLAINED), r.stalls().toString());
+    }
+
+    @Test
+    void aThreadsBirthAndDeathAreNotStalls() {
+        // Started at 3 s and ended at 6 s: nothing before or after its life is a silence.
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(idle(3_000, 6_000, 10), List.of(), 3_000, 6_000)), List.of());
+        assertTrue(r.stalls().isEmpty(), r.stalls().toString());
+        // Without lifetime events the ends of a thread's life are not judged at all.
+        final StallReport unknown = analyse(idle(3_000, 4_000, 10), List.of(), List.of());
+        assertTrue(unknown.stalls().isEmpty(), unknown.stalls().toString());
+    }
+
+    @Test
+    void aThreadNeverSampledIsNotAnUnexplainedGapButItsExplainedStretchIs() {
+        // No samples at all: no routine absence to be longer than, so no UNEXPLAINED; a GC
+        // pause that stopped it for a whole gap is still a stall.
+        final Block sleep = block(100, 120, BlockKind.SLEEP, "", null);
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(List.of(), List.of(sleep), 0, 10_000)), List.of());
+        assertTrue(r.stalls().isEmpty(), r.stalls().toString());
+        final Pause gc = new Pause(new Interval(2_000 * MS, 7_500 * MS), PauseKind.GC, "Full (gcId 3)");
+        final StallReport paused = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(List.of(), List.of(sleep), 0, 10_000)), List.of(gc));
+        assertEquals(1, paused.stalls().size(), paused.stalls().toString());
+        assertEquals(Verdict.GC_PAUSE, paused.stalls().getFirst().verdict());
+        assertEquals(gc.interval(), paused.stalls().getFirst().interval());
+    }
+
+    @Test
+    void aRunsEstimatedTailGivesWayToTheSilenceAfterIt() {
+        // Busy from 1000 to its last sample at 1090, then nothing until 1145: the 55 ms silence
+        // is evidence, the run's one-period tail past 1090 is an estimate, and the silence wins.
+        final List<Sample> samples = new ArrayList<>(idle(0, 1_000, 10));
+        samples.addAll(busy(1_000, 1_100, 10, BURN, false));
+        samples.addAll(idle(1_145, 2_000, 10));
+        final StallReport r = analyse(samples, List.of(), List.of());
+        final Stall run = r.stalls().stream().filter(st -> st.verdict() == Verdict.BUSY).findFirst()
+                .orElseThrow(() -> new AssertionError(r.stalls().toString()));
+        final Stall silence = r.stalls().stream().filter(st -> st.verdict() == Verdict.UNEXPLAINED).findFirst()
+                .orElseThrow(() -> new AssertionError(r.stalls().toString()));
+        assertEquals(new Interval(1_090 * MS, 1_145 * MS), silence.interval());
+        assertEquals(new Interval(1_000 * MS, 1_090 * MS), run.interval());
+    }
+
+    @Test
+    void aThreadNeverSampledIsNotToldAboutItsLastSample() {
+        // Short blocker-less parks (never a perch) for its whole life, with one long sleep inside: the stretch after
+        // the sleep runs to the thread's last moment, and there is no sample it can come after.
+        final List<Block> blocks = new ArrayList<>();
+        for (long t = 0; t + 40 <= 10_000; t += 45) {
+            if (t + 40 <= 3_000 || t >= 4_000) {
+                blocks.add(blockWith(t, t + 40, BlockKind.PARK, "(no blocker object)", AWAITING_RESULT));
+            }
+        }
+        blocks.add(block(3_000, 4_000, BlockKind.SLEEP, "", null));
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(List.of(), blocks, 0, 10_000)), List.of());
+        assertFalse(r.stalls().isEmpty(), r.stalls().toString());
+        for (final Stall s : r.stalls()) {
+            assertFalse(s.detail().contains("after its last sample"), s.detail());
+        }
+    }
+
+    @Test
+    void blockingEventsOfDifferentKindsTogetherExplainARun() {
+        // Neither the socket reads nor the file read cover half the run on their own; together
+        // they do, so the thread was blocked, not busy.
+        final List<Sample> samples = new ArrayList<>(idle(0, 100, 10));
+        samples.addAll(busy(100, 200, 10, READ0, true));
+        samples.addAll(idle(200, 300, 10));
+        final List<Block> blocks = List.of(
+                block(100, 130, BlockKind.SOCKET_READ, "from db:5432", null),
+                block(140, 170, BlockKind.FILE_READ, "/var/data", null));
+        final StallReport r = analyse(samples, blocks, List.of());
+        assertEquals(1, r.stalls().size(), r.stalls().toString());
+        final Stall s = r.stalls().getFirst();
+        assertEquals(Verdict.BLOCKING_IO, s.verdict());
+        assertEquals(Evidence.SAMPLES, s.evidence());
+        assertEquals("blocking socket read from db:5432, with 1 other blocking event", s.detail());
+    }
+
+    @Test
+    void aThreadSeenOnlyInNativeCodeHasNoJavaCadenceAndChainsByThePeriod() {
+        // Native samples 40 ms apart, 10 ms configured period: 40 ms is the native spacing, not
+        // a Java cadence, and must not stretch the chaining limit to 120 ms.
+        final List<Sample> samples = new ArrayList<>(idle(0, 120, 40));
+        samples.addAll(busy(120, 400, 40, READ0, true));
+        samples.addAll(idle(400, 500, 40));
+        final StallReport r = analyse(samples, List.of(), List.of());
+        assertEquals(0, r.threads().getFirst().javaCadenceNanos());
+        assertEquals(40 * MS, r.threads().getFirst().nativeCadenceNanos());
+        assertTrue(r.stalls().isEmpty(), r.stalls().toString());
+
+        final StallAnalysis.Cadence onlyNative = StallAnalysis.Cadence.of(busy(0, 400, 40, READ0, true), 10 * MS);
+        assertEquals(0, onlyNative.java());
+        assertEquals(40 * MS, onlyNative.inNative());
+        // The routine absence still counts every observation.
+        assertEquals(40 * MS, onlyNative.routineAbsence());
+    }
+
+    @Test
+    void aSmallerGapNeverFindsFewerSampleRuns() {
+        // Busy samples 10.5 ms apart at a 10 ms period: at a 50 ms gap one BUSY run; at a gap
+        // at or below the period the chaining limit used to follow the gap down and chain nothing.
+        final List<Sample> samples = new ArrayList<>(idle(0, 100, 10));
+        for (int k = 0; k < 20; k++) {
+            samples.add(new Sample(100 * MS + k * 10_500_000L, BURN, false, false));
+        }
+        samples.addAll(idle(320, 400, 10));
+        int previous = Integer.MAX_VALUE;
+        for (final long gapMs : new long[]{100, 50, 20, 10, 5, 1}) {
+            final StallReport r = new StallAnalysis(gapMs * MS).analyse(sampledInfo(),
+                    List.of(new ThreadTimeline(LOOP, samples, List.of())), List.of());
+            final long busyRuns = r.stalls().stream().filter(st -> st.verdict() == Verdict.BUSY).count();
+            assertEquals(1, busyRuns, "gap " + gapMs + " ms: " + r.stalls());
+            assertTrue(r.stalls().size() >= Math.min(previous, 1), "gap " + gapMs + " ms");
+            previous = r.stalls().size();
+        }
+    }
+
+    @Test
+    void aCulpritNamedByOneSampleIsNotBusy() {
+        // Two samples 40 ms apart at a 20 ms period chain into a 60 ms run, but they name two
+        // different methods: "busy in A (50% of 2 samples)" rests on one sample.
+        final RecordingInfo slow = info(10_000, Map.of("jdk.ExecutionSample", Map.of("enabled", "true", "period", "20 ms")),
+                "jdk.ExecutionSample");
+        final List<Sample> samples = new ArrayList<>(idle(0, 100, 20));
+        samples.add(new Sample(100 * MS, stack(new Frame("dev.app.A", "a", 1, "JIT compiled")), false, false));
+        samples.add(new Sample(140 * MS, stack(new Frame("dev.app.B", "b", 1, "JIT compiled")), false, false));
+        samples.addAll(idle(200, 300, 20));
+        assertTrue(analyse(slow, samples, List.of(), List.of()).stalls().isEmpty());
+
+        // The same two samples in one method are two observations of it: still BUSY.
+        final List<Sample> same = new ArrayList<>(idle(0, 100, 20));
+        same.addAll(List.of(new Sample(100 * MS, BURN, false, false), new Sample(140 * MS, BURN, false, false)));
+        same.addAll(idle(200, 300, 20));
+        final StallReport r = analyse(slow, same, List.of(), List.of());
+        assertEquals(1, r.stalls().size(), r.stalls().toString());
+        assertTrue(r.stalls().getFirst().detail().contains("100% of 2 samples"), r.stalls().getFirst().detail());
+    }
+
+    @Test
+    void manyShortPausesAreCountedAndTheSilenceIsCutToThem() {
+        // 36 collections of 15 ms, one every 25 ms, inside a 1 s silence: they stopped the JVM
+        // for 540 ms. One gcId on a 1 s stall reads as a single second-long pause.
+        final List<Sample> samples = new ArrayList<>(idle(0, 1_000, 10));
+        samples.addAll(idle(2_000, 2_100, 10));
+        final List<Pause> pauses = new ArrayList<>();
+        for (int k = 0; k < 36; k++) {
+            final long from = 1_100 + 25L * k;
+            pauses.add(new Pause(new Interval(from * MS, (from + 15) * MS), PauseKind.GC, "Young (gcId " + k + ")"));
+        }
+        final StallReport r = analyse(samples, List.of(), pauses);
+        assertEquals(1, r.stalls().size(), r.stalls().toString());
+        final Stall s = r.stalls().getFirst();
+        assertEquals(Verdict.GC_PAUSE, s.verdict());
+        assertEquals("36 × GC pause, 540 ms stopped in total, longest 15.0 ms (Young (gcId 0))", s.detail());
+        assertEquals(new Interval(1_100 * MS, 1_990 * MS), s.interval());
+    }
+
+    @Test
+    void aFrameNamedIdleMakesASleepUnderItIdleButTheWaitPrimitivesDoNot() {
+        // --idle names a hand-written poll loop that sleeps between polls.
+        final Stack poll = stack(new Frame("java.lang.Thread", "sleep0", 0, "Native"),
+                new Frame("java.lang.Thread", "sleep", 509, "JIT compiled"),
+                new Frame("dev.app.Loop", "poll", 30, "JIT compiled"));
+        final Block nap = blockWith(100, 600, BlockKind.SLEEP, "", poll);
+        final IdleMatcher named = IdleMatcher.forWorkWaits(IdleMatcher.of("dev\\.app\\.Loop\\.poll"));
+        final StallReport r = new StallAnalysis(50 * MS, named).analyse(sampledInfo(),
+                List.of(new ThreadTimeline(LOOP, idle(0, 100, 10), List.of(nap))), List.of());
+        assertTrue(r.stalls().isEmpty(), r.stalls().toString());
+        // Without it, the sleep is a stall.
+        assertEquals(1, new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(new ThreadTimeline(LOOP, idle(0, 100, 10), List.of(nap))), List.of()).stalls().size());
+        // A list that repeats the defaults, or names a park itself, must not make every park idle.
+        final IdleMatcher wide = IdleMatcher.forWorkWaits(IdleMatcher.of(
+                String.join(",", IdleMatcher.DEFAULT_PATTERNS) + ",.*Unsafe\\.park,java\\.lang\\.Thread\\.sleep"));
+        assertFalse(wide.isIdle(AWAITING_RESULT));
+        assertFalse(wide.isIdle(poll));
+        assertTrue(wide.isIdle(NO_WORK));
+    }
+
+    @Test
+    void matchingThreadsWithNothingToJudgeAreNamed() {
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(), List.of(), List.of(), new ParkShapes(),
+                List.of("VM Thread"));
+        assertTrue(r.threads().isEmpty());
+        assertEquals(1, r.warnings().size(), r.warnings().toString());
+        assertTrue(r.warnings().getFirst().startsWith("1 matching thread has no samples and no blocking events, "
+                + "so nothing to judge by (VM Thread)"), r.warnings().getFirst());
+        final List<String> many = List.of("a", "b", "c", "d", "e", "f", "g");
+        final String w = new StallAnalysis(50 * MS).analyse(sampledInfo(), List.of(), List.of(), new ParkShapes(), many)
+                .warnings().getFirst();
+        assertTrue(w.startsWith("7 matching threads have no samples and no blocking events, so nothing to judge by "
+                + "(a, b, c, d, e and 2 more)"), w);
+    }
+
+    @Test
+    void aSilenceTheEventStallsCoverTogetherIsNotReportedAgain() {
+        // Two one-minute waits inside a silence of two and a half: each is a stall, and the
+        // silence around them is the same time a second time over.
+        final List<Sample> samples = new ArrayList<>(idle(0, 100, 10));
+        samples.addAll(idle(150_100, 150_200, 10));
+        final List<Block> waits = List.of(block(1_000, 61_000, BlockKind.OBJECT_WAIT, "on dev.app.Lock@1", null),
+                block(62_000, 122_000, BlockKind.OBJECT_WAIT, "on dev.app.Lock@1", null));
+        final StallReport r = analyse(info(200_000, Map.of("jdk.ExecutionSample",
+                Map.of("enabled", "true", "period", "10 ms")), "jdk.ExecutionSample"), samples, waits, List.of());
+        assertEquals(2, r.stalls().size(), r.stalls().toString());
+        assertTrue(r.stalls().stream().allMatch(st -> st.evidence() == Evidence.EVENT), r.stalls().toString());
+    }
+
+    @Test
+    void aPauseBetweenTwoChainedSamplesStopsTheRun() {
+        // Two busy samples 56 ms apart at a 20 ms period chain (three periods reach past the
+        // 50 ms gap), and a 52 ms collection sits between them: the thread was stopped, not busy.
+        final RecordingInfo slow = info(10_000, Map.of("jdk.ExecutionSample", Map.of("enabled", "true", "period", "20 ms")),
+                "jdk.ExecutionSample", "jdk.NativeMethodSample");
+        final List<Sample> samples = new ArrayList<>(idle(0, 1_000, 20));
+        samples.addAll(List.of(new Sample(1_000 * MS, BURN, false, false), new Sample(1_056 * MS, BURN, false, false)));
+        samples.addAll(idle(1_060, 3_000, 20));
+        final Pause gc = new Pause(new Interval(1_003 * MS, 1_055 * MS), PauseKind.GC, "G1 young");
+        final StallReport r = analyse(slow, samples, List.of(), List.of(gc));
+        assertEquals(1, r.stalls().size(), r.stalls().toString());
+        assertEquals(Verdict.GC_PAUSE, r.stalls().getFirst().verdict());
+        assertEquals(gc.interval(), r.stalls().getFirst().interval());
+
+        // Without the collection the same two samples are one busy run.
+        final StallReport busy = analyse(slow, samples, List.of(), List.of());
+        assertEquals(List.of(Verdict.BUSY), busy.stalls().stream().map(Stall::verdict).toList());
+    }
+
+    @Test
+    void aPauseCoveringHalfASilenceExplainsItWholeWhenItIsShorterThanTheGap() {
+        // A 70 ms silence, 45 ms of it a collection: the pause covers it by the rule a block
+        // is held to, so the silence is the pause's, not "no blocking event".
+        final List<Sample> samples = new ArrayList<>(idle(0, 1_010, 10));
+        samples.addAll(idle(1_070, 3_000, 10));
+        final Pause gc = new Pause(new Interval(1_010 * MS, 1_055 * MS), PauseKind.GC, "G1 young");
+        final StallReport r = analyse(samples, List.of(), List.of(gc));
+        assertEquals(1, r.stalls().size(), r.stalls().toString());
+        final Stall s = r.stalls().getFirst();
+        assertEquals(Verdict.GC_PAUSE, s.verdict());
+        assertEquals(new Interval(1_000 * MS, 1_070 * MS), s.interval());
+        assertEquals("GC pause: G1 young, 45.0 ms of a 70.0 ms silence", s.detail());
+    }
+
+    @Test
+    void anEventStallInsideAnExplainedSilenceIsNotCountedTwice() {
+        // A client thread: 600 ms unseen, 30 short parks and one 150 ms socket read among them. The
+        // read is an event stall; the parks explain what is left, around it, and no more.
+        final List<Sample> samples = new ArrayList<>(idle(0, 1_000, 10));
+        samples.addAll(idle(1_600, 2_000, 10));
+        final List<Block> blocks = new ArrayList<>();
+        for (int k = 0; k < 15; k++) {
+            blocks.add(block(1_000 + 20L * k, 1_012 + 20L * k, BlockKind.PARK, ParkShapes.NO_BLOCKER, null));
+            blocks.add(block(1_450 + 10L * k, 1_458 + 10L * k, BlockKind.PARK, ParkShapes.NO_BLOCKER, null));
+        }
+        blocks.add(new Block(new Interval(1_300 * MS, 1_450 * MS), BlockKind.SOCKET_READ, "from backend:9000", Stack.EMPTY, 6));
+        blocks.sort(Comparator.comparing(Block::interval));
+        final StallReport r = analyse(samples, blocks, List.of());
+        final List<Stall> stalls = r.stallsOf(LOOP);
+        assertEquals(List.of(Verdict.PARKED, Verdict.BLOCKING_IO, Verdict.PARKED),
+                stalls.stream().map(Stall::verdict).toList(), stalls.toString());
+        assertEquals(new Interval(990 * MS, 1_300 * MS), stalls.get(0).interval());
+        assertEquals(new Interval(1_450 * MS, 1_600 * MS), stalls.get(2).interval());
+        assertTrue(stalls.get(0).detail().startsWith("15 × parked"), stalls.get(0).detail());
+        assertEquals(610 * MS, r.threads().getFirst().stalledNanos());
+    }
+
+    @Test
+    void aThreadsStallsAreDisjointWhateverTheTimeline() {
+        // Random timelines: samples idle and busy, blocks of every kind nested and overlapping,
+        // pauses, lives bounded or not. However the evidence overlaps, a thread's stalls never
+        // do, so its stalled time never exceeds its life.
+        final long seed = Long.getLong("jfrq.test.seed", System.nanoTime());
+        final String replay = "seed " + seed + ", replay with -Djfrq.test.seed=" + seed;
+        final Random rnd = new Random(seed);
+        final BlockKind[] kinds = BlockKind.values();
+        final Stack[] stacks = {IDLE, BURN, READ0, NO_WORK, AWAITING_RESULT};
+        for (int round = 0; round < 300; round++) {
+            final long spanMs = 2_000 + rnd.nextInt(8_000);
+            final List<Sample> samples = new ArrayList<>();
+            for (long t = rnd.nextInt(50); t < spanMs; t += 1 + rnd.nextInt(rnd.nextBoolean() ? 15 : 120)) {
+                final Stack st = stacks[rnd.nextInt(stacks.length)];
+                samples.add(new Sample(t * MS, st, st == IDLE, rnd.nextBoolean()));
+            }
+            final List<Block> blocks = new ArrayList<>();
+            for (int k = rnd.nextInt(40); k > 0; k--) {
+                final long from = rnd.nextInt((int) spanMs + 200) - 100;
+                final long length = rnd.nextBoolean() ? 1 + rnd.nextInt(40) : 1 + rnd.nextInt(1_500);
+                blocks.add(blockWith(from, from + length, kinds[rnd.nextInt(kinds.length)], "on q@" + rnd.nextInt(3),
+                        stacks[rnd.nextInt(stacks.length)]));
+            }
+            blocks.sort(Comparator.comparing(Block::interval));
+            final List<Pause> pauses = new ArrayList<>();
+            for (int k = rnd.nextInt(20); k > 0; k--) {
+                final long from = rnd.nextInt((int) spanMs);
+                pauses.add(new Pause(new Interval(from * MS, (from + 1 + rnd.nextInt(80)) * MS),
+                        rnd.nextBoolean() ? PauseKind.GC : PauseKind.SAFEPOINT, "p" + k));
+            }
+            final long lifeStart = rnd.nextBoolean() ? 0 : rnd.nextInt(500);
+            final ThreadTimeline tl = rnd.nextBoolean() ? new ThreadTimeline(LOOP, samples, blocks)
+                    : new ThreadTimeline(LOOP, samples, blocks, lifeStart * MS, spanMs * MS);
+            final long gapMs = 5 + rnd.nextInt(100);
+            final RecordingInfo info = info(spanMs, Map.of("jdk.ExecutionSample",
+                    Map.of("enabled", "true", "period", (5 + rnd.nextInt(20)) + " ms")), "jdk.ExecutionSample");
+            final StallReport r = new StallAnalysis(gapMs * MS).analyse(info, List.of(tl), pauses);
+            final List<Stall> stalls = r.stallsOf(LOOP);
+            long total = 0;
+            for (int i = 0; i < stalls.size(); i++) {
+                final Stall s = stalls.get(i);
+                assertTrue(s.duration() >= gapMs * MS, replay + ", round " + round + ": below the gap " + s);
+                assertTrue(info.span().start() <= s.start() && s.interval().end() <= info.span().end(),
+                        replay + ", round " + round + ": outside the span " + s);
+                if (i > 0) {
+                    assertTrue(stalls.get(i - 1).interval().end() <= s.start(),
+                            replay + ", round " + round + ": " + stalls.get(i - 1) + " overlaps " + s);
+                }
+                total += s.duration();
+            }
+            final long stalled = r.threads().isEmpty() ? 0 : r.threads().getFirst().stalledNanos();
+            assertEquals(total, stalled, replay + ", round " + round);
+            assertTrue(stalled <= info.span().duration(), replay + ", round " + round);
+        }
     }
 }

@@ -3,12 +3,12 @@
 Ask a JFR recording one question and get the answer.
 
 ```
-$ jfrq stalls app.jfr --thread 'event-loop-*' --gap 50ms
-
+$ jfrq stalls app.jfr --thread 'event-loop-*' --gap 50ms --top 3
+...
 STALLS >= 50.0 ms: 46 found, showing 3, longest first
-   1  event-loop-3-2         +0.492s    173 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@82c34db20 held by housekeeper (handed on through event-loop-3-1)
-        at dev.jfrq.demo.SessionRegistry.touch(SessionRegistry.java:26)
-        at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:51)
+   1  event-loop-3-2         +13.682s    182 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@9b983e4c0 held by housekeeper (handed on through event-loop-3-1)
+        at dev.jfrq.demo.SessionRegistry.touch(SessionRegistry.java:29)
+        at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:49)
         ...
 ```
 
@@ -57,7 +57,8 @@ waiting for*, or *what changed between the recording before the fix and the one 
 | `jfrq alloc` | Which threads, classes and sites allocate, in bytes per second; and with `--baseline`, what changed between two recordings? |
 | `jfrq info` | What is in the file: span, threads, event counts, and the thresholds and periods that were active when it was made. |
 
-Common options: `--top N`, `--html FILE`, `--timing`.
+Common options: `--top N` (rows per table, default 15; every command but `info`),
+`--html FILE`, `--timing`, `--version`, `--help`.
 
 Every command prints plain text for a terminal or a ticket, and writes a self-contained
 HTML report with `--html`. A 40 MB recording is answered in about a quarter of a second;
@@ -78,7 +79,7 @@ one, instead of the parser hanging on it.
 ## Build and install
 
 ```
-./gradlew build          # compiles, runs 130+ tests, checks coverage
+./gradlew build          # compiles, runs 330+ tests, checks coverage
 ./gradlew installDist    # cli/build/install/jfrq/bin/jfrq, live/build/install/jfrq-live/bin/jfrq-live,
                          # netty-demo/build/install/netty-demo/bin/netty-demo
 ```
@@ -101,34 +102,46 @@ jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REG
 jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html]
 ```
 
-`GLOB` is a comma-separated list of shell globs on thread names: `'event-loop-*'`,
-`'nioEventLoopGroup-*,worker-?'`. `jfrq info` lists them, folded into families (`milo-shared-thread-pool-N* ×33`). Durations take
-a unit (`50ms`, `1.5s`, `2m`); options belong to their command, so a `stalls` option on
-`locks` is an error rather than silently ignored. A wait or a block that began before the
-recording, or outlived it, is counted only for the part inside it, and that is the part
-`--min` and `--gap` are measured against.
+`GLOB` is a comma-separated list of shell globs on thread names (`*`, `?`, `[0-3]`,
+`[!0-9]`; a backslash makes the next character literal): `'event-loop-*'`,
+`'nioEventLoopGroup-*,worker-?'`. `jfrq info` lists them in a `THREADS` table folded into
+families, one row per family with its count and an example (`load-client-N*`, `8`,
+`load-client-1`). Durations take a unit (`50ms`, `1.5s`, `2m`); options belong to their
+command, so a `stalls` option on `locks` is an error rather than silently ignored, and so
+is an option given twice. A wait or a block that began before the recording, or outlived
+it, is counted only for the part inside it, and that is the part `--min` and `--gap` are
+measured against.
 
 `alloc --sites` ranks one row per allocating method — the innermost frame outside the JDK —
 so every path that reaches it is summed instead of ranked separately; the row says how many
 stacks it stands for and how many samples are behind all of them. When that method is in a
 library you cannot change, `--app com.example` moves the attribution to your own innermost
 frame; the report lists the packages it saw, so the value to pass is in front of you.
+`--app` takes a comma-separated list of class or package prefixes, each matching at a `.`
+or `$` boundary: `io.netty` matches `io.netty.buffer` and `io.nett` matches neither, and
+`com.example.Handler` matches its nested classes and lambdas (`com.example.Handler$Inner`)
+but not `com.example.HandlerFactory`.
 `locks --by-site` does the same for lock instances: fifteen queues of the same kind become
 one row of fifteen instances, ranked across all of them.
 
 A thread parked on its own empty queue is not contention and is not a stall: `locks` lists
 those apart and `stalls` leaves them out. They are recognised by the frame of a pool
-waiting for work (`--idle` replaces the list) and, for a worker loop no list knows about,
+waiting for work (`locks --idle` replaces the list; in `stalls`, a sleep, wait or park
+under a frame `--idle` names is idle too) and, for a worker loop no list knows about,
 by shape — one thread, no holder, most of the recording parked there. `--idle none` turns
-both off.
+both off, and in `stalls` it also empties the list of idle frames, so no sample is idle: a
+loop sitting in its selector counts as working.
 
 Every stall says how it was found: nothing after the detail means a blocking event,
 exact to its timestamps; `[samples]` means a run of sampler observations; `[silence]`
 means an absence of samples explained by what covered it.
 
-Exit status is 0 on success, 1 when the recording cannot be read (missing, not a
-recording, truncated inside its first chunk, still being written, or the HTML report
-cannot be written), 2 on a usage error.
+Exit status is 0 on success; 1 when the recording cannot be read (missing, not a
+recording, truncated inside its first chunk, still being written), the HTML report cannot
+be written, or standard output cannot be written; 2 on a usage error. Every option is
+checked before the recording is opened, so these are usage errors too: a directory given
+as the recording, and an `--html` target that is a directory, sits in a directory that is
+missing or not writable, or is one of the recordings being read.
 
 ## Recording for jfrq
 
@@ -158,7 +171,13 @@ A recording the JVM is still writing cannot be read in place (its last chunk is 
 the recording holds, `delta` for what happened since the previous dump, `again` for the
 previous window once more. A cursor per JVM remembers where the last dump stopped, every
 dump prints its real span next to the window asked for, and `start`/`bound` put a
-`--max-age`/`--max-size` on the recording so it does not grow without end.
+`--max-age`/`--max-size` on the recording so it does not grow without end. The question
+after `--` is checked before anything is dumped, and a dump is readable by its owner only
+(mode 0600), as a recording can hold command lines, environment variables and system
+properties.
+
+`status` shows the JVM's recordings and the cursor, and `stop` stops and closes the
+recording.
 
 ```
 jfrq-live 4242 start --max-age 10m

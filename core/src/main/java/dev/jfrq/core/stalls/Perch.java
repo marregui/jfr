@@ -33,6 +33,11 @@ public final class Perch {
     private static final long SHARE_DENOMINATOR = 2;
     /** One long park is a thread that is stuck, not a loop with nothing to do. */
     private static final int MIN_PARKS = 2;
+    /**
+     * How many frames of a stack name the loop that waits there: eight, deep enough to reach
+     * below the park and the queue into the loop itself.
+     */
+    private static final int LOOP_FRAMES = 8;
 
     private Perch() {
     }
@@ -48,6 +53,16 @@ public final class Perch {
                                   final boolean owned, final long windowNanos) {
         return distinctWaiters == 1 && !owned && parks >= MIN_PARKS
                 && totalNanos * SHARE_DENOMINATOR > windowNanos;
+    }
+
+    /**
+     * The loop a stack waits in, as it prints: two stacks that print the same are one loop to
+     * a reader, whatever the frame kinds or the objects behind them, so they are one loop
+     * here. {@code null} for an empty stack, which names no loop: every stackless wait would
+     * print the same, and none of them is evidence about another.
+     */
+    public static String loop(final Stack stack) {
+        return stack.isEmpty() ? null : stack.pretty("", LOOP_FRAMES);
     }
 
     /**

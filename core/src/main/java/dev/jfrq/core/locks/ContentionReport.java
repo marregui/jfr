@@ -4,9 +4,10 @@
 package dev.jfrq.core.locks;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -14,7 +15,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 
-import dev.jfrq.core.coll.ObjHashSet;
 import dev.jfrq.core.coll.ObjList;
 import dev.jfrq.core.coll.ObjLongHashMap;
 import dev.jfrq.core.coll.ObjObjHashMap;
@@ -22,9 +22,10 @@ import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
+import dev.jfrq.core.stalls.Holders;
 import dev.jfrq.core.stalls.IdleMatcher;
 import dev.jfrq.core.stalls.Perch;
-import dev.jfrq.core.util.Sorted;
+import dev.jfrq.core.util.Sorts;
 
 /**
  * Lock contention in one recording: per-lock and per-thread totals, the longest
@@ -93,9 +94,34 @@ public final class ContentionReport {
         }
     }
 
+    /** How deep a lock site's stack is compared and printed, by every renderer: see {@link #lockSites(int)}. */
+    public static final int SITE_FRAMES = 6;
+
     private static final Comparator<Wait> BY_INTERVAL = Comparator.comparing(Wait::interval);
     private static final long PASSES = 1;
     private static final long FAILS = 0;
+    /** How the holder walk reads a wait: a lock is its class and address. */
+    private static final Holders.Access<Wait> WAITS = new Holders.Access<>() {
+        @Override
+        public Interval interval(final Wait wait) {
+            return wait.interval();
+        }
+
+        @Override
+        public ThreadRef owner(final Wait wait) {
+            return wait.owner();
+        }
+
+        @Override
+        public Object lock(final Wait wait) {
+            return wait.lock();
+        }
+
+        @Override
+        public Wait withHolder(final Wait wait, final ThreadRef holder, final List<ThreadRef> via) {
+            return new Wait(wait.interval(), wait.waiter(), wait.lock(), holder, wait.stack(), via);
+        }
+    };
 
     private final RecordingInfo info;
     /** The reported waits, after the filters, in start order. */
@@ -104,10 +130,22 @@ public final class ContentionReport {
     private final List<Wait> workWaits;
     /** How many waits the recording holds before the filters. */
     private final int unfilteredCount;
+    /** How many waits inside the window the filters (--thread, --min, --lock) left out. */
+    private final int filteredOutCount;
     /** How many reported waits were cut down to the recording's span. */
     private final int clippedCount;
-    /** How many locks were set aside by their shape rather than by a frame in the idle list. */
+    /**
+     * How many of the locks under {@link #workWaits} were set aside by their shape alone: no
+     * listed park on them was recognised by a frame in the idle list.
+     */
     private final int perchCount;
+    /**
+     * Every lock ranked, and every wait longest first: each is asked for by more than one
+     * section of a report, and computed once. On a loaded node's 13 000 waits the second
+     * computation of each was a fifth of the time the text report took.
+     */
+    private List<LockStats> ranked;
+    private List<Wait> byDuration;
     /** Every thread's waits, filters or not, so that a convoy can be followed into any thread. */
     private final ObjObjHashMap<ThreadRef, Waits> byWaiter = new ObjObjHashMap<>(256);
 
@@ -157,15 +195,17 @@ public final class ContentionReport {
             sorted.add(waits.get(i));
         }
         sorted.sort(BY_INTERVAL);
-        final ObjObjHashMap<ThreadRef, Waits> raw = new ObjObjHashMap<>(256);
+        // Only monitor enters name a previous owner; a park is never a link in the walk.
+        final Holders<Wait> holders = new Holders<>(WAITS);
         for (int i = 0, n = sorted.size(); i < n; i++) {
             final Wait w = sorted.getQuick(i);
-            waitsOf(raw, w.waiter()).add(w);
+            if (w.kind() == Wait.Kind.MONITOR_ENTER) {
+                holders.add(w.waiter(), w);
+            }
         }
+        holders.seal();
         // The filter runs once per thread, not once per wait (G-2.2).
         final ObjLongHashMap<ThreadRef> filterVerdict = new ObjLongHashMap<>(256);
-        final ObjList<ThreadRef> via = new ObjList<>();
-        final ObjHashSet<ThreadRef> seen = new ObjHashSet<>();
         final ObjList<Wait> reported = new ObjList<>(sorted.size());
         final ObjList<Wait> idling = new ObjList<>();
         final Interval window = info.span();
@@ -178,7 +218,7 @@ public final class ContentionReport {
         final Map<Wait.LockKey, Perch.Shape> shapes = new LinkedHashMap<>();
         for (int i = 0, n = sorted.size(); i < n; i++) {
             final Wait w = sorted.getQuick(i);
-            final Wait inside = clip(resolveHolder(w, raw, via, seen), window);
+            final Wait inside = clip(holders.resolve(w.waiter(), w), window);
             insides.add(inside);
             if (inside.duration() > 0) {
                 shapes.computeIfAbsent(inside.lock(), _ -> new Perch.Shape())
@@ -189,11 +229,19 @@ public final class ContentionReport {
         // --thread cannot turn a perch into contention by hiding the waits that prove it is not.
         final Set<Wait.LockKey> perches = new HashSet<>();
         if (!workWaits.matchesNothing()) {
-            final Set<Stack> perchStacks = new HashSet<>();
+            final Set<String> perchLoops = new HashSet<>();
+            // Stacks are interned, and a server has thousands of locks and a handful of loops:
+            // each stack is rendered once, not once per lock.
+            final Map<Stack, String> loops = new IdentityHashMap<>();
             shapes.forEach((lock, s) -> {
-                if (lock.kind() == Wait.Kind.PARK && s.matches(window.length())) {
+                if (lock.kind() == Wait.Kind.PARK && s.matches(window.duration())) {
                     perches.add(lock);
-                    perchStacks.add(s.stack());
+                    // A perch whose waits carry no stack names no loop: every other stackless
+                    // lock would print the same, and none of them is evidence about this one.
+                    final String loop = loops.computeIfAbsent(s.stack(), Perch::loop);
+                    if (loop != null) {
+                        perchLoops.add(loop);
+                    }
                 }
             });
             // What shape finds is a lock; what it identifies is the loop above it. One worker
@@ -201,46 +249,59 @@ public final class ContentionReport {
             // mailbox exactly like the other twelve, and a rule that let a threshold decide
             // between them would put that one lock, alone, at the top of the contention it is
             // not part of. The measurement names the frame the idle list was missing; the
-            // frame then answers for every lock that waits there.
+            // frame then answers for every lock that waits there. Loops are compared as they
+            // print, so two stacks a reader cannot tell apart are one loop.
             shapes.forEach((lock, s) -> {
-                if (lock.kind() == Wait.Kind.PARK && perchStacks.contains(s.stack())) {
-                    perches.add(lock);
+                if (lock.kind() == Wait.Kind.PARK && !perches.contains(lock)) {
+                    final String loop = loops.computeIfAbsent(s.stack(), Perch::loop);
+                    if (loop != null && perchLoops.contains(loop)) {
+                        perches.add(lock);
+                    }
                 }
             });
         }
 
         int clipped = 0;
+        int filteredOut = 0;
+        final Set<Wait.LockKey> byShape = new HashSet<>();
+        final Set<Wait.LockKey> byName = new HashSet<>();
         for (int i = 0, n = sorted.size(); i < n; i++) {
             final Wait w = sorted.getQuick(i);
-            if (!lockFilter.test(w.lock())) {
-                continue;
-            }
             final Wait inside = insides.getQuick(i);
-            final boolean idle = w.kind() == Wait.Kind.PARK
-                    && (workWaits.isIdle(w.stack()) || perches.contains(w.lock()));
+            final boolean named = w.kind() == Wait.Kind.PARK && workWaits.isIdle(w.stack());
+            final boolean idle = named || (w.kind() == Wait.Kind.PARK && perches.contains(w.lock()));
             // A worker parked on its own queue holds nothing and blocks nobody, so it is not a
             // convoy link either; the rest stay reachable so a convoy can be followed into any
-            // thread. The report lists the filtered ones.
+            // thread and any lock, whatever the filters let through. The report lists the
+            // filtered ones.
             if (!idle) {
                 waitsOf(byWaiter, w.waiter()).add(inside);
             }
-            if (inside.duration() > 0 && inside.duration() >= minNanos
-                    && passes(filterVerdict, waiterFilter, w.waiter())) {
-                if (idle) {
-                    idling.add(inside);
-                } else {
-                    reported.add(inside);
-                    if (inside.duration() < w.duration()) {
-                        clipped++;
-                    }
+            if (inside.duration() <= 0) {
+                continue;
+            }
+            if (!lockFilter.test(w.lock()) || inside.duration() < minNanos
+                    || !passes(filterVerdict, waiterFilter, w.waiter())) {
+                filteredOut++;
+                continue;
+            }
+            if (idle) {
+                idling.add(inside);
+                (named ? byName : byShape).add(w.lock());
+            } else {
+                reported.add(inside);
+                if (inside.duration() < w.duration()) {
+                    clipped++;
                 }
             }
         }
+        byShape.removeAll(byName);
         this.waits = reported.toList();
         this.workWaits = idling.toList();
         this.unfilteredCount = sorted.size();
+        this.filteredOutCount = filteredOut;
         this.clippedCount = clipped;
-        this.perchCount = perches.size();
+        this.perchCount = byShape.size();
     }
 
 
@@ -265,13 +326,39 @@ public final class ContentionReport {
         return passes;
     }
 
-    /** Whether the filters left anything out. */
-    public boolean filtered() {
-        return unfilteredCount != waits.size();
+    /**
+     * Whether the filters ({@code --thread}, {@code --min}, {@code --lock}) left out any wait
+     * inside the window. Waits set apart as waiting for work are not filtered out: they are
+     * reported, in their own section.
+     */
+    public boolean isFiltered() {
+        return filteredOutCount > 0;
     }
 
     public int unfilteredCount() {
         return unfilteredCount;
+    }
+
+    /**
+     * Why nothing is listed as contention, in the words both renderers print; {@code null}
+     * when something is. An idle process reaches here with no filter set, and is told it is
+     * idle; a filtered one is told that the answer is about what matched.
+     */
+    public String noContention() {
+        if (!waits.isEmpty()) {
+            return null;
+        }
+        if (!workWaits.isEmpty()) {
+            return isFiltered()
+                    ? "No contention: every wait that matches the filters (--thread, --min, --lock) was a worker "
+                            + "waiting for work, not a thread held up by another; " + unfilteredCount
+                            + " in the recording."
+                    : "No contention: every wait was a worker waiting for work, not a thread held up by another.";
+        }
+        return isFiltered()
+                ? "No contended monitor enters or parks match the filters (--thread, --min, --lock); "
+                        + unfilteredCount + " in the recording."
+                : "No contended monitor enters or parks in the recording (at or above the thresholds above).";
     }
 
     /**
@@ -283,52 +370,6 @@ public final class ContentionReport {
      */
     public int clippedCount() {
         return clippedCount;
-    }
-
-    /**
-     * JFR's {@code previousOwner} is the thread that released the monitor to the waiter,
-     * which under contention is often another waiter that held it for microseconds. Walks
-     * back: while the recorded owner was itself waiting for the same lock during this wait,
-     * take its owner instead and remember the intermediary.
-     */
-    private static Wait resolveHolder(final Wait wait, final ObjObjHashMap<ThreadRef, Waits> byWaiter, final ObjList<ThreadRef> via,
-                                      final ObjHashSet<ThreadRef> seen) {
-        ThreadRef owner = wait.owner();
-        if (owner == null) {
-            return wait;
-        }
-        via.clear();
-        seen.clear();
-        seen.add(wait.waiter());
-        seen.add(owner);
-        while (true) {
-            Wait ownersWait = null;
-            final Waits theirs = byWaiter.get(owner);
-            if (theirs != null) {
-                final ObjList<Wait> list = theirs.list;
-                final int from = Sorted.lowerBound(list, Wait::start, wait.start() - theirs.longest);
-                for (int i = from, n = list.size(); i < n; i++) {
-                    final Wait w = list.getQuick(i);
-                    if (w.start() >= wait.end()) {
-                        break;
-                    }
-                    if (w.lock().equals(wait.lock()) && w.interval().overlaps(wait.interval())
-                            && (ownersWait == null || w.duration() > ownersWait.duration())) {
-                        ownersWait = w;
-                    }
-                }
-            }
-            // Stop at an unknown owner, and at a cycle (a thread cannot hold what it waits for).
-            if (ownersWait == null || ownersWait.owner() == null || !seen.add(ownersWait.owner())) {
-                break;
-            }
-            via.add(owner);
-            owner = ownersWait.owner();
-        }
-        if (via.isEmpty()) {
-            return wait;
-        }
-        return new Wait(wait.interval(), wait.waiter(), wait.lock(), owner, wait.stack(), via.toList());
     }
 
     public RecordingInfo info() {
@@ -361,8 +402,11 @@ public final class ContentionReport {
     /**
      * How many of the locks under {@link #workWaits()} were recognised by their shape rather
      * than by a frame in the idle list: one thread, no holder, most of the recording parked
-     * there. The report says so, because a reader who does not know the rule cannot tell why
-     * a lock they can see in the file is missing from the contention above.
+     * there, or the same loop as a lock like that. Counted over the listed parks only, so it
+     * is a count of rows the reader can see, after the filters; a lock the idle list also
+     * named on any of them counts as named. The report says so, because a reader who does
+     * not know the rule cannot tell why a lock they can see in the file is missing from the
+     * contention above.
      */
     public int perchCount() {
         return perchCount;
@@ -395,7 +439,14 @@ public final class ContentionReport {
 
     /** Locks ranked by total time threads spent waiting for them. */
     public List<LockStats> locks(final int top) {
-        return locksOf(waits, top);
+        return limit(rankedLocks(), top);
+    }
+
+    private List<LockStats> rankedLocks() {
+        if (ranked == null) {
+            ranked = locksOf(waits, Integer.MAX_VALUE);
+        }
+        return ranked;
     }
 
     /**
@@ -432,11 +483,13 @@ public final class ContentionReport {
      * <p>Fifteen queues of the same kind are fifteen rows in {@link #locks(int)} and one line
      * of work to the reader; the addresses stay reachable through a {@code --lock} query.
      *
-     * @param frames how many frames the caller will print, as in {@link #lockStacks(int, int)}
+     * <p>A site is the stack as it prints to {@link #SITE_FRAMES} frames, whichever renderer
+     * asks: the text and the HTML report must add up the same rows to the same totals, so
+     * both group, and print a site's stack, at that one depth.
      */
-    public List<SiteStats> lockSites(final int top, final int frames) {
+    public List<SiteStats> lockSites(final int top) {
         final List<SiteStats> sites = new ArrayList<>();
-        byStack(locksOf(waits, Integer.MAX_VALUE), frames).forEach((_, group) -> {
+        byStack(rankedLocks(), SITE_FRAMES).forEach((_, group) -> {
             final List<Wait.LockKey> locks = new ArrayList<>(group.size());
             final Set<ThreadRef> waiters = new LinkedHashSet<>();
             final Set<ThreadRef> owners = new LinkedHashSet<>();
@@ -455,8 +508,9 @@ public final class ContentionReport {
                     longest = l.longest();
                 }
             }
-            sites.add(new SiteStats(longest, List.copyOf(locks), total, count, max, Set.copyOf(waiters),
-                    Set.copyOf(owners)));
+            // Insertion order (rank, then first wait) so the names a row prints are the same on every run.
+            sites.add(new SiteStats(longest, List.copyOf(locks), total, count, max,
+                    Collections.unmodifiableSet(waiters), Collections.unmodifiableSet(owners)));
         });
         sites.sort(Comparator.comparingLong(SiteStats::totalNanos).reversed());
         return limit(sites, top);
@@ -478,30 +532,44 @@ public final class ContentionReport {
         return groups;
     }
 
-    private List<LockStats> locksOf(final List<Wait> from, final int top) {
-        final Map<Wait.LockKey, long[]> totals = new LinkedHashMap<>();
-        final Map<Wait.LockKey, Set<ThreadRef>> waiters = new HashMap<>();
-        final Map<Wait.LockKey, Set<ThreadRef>> owners = new HashMap<>();
-        final Map<Wait.LockKey, Wait> longest = new HashMap<>();
+    private static List<LockStats> locksOf(final List<Wait> from, final int top) {
+        // One lookup per wait: a LockKey is a record, and its hash is not free.
+        final Map<Wait.LockKey, LockTotals> totals = new LinkedHashMap<>();
         for (final Wait w : from) {
-            final long[] t = totals.computeIfAbsent(w.lock(), _ -> new long[3]);
-            t[0] += w.duration();
-            t[1]++;
-            t[2] = Math.max(t[2], w.duration());
-            waiters.computeIfAbsent(w.lock(), _ -> new LinkedHashSet<>()).add(w.waiter());
-            if (w.owner() != null) {
-                owners.computeIfAbsent(w.lock(), _ -> new LinkedHashSet<>()).add(w.owner());
-            }
-            final Wait best = longest.get(w.lock());
-            if (best == null || w.duration() > best.duration()) {
-                longest.put(w.lock(), w);
-            }
+            totals.computeIfAbsent(w.lock(), _ -> new LockTotals()).add(w);
         }
-        final List<LockStats> stats = new ArrayList<>();
-        totals.forEach((lock, t) -> stats.add(new LockStats(lock, t[0], (int) t[1], t[2],
-                waiters.getOrDefault(lock, Set.of()), owners.getOrDefault(lock, Set.of()), longest.get(lock))));
+        final List<LockStats> stats = new ArrayList<>(totals.size());
+        totals.forEach((lock, t) -> stats.add(new LockStats(lock, t.total, t.count, t.max, t.waiters,
+                t.owners == null ? Set.of() : t.owners, t.longest)));
         stats.sort(Comparator.comparingLong(LockStats::totalNanos).reversed());
         return limit(stats, top);
+    }
+
+    /** One lock's totals while they are summed. */
+    private static final class LockTotals {
+        long total;
+        int count;
+        long max;
+        final Set<ThreadRef> waiters = new LinkedHashSet<>();
+        Set<ThreadRef> owners;
+        Wait longest;
+
+        void add(final Wait w) {
+            final long d = w.duration();
+            total += d;
+            count++;
+            max = Math.max(max, d);
+            waiters.add(w.waiter());
+            if (w.owner() != null) {
+                if (owners == null) {
+                    owners = new LinkedHashSet<>();
+                }
+                owners.add(w.owner());
+            }
+            if (longest == null || d > longest.duration()) {
+                longest = w;
+            }
+        }
     }
 
     /** Threads ranked by total time blocked. */
@@ -521,9 +589,16 @@ public final class ContentionReport {
 
     /** The longest individual waits. */
     public List<Wait> longest(final int top) {
-        final List<Wait> sorted = new ArrayList<>(waits);
-        sorted.sort(Comparator.comparingLong(Wait::duration).reversed());
-        return limit(sorted, top);
+        return limit(byDuration(), top);
+    }
+
+    private List<Wait> byDuration() {
+        if (byDuration == null) {
+            final List<Wait> sorted = new ArrayList<>(waits);
+            sorted.sort((a, b) -> Long.compare(b.duration(), a.duration()));
+            byDuration = Collections.unmodifiableList(sorted);
+        }
+        return byDuration;
     }
 
     /**
@@ -536,7 +611,7 @@ public final class ContentionReport {
     public List<Convoy> convoys(final int maxDepth, final int top) {
         final List<Convoy> found = new ArrayList<>();
         // Heads in descending duration: once `top` convoys exist, no later head can outrank them.
-        for (final Wait head : longest(waits.size())) {
+        for (final Wait head : byDuration()) {
             if (found.size() >= top) {
                 break;
             }
@@ -568,7 +643,7 @@ public final class ContentionReport {
             return null;
         }
         final ObjList<Wait> list = theirs.list;
-        final int from = Sorted.lowerBound(list, Wait::start, during.start() - theirs.longest);
+        final int from = Sorts.lowerBound(list, Wait::start, during.start() - theirs.longest);
         for (int i = from, n = list.size(); i < n; i++) {
             final Wait w = list.getQuick(i);
             if (w.start() >= during.end()) {

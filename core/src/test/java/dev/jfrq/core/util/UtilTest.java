@@ -29,8 +29,55 @@ class UtilTest {
 
         @Test
         void literalCharactersAreQuoted() {
-            assertTrue(Glob.of("pool.1[a]").test("pool.1[a]"));
-            assertFalse(Glob.of("pool.1[a]").test("poolX1a"));
+            assertTrue(Glob.of("pool.1\\[a]").test("pool.1[a]"));
+            assertFalse(Glob.of("pool.1\\[a]").test("poolX1[a]"));
+            assertTrue(Glob.of("a\\*b").test("a*b"));
+            assertFalse(Glob.of("a\\*b").test("axb"));
+            assertTrue(Glob.of("a\\,b").test("a,b"));
+            assertTrue(Glob.of("tail\\").test("tail\\"));
+            // A bracket with no closing one is a literal, as in the shell: array class names stay matchable.
+            assertTrue(Glob.of("Object[]").test("Object[]"));
+            assertTrue(Glob.of("[B").test("[B"));
+            assertTrue(Glob.of(".*").test(".*"));
+            assertFalse(Glob.of(".*").test("abc"));
+            // No regex quoting survives into the pattern: an escaped backslash is one backslash.
+            assertTrue(Glob.of("\\\\E*").test("\\Efoo"));
+            assertFalse(Glob.of("\\\\E*").test("Efoo"));
+        }
+
+        /** "Shell globs" means the bracket classes too, not only {@code *} and {@code ?}. */
+        @Test
+        void bracketClassesMatchOneCharacterOfASet() {
+            final Glob g = Glob.of("worker-[0-2],io-[!0-9],x[^a]y,[]z]");
+            assertTrue(g.test("worker-0"));
+            assertTrue(g.test("worker-2"));
+            assertFalse(g.test("worker-3"));
+            assertFalse(g.test("worker-[0-2]"));
+            assertTrue(g.test("io-a"));
+            assertFalse(g.test("io-7"));
+            assertTrue(g.test("xby"));
+            assertFalse(g.test("xay"));
+            assertTrue(g.test("]"));
+            assertTrue(g.test("z"));
+            // A comma inside brackets belongs to the set, not to the list.
+            final Glob comma = Glob.of("a[,b]c");
+            assertTrue(comma.test("a,c"));
+            assertTrue(comma.test("abc"));
+            // Regex metacharacters inside a set are plain characters; a reversed range is empty.
+            assertTrue(Glob.of("[.\\]]").test("."));
+            assertFalse(Glob.of("[.]").test("x"));
+            assertTrue(Glob.of("p[-a]").test("p-"));
+            assertFalse(Glob.of("[z-a]").test("m"));
+            assertTrue(Glob.of("[!z-a]").test("m"));
+        }
+
+        /** Thread names are whatever the application set, line breaks included. */
+        @Test
+        void everyCharacterIsACharacter() {
+            assertTrue(Glob.any().test("two\nlines"));
+            assertTrue(Glob.of("a?b").test("a\nb"));
+            assertTrue(Glob.of("pool-*").test("pool-\r\n1"));
+            assertTrue(Glob.of("a[!x]b").test("a\nb"));
         }
 
         @Test
@@ -83,7 +130,17 @@ class UtilTest {
             assertEquals("-850 B", Bytes.format(-850));
             // Long.MIN_VALUE has no positive counterpart; it must not recurse forever.
             assertEquals("-9223372 TB", Bytes.format(Long.MIN_VALUE));
-            assertEquals("-106751d23h", Durations.format(Long.MIN_VALUE));
+            assertEquals("-infinity", Durations.format(Long.MIN_VALUE));
+        }
+
+        @Test
+        void theUnitIsChosenAfterRounding() {
+            assertEquals("999 KB", Bytes.format(999_499));
+            assertEquals("1.00 MB", Bytes.format(999_999));
+            assertEquals("1.00 GB", Bytes.format(999_999_999));
+            assertEquals("10.0 KB", Bytes.format(9_995));
+            assertEquals("100 KB", Bytes.format(99_950));
+            assertEquals("1.00 MB/s", Bytes.rate(999_999.6));
         }
 
         @Test

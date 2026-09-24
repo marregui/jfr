@@ -16,6 +16,7 @@ import java.util.Arrays;
  */
 public final class IdentityObjObjHashMap<K, V> implements Mutable {
 
+    // A field added below that holds contents must be reset in clear() too (G-3.2).
     private Object[] keys;
     private Object[] values;
     private int mask;
@@ -23,18 +24,18 @@ public final class IdentityObjObjHashMap<K, V> implements Mutable {
     private int size;
 
     public IdentityObjObjHashMap(final int initialCapacity) {
-        final int capacity = Hashing.capacityFor(initialCapacity);
+        final int capacity = Hashes.capacityFor(initialCapacity);
         keys = new Object[capacity];
         values = new Object[capacity];
         mask = capacity - 1;
-        free = Hashing.freeFor(capacity);
+        free = Hashes.freeFor(capacity);
     }
 
     @Override
     public void clear() {
         Arrays.fill(keys, null);
         Arrays.fill(values, null);
-        free = Hashing.freeFor(keys.length);
+        free = Hashes.freeFor(keys.length);
         size = 0;
     }
 
@@ -50,7 +51,7 @@ public final class IdentityObjObjHashMap<K, V> implements Mutable {
 
     /** See {@link ObjObjHashMap#keyIndex}: negative means present at {@code -index - 1}. */
     public int keyIndex(final K key) {
-        final int index = Hashing.spread(System.identityHashCode(key)) & mask;
+        final int index = Hashes.spread(System.identityHashCode(key)) & mask;
         final Object k = keys[index];
         if (k == null) {
             return index;
@@ -116,15 +117,15 @@ public final class IdentityObjObjHashMap<K, V> implements Mutable {
     private void rehash() {
         final Object[] oldKeys = keys;
         final Object[] oldValues = values;
-        final int capacity = oldKeys.length << 1;
+        final int capacity = Hashes.grow(oldKeys.length);
         keys = new Object[capacity];
         values = new Object[capacity];
         mask = capacity - 1;
-        free = Hashing.freeFor(capacity) - size;
+        free = Hashes.freeFor(capacity) - size;
         for (int i = 0; i < oldKeys.length; i++) {
             final Object k = oldKeys[i];
             if (k != null) {
-                int index = Hashing.spread(System.identityHashCode(k)) & mask;
+                int index = Hashes.spread(System.identityHashCode(k)) & mask;
                 while (keys[index] != null) {
                     index = (index + 1) & mask;
                 }

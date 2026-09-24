@@ -11,10 +11,11 @@ import dev.jfrq.core.coll.LongObjHashMap;
 import dev.jfrq.core.coll.ObjList;
 import dev.jfrq.core.jfr.EventKinds;
 import dev.jfrq.core.jfr.Events;
+import dev.jfrq.core.jfr.Fields;
 import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
+import dev.jfrq.core.jfr.Transient;
 import dev.jfrq.core.model.Interner;
-import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.stalls.IdleMatcher;
 import jdk.jfr.consumer.RecordedEvent;
@@ -91,7 +92,7 @@ public final class ContentionCollector implements JfrReader.Sink {
     }
 
     @Override
-    public void accept(final RecordedEvent e) {
+    public void accept(@Transient final RecordedEvent e) {
         accept(e, EventKinds.kindOf(e.getEventType().getName()));
     }
 
@@ -101,21 +102,20 @@ public final class ContentionCollector implements JfrReader.Sink {
      * the one that says who really held it. The filters apply in the report.
      */
     @Override
-    public void accept(final RecordedEvent e, final int kind) {
-        final Interval interval = Events.interval(e);
+    public void accept(@Transient final RecordedEvent e, final int kind) {
         final ThreadRef waiter = interner.thread(e);
         if (waiter == null) {
             return;
         }
         final boolean monitor = kind == EventKinds.JAVA_MONITOR_ENTER;
-        final String cls = Events.className(e, monitor ? "monitorClass" : "parkedClass", interner);
+        final String cls = Events.className(e, monitor ? Fields.MONITOR_CLASS : Fields.PARKED_CLASS, interner);
         if (!monitor && cls == null) {
             return;
         }
         final Wait.Kind waitKind = monitor ? Wait.Kind.MONITOR_ENTER : Wait.Kind.PARK;
-        final Wait.LockKey lock = lock(cls, Events.longOr(e, "address", 0), waitKind);
-        final ThreadRef owner = monitor ? Events.thread(e, "previousOwner", interner) : null;
-        waits.add(new Wait(interval, waiter, lock, owner, Events.stack(e, interner)));
+        final Wait.LockKey lock = lock(cls, Events.longOr(e, Fields.ADDRESS, 0, interner), waitKind);
+        final ThreadRef owner = monitor ? Events.thread(e, Fields.PREVIOUS_OWNER, interner) : null;
+        waits.add(new Wait(Events.interval(e), waiter, lock, owner, Events.stack(e, interner)));
     }
 
     private Wait.LockKey lock(final String cls, final long address, final Wait.Kind kind) {

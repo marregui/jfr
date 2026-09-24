@@ -8,12 +8,15 @@ import java.util.Map;
 import java.util.Set;
 
 import dev.jfrq.core.coll.LongList;
+import dev.jfrq.core.coll.Nulls;
 import dev.jfrq.core.coll.ObjLongHashMap;
 import dev.jfrq.core.coll.ObjObjHashMap;
 import dev.jfrq.core.jfr.EventKinds;
 import dev.jfrq.core.jfr.Events;
+import dev.jfrq.core.jfr.Fields;
 import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
+import dev.jfrq.core.jfr.Transient;
 import dev.jfrq.core.model.Interner;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
@@ -40,6 +43,19 @@ import jdk.jfr.consumer.RecordedEvent;
  * recording is reported as allocating 100 MB in that minute. Dropping the sample loses at
  * most the bytes between the previous sample and this one, which for a thread sampled at
  * hundreds of times a second is nothing, and for a thread sampled once is unknowable.
+ *
+ * <p>A virtual thread loses its first sample too, and the report says how many and how
+ * heavy they were ({@link AllocationReport.Dropped}). The JVM counts allocation per
+ * carrier, so a sample taken on a virtual thread is weighted by what its carrier allocated
+ * since the carrier was last sampled, whichever virtual threads it ran meanwhile, and a
+ * carrier never sampled before carries everything it allocated since it started: 3.35 GB
+ * for 67 MB allocated inside the recording, on a JVM that had been running virtual threads
+ * before it. The event names the virtual thread, not the carrier, so that sample cannot
+ * be told apart from an honest one; dropping every virtual thread's first sample removes
+ * it whenever it lands on one, at the price of most virtual-thread allocation (a virtual
+ * thread is typically sampled once or never). It does not make the estimate a floor: a
+ * virtual thread that resumed on a carrier not yet sampled carries that carrier's history
+ * on a later sample, which is kept.
  *
  * <p>Independently of either, {@code jdk.ThreadAllocationStatistics} (written at every
  * chunk boundary by the JDK's own settings) carries each thread's exact allocation
@@ -85,17 +101,17 @@ public final class AllocationCollector implements JfrReader.Sink {
     }
 
     @Override
-    public void accept(final RecordedEvent e) {
+    public void accept(@Transient final RecordedEvent e) {
         accept(e, EventKinds.kindOf(e.getEventType().getName()));
     }
 
     @Override
-    public void accept(final RecordedEvent e, final int kind) {
+    public void accept(@Transient final RecordedEvent e, final int kind) {
         switch (kind) {
-            case EventKinds.OBJECT_ALLOCATION_SAMPLE -> sampled.add(e, Events.longOr(e, "weight", 0), interner);
-            case EventKinds.OBJECT_ALLOCATION_IN_NEW_TLAB -> tlab.add(e, Events.longOr(e, "tlabSize", 0), interner);
+            case EventKinds.OBJECT_ALLOCATION_SAMPLE -> sampled.add(e, Events.longOr(e, Fields.WEIGHT, 0, interner), interner);
+            case EventKinds.OBJECT_ALLOCATION_IN_NEW_TLAB -> tlab.add(e, Events.longOr(e, Fields.TLAB_SIZE, 0, interner), interner);
             case EventKinds.OBJECT_ALLOCATION_OUTSIDE_TLAB ->
-                    tlab.add(e, Events.longOr(e, "allocationSize", 0), interner);
+                    tlab.add(e, Events.longOr(e, Fields.ALLOCATION_SIZE, 0, interner), interner);
             case EventKinds.THREAD_ALLOCATION_STATISTICS -> counter(e);
             default -> {
             }
@@ -103,15 +119,24 @@ public final class AllocationCollector implements JfrReader.Sink {
     }
 
     /**
+     * A {@code jdk.ObjectAllocationSample} whose fields are already read: what
+     * {@link #accept(RecordedEvent, int)} does after {@link Events}, for tests that build the
+     * samples by hand. {@code cls} may be {@code null}.
+     */
+    void sample(final ThreadRef thread, final long time, final long weight, final String cls, final Stack site) {
+        sampled.add(thread, time, weight, cls, site);
+    }
+
+    /**
      * Events arrive in file order, which is chunk order, and the counter only grows, so the
      * smallest and largest values seen are the first and last: no timestamps needed.
      */
-    private void counter(final RecordedEvent e) {
-        final ThreadRef thread = Events.thread(e, "thread", interner);
+    private void counter(@Transient final RecordedEvent e) {
+        final ThreadRef thread = Events.thread(e, Fields.THREAD, interner);
         if (thread == null) {
             return;
         }
-        final long allocated = Events.longOr(e, "allocated", -1);
+        final long allocated = Events.longOr(e, Fields.ALLOCATED, -1, interner);
         if (allocated < 0) {
             return;
         }
@@ -141,7 +166,8 @@ public final class AllocationCollector implements JfrReader.Sink {
         report = new AllocationReport(info, source, chosen.total, chosen.samples, chosen.events, countedByThread(),
                 toMap(chosen.byThread), toMap(chosen.byClass), toMap(chosen.bySite), toMaps(chosen.classByThread),
                 toMaps(chosen.siteByThread), new AllocationReport.Support(toMap(chosen.countByThread),
-                toMap(chosen.countByClass), toMap(chosen.countBySite)));
+                toMap(chosen.countByClass), toMap(chosen.countBySite)),
+                new AllocationReport.Dropped(chosen.virtualFirsts, chosen.virtualFirstBytes));
     }
 
     /**
@@ -199,6 +225,9 @@ public final class AllocationCollector implements JfrReader.Sink {
         long samples;
         /** Events seen, discarded or not. */
         long events;
+        /** Virtual threads' first samples taken out of the totals, and their weight. */
+        long virtualFirsts;
+        long virtualFirstBytes;
         final ObjLongHashMap<String> byThread = new ObjLongHashMap<>(64);
         final ObjLongHashMap<String> byClass = new ObjLongHashMap<>(1024);
         final ObjLongHashMap<Stack> bySite = new ObjLongHashMap<>(4096);
@@ -233,27 +262,31 @@ public final class AllocationCollector implements JfrReader.Sink {
             this.firsts = dropFirstPerThread ? new ObjObjHashMap<>(64) : null;
         }
 
-        void add(final RecordedEvent e, final long bytes, final Interner interner) {
+        void add(@Transient final RecordedEvent e, final long bytes, final Interner interner) {
             if (bytes <= 0) {
                 return;
             }
-            final ThreadRef thread = interner.thread(e);
-            final String threadName = thread == null ? NO_THREAD : thread.name();
-            String cls = Events.className(e, "objectClass", interner);
-            if (cls == null) {
-                cls = NO_CLASS;
+            // The timestamp costs an Instant, and only the sampled family needs it.
+            add(interner.thread(e), firsts != null ? Events.startNanos(e) : Nulls.LONG_NULL, bytes,
+                    Events.className(e, Fields.OBJECT_CLASS, interner), Events.stack(e, interner));
+        }
+
+        /** One event, its fields already read; {@code thread} and {@code cls} may be {@code null}. */
+        void add(final ThreadRef thread, final long time, final long bytes, final String cls, final Stack site) {
+            if (bytes <= 0) {
+                return;
             }
-            final Stack site = Events.stack(e, interner);
-            add(bytes, threadName, cls, site);
+            final String threadName = thread == null ? NO_THREAD : thread.name();
+            final String className = cls == null ? NO_CLASS : cls;
+            add(bytes, threadName, className, site);
             if (firsts != null && thread != null) {
-                final long time = Events.startNanos(e);
                 final int index = firsts.keyIndex(thread);
                 if (index >= 0) {
-                    firsts.putAt(index, thread, new First().of(time, bytes, threadName, cls, site));
+                    firsts.putAt(index, thread, new First().of(time, bytes, threadName, className, site));
                 } else {
                     final First known = firsts.valueAtQuick(index);
                     if (time < known.time) {
-                        known.of(time, bytes, threadName, cls, site);
+                        known.of(time, bytes, threadName, className, site);
                     }
                 }
             }
@@ -278,7 +311,7 @@ public final class AllocationCollector implements JfrReader.Sink {
             return index < 0 ? maps.valueAtQuick(index) : maps.putAt(index, thread, new ObjLongHashMap<>(64));
         }
 
-        /** Takes every thread's first sample back out of the totals. */
+        /** Takes every thread's first sample back out of the totals, counting the virtual ones. */
         void dropFirsts() {
             if (firsts == null) {
                 return;
@@ -288,6 +321,10 @@ public final class AllocationCollector implements JfrReader.Sink {
                     continue;
                 }
                 final First f = firsts.valueAtSlot(s);
+                if (firsts.keyAtSlot(s).isVirtual()) {
+                    virtualFirsts++;
+                    virtualFirstBytes += f.bytes;
+                }
                 total -= f.bytes;
                 samples--;
                 subtract(byThread, f.threadName, f.bytes);

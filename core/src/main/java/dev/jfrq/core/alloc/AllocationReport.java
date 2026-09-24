@@ -14,6 +14,7 @@ import java.util.Optional;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Stack;
+import dev.jfrq.core.util.Bytes;
 
 /**
  * Estimated allocation pressure, by thread, class and site, from one recording.
@@ -37,6 +38,7 @@ import dev.jfrq.core.model.Stack;
  * @param siteByThread  per thread name, bytes per stack
  * @param support    how many samples stand behind each row: a rate built on a handful of
  *                   them is noise, and a percentage printed next to it reads as a finding
+ * @param virtualFirsts the first samples of virtual threads left out of the estimate; see {@link #warnings()}
  */
 public record AllocationReport(
         RecordingInfo info,
@@ -50,7 +52,28 @@ public record AllocationReport(
         Map<Stack, Long> bySite,
         Map<String, Map<String, Long>> classByThread,
         Map<String, Map<Stack, Long>> siteByThread,
-        Support support) {
+        Support support,
+        Dropped virtualFirsts) {
+
+    /** A report with no virtual-thread samples, or from events that have no history to drop. */
+    public AllocationReport(final RecordingInfo info, final String source, final long totalBytes, final long samples,
+            final long events, final Map<String, Long> countedByThread, final Map<String, Long> byThread,
+            final Map<String, Long> byClass, final Map<Stack, Long> bySite,
+            final Map<String, Map<String, Long>> classByThread, final Map<String, Map<Stack, Long>> siteByThread,
+            final Support support) {
+        this(info, source, totalBytes, samples, events, countedByThread, byThread, byClass, bySite, classByThread,
+                siteByThread, support, Dropped.NONE);
+    }
+
+    /**
+     * Samples left out of the estimate, and the bytes they weighed.
+     *
+     * @param samples how many
+     * @param bytes   their summed weight, which can include allocation from before the recording
+     */
+    public record Dropped(long samples, long bytes) {
+        public static final Dropped NONE = new Dropped(0, 0);
+    }
 
     /**
      * Samples per key, alongside the bytes. The estimate weights every sample by the bytes
@@ -89,8 +112,30 @@ public record AllocationReport(
     public record SiteRow(String label, Stack stack, long bytes, double share, long samples, int stacks) {
     }
 
+    /**
+     * What the reader must know before trusting the numbers below, one sentence each.
+     *
+     * <p>A virtual thread's sample is weighed by its carrier's allocation since the carrier
+     * was last sampled, which for a carrier's first sample in the recording reaches back
+     * before it. The collector drops every virtual thread's first sample, so allocation on
+     * virtual threads is mostly missing, and the line says how much was left out. It also
+     * says the opposite error remains: a virtual thread that moved to a carrier not yet
+     * sampled carries that carrier's history on a later sample, which is kept.
+     */
+    public List<String> warnings() {
+        final long n = virtualFirsts.samples();
+        if (n == 0) {
+            return List.of();
+        }
+        return List.of("allocation on virtual threads is under-counted, and can still be over-counted: " + n
+                + " first sample" + (n == 1 ? "" : "s") + " of virtual threads, " + Bytes.format(virtualFirsts.bytes())
+                + ", not counted, because a sample is weighed by its carrier's allocation since the carrier was last "
+                + "sampled, which can reach back before the recording; a virtual thread that moved to a carrier not "
+                + "yet sampled carries that history on a later sample (docs/DESIGN.md, section 2)");
+    }
+
     public double seconds() {
-        return Math.max(info.span().length(), 1) / 1e9;
+        return Math.max(info.span().duration(), 1) / 1e9;
     }
 
     /** Estimated bytes per second over the whole recording. */
@@ -146,11 +191,13 @@ public record AllocationReport(
      * Whether {@link #estimateError()} says anything: the counted threads must carry at
      * least 1 % of the estimate. Below that the two numbers differ by start-up noise (the
      * counters are read a few milliseconds after sampling begins) and a percentage would
-     * only alarm.
+     * only alarm. What those threads carry is their estimate, not their counters: a thread
+     * whose counter grew by a gigabyte while it was sampled for one megabyte of a
+     * 200 MB estimate is half a percent of the report, and the error measured on it is
+     * a statement about that half percent.
      */
-    public boolean estimateErrorMaterial() {
-        final long counted = countedBytes();
-        return counted > 0 && counted >= totalBytes / 100;
+    public boolean isEstimateErrorMaterial() {
+        return countedBytes() > 0 && estimatedOnCountedThreads() >= totalBytes / 100;
     }
 
     /** The JVM's counter for a thread, when it was seen at least twice. */

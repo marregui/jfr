@@ -18,6 +18,7 @@ public final class ObjList<T> implements Mutable {
 
     private static final int DEFAULT_CAPACITY = 16;
 
+    // A field added below that holds contents must be reset in clear() too (G-3.2); the array is kept for reuse.
     private Object[] buffer;
     private int pos;
 

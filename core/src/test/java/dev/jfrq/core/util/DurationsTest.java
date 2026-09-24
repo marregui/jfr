@@ -28,6 +28,14 @@ class DurationsTest {
             "5ns, 5",
             "42, 42",
             " 20 MS , 20000000",
+            "2d, 172800000000000",
+            // The compound forms format prints parse back.
+            "2m18s, 138000000000",
+            "13h11m, 47460000000000",
+            "3d04h, 273600000000000",
+            "1m 30.5s, 90500000000",
+            "infinity, 9223372036854775807",
+            "Infinity, 9223372036854775807",
     })
     void parsesJfrAndCommandLineForms(final String text, final long nanos) {
         assertEquals(nanos, Durations.parseNanos(text));
@@ -35,7 +43,7 @@ class DurationsTest {
     }
 
     @ParameterizedTest
-    @CsvSource({"abc", "10 parsecs", "''", "ms", "1..2s"})
+    @CsvSource({"abc", "10 parsecs", "''", "ms", "1..2s", "2m18", "18 2m", "infinity s", "1ms-"})
     void rejectsNonDurations(final String text) {
         assertThrows(IllegalArgumentException.class, () -> Durations.parse(text));
     }
@@ -56,10 +64,29 @@ class DurationsTest {
         assertEquals(Nulls.LONG_NULL, Durations.parseNanosQuiet("1.s"));
         assertEquals(Nulls.LONG_NULL, Durations.parseNanosQuiet("5 m s"));
         assertEquals(Nulls.LONG_NULL, Durations.parseNanosQuiet(null));
-        // Past eighteen digits the mantissa is parsed as a double rather than overflowing a long.
-        assertEquals(Math.round(1e19), Durations.parseNanosQuiet("10000000000000000000"));
+        // Mantissas past fifteen digits are parsed by the JDK, still correctly rounded.
+        assertEquals(1_234_567_890_123_456L, Durations.parseNanosQuiet("1234567890123456"));
+        assertEquals(1_500_000L, Durations.parseNanosQuiet("1.500000000000000ms"));
         final String unit = assertThrows(IllegalArgumentException.class, () -> Durations.parse("10 parsecs")).getMessage();
         assertTrue(unit.startsWith("unknown duration unit"), unit);
+    }
+
+    /** A duration a long of nanoseconds cannot hold is refused, not clamped to the largest one. */
+    @ParameterizedTest
+    @CsvSource({"10000000000000000000", "9999999999h", "106752d", "106751d23h59m59s1s", "9223372036854775807ns"})
+    void rejectsDurationsPastTheRangeInsteadOfClamping(final String text) {
+        final String message = assertThrows(IllegalArgumentException.class, () -> Durations.parseNanos(text)).getMessage();
+        assertTrue(message.startsWith("duration out of range"), message);
+        assertTrue(message.contains("infinity"), message);
+        assertEquals(Nulls.LONG_NULL, Durations.parseNanosQuiet(text));
+    }
+
+    @Test
+    void infinityRoundTrips() {
+        assertEquals(Durations.INFINITE, Durations.parseNanos("infinity"));
+        assertEquals("infinity", Durations.format(Durations.INFINITE));
+        assertEquals(Durations.INFINITE, Durations.parseNanos(Durations.format(Durations.INFINITE)));
+        assertEquals(106_751L * 86_400_000_000_000L, Durations.parseNanos("106751d"));
     }
 
     @ParameterizedTest
@@ -82,6 +109,16 @@ class DurationsTest {
             "86400000000000, 1d00h",
             "273600000000000, 3d04h",
             "-47455000000000, -13h10m",
+            // The unit and the precision are chosen after rounding, not before.
+            "999999, 1.00 ms",
+            "999500, 1.00 ms",
+            "999499, 999 µs",
+            "999999999, 1.00 s",
+            "9995000, 10.0 ms",
+            "99950000, 100 ms",
+            "59950000000, 1m00s",
+            "59999999999, 1m00s",
+            "59940000000, 59.9 s",
     })
     void formatsCompactly(final long nanos, final String expected) {
         assertEquals(expected, Durations.format(nanos));

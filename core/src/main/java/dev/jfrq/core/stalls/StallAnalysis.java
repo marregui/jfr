@@ -5,17 +5,16 @@ package dev.jfrq.core.stalls;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
+import java.util.function.ToLongFunction;
 
 import dev.jfrq.core.coll.IdentityObjObjHashMap;
 import dev.jfrq.core.coll.LongList;
 import dev.jfrq.core.coll.Nulls;
+import dev.jfrq.core.coll.ObjHashSet;
 import dev.jfrq.core.coll.ObjList;
+import dev.jfrq.core.coll.ObjLongHashMap;
 import dev.jfrq.core.coll.ObjObjHashMap;
 import dev.jfrq.core.jfr.EventKinds;
 import dev.jfrq.core.jfr.RecordingInfo;
@@ -33,7 +32,7 @@ import dev.jfrq.core.stalls.Timeline.Sample;
 import dev.jfrq.core.stalls.Timeline.ThreadTimeline;
 import dev.jfrq.core.util.Bytes;
 import dev.jfrq.core.util.Durations;
-import dev.jfrq.core.util.Sorted;
+import dev.jfrq.core.util.Sorts;
 
 /**
  * Finds stalls in per-thread timelines. Pure logic over {@link Timeline} values, so it is
@@ -48,12 +47,19 @@ import dev.jfrq.core.util.Sorted;
  *       periods of the previous one, spanning at least the gap: the thread kept executing
  *       without reaching the selector. The explanation is the dominant application frame
  *       across the run, or "saturated" when there is none. Samples further apart than a
- *       few periods do not chain, because nothing proves the thread was busy in between.</li>
+ *       few periods do not chain, because nothing proves the thread was busy in between;
+ *       nor do two with a gap's worth of JVM pause or blocking between them.</li>
  *   <li><b>Silence.</b> Consecutive samples further apart than the thread's own sampling
  *       cadence allows: the thread was in a state the sampler cannot see (blocked, in the
  *       VM, at a safepoint). Explained by whichever blocking event or JVM pause covers most
- *       of the silence, otherwise reported as unexplained.</li>
+ *       of the silence, otherwise reported as unexplained. When the recording bounds the
+ *       thread's life, the stretch before its first sample and after its last are silences
+ *       too: a call still in progress when the recording stopped has written no event.</li>
  * </ol>
+ *
+ * <p>A thread's stalls are disjoint. Where candidates overlap, the stronger evidence claims
+ * the time — an event, then a silence a JVM pause explains, then a run of samples, then any
+ * other silence — and what is left of a weaker candidate is judged again piece by piece.
  *
  * <p>Sampling cadence is measured, not assumed. The JFR sampler visits at most five
  * threads executing Java and one thread in native code per period, round-robin, so a
@@ -79,8 +85,6 @@ public final class StallAnalysis {
     static final int RUN_MIN_SAMPLES = 2;
     /** A "saturated" verdict (no dominant culprit) needs at least this many samples. */
     static final int SATURATED_MIN_SAMPLES = 5;
-    /** How deep a stack is compared when matching it against a loop Perch recognised. */
-    private static final int PERCH_FRAMES = 8;
     /** How many per-thread cadence warnings are spelled out before the rest are counted. */
     private static final int CADENCE_WARNINGS_SHOWN = 3;
 
@@ -90,26 +94,55 @@ public final class StallAnalysis {
             EventKinds.FILE_WRITE, EventKinds.FILE_FORCE};
     private static final int[] SAMPLER_EVENTS = {EventKinds.EXECUTION_SAMPLE, EventKinds.NATIVE_METHOD_SAMPLE};
 
+    /** How many threads with nothing to judge them by are named before the rest are counted. */
+    private static final int SILENT_THREADS_SHOWN = 5;
+
+    /** A silence's position against the thread's life, for its label. */
+    private static final long MID = 0;
+    private static final long FROM_START = 1;
+    private static final long TO_END = 2;
+
     private static final Comparator<Pause> PAUSE_BY_INTERVAL = Comparator.comparing(Pause::interval);
     private static final Comparator<ThreadTimeline> BY_THREAD_NAME = Comparator.comparing(t -> t.thread().name());
     private static final Comparator<Stall> BY_START = Comparator.comparingLong(Stall::start);
+    private static final ToLongFunction<Stall> STALL_START = Stall::start;
+    private static final ToLongFunction<Stall> STALL_DURATION = Stall::duration;
+    private static final ToLongFunction<Block> BLOCK_START = Block::start;
+    private static final ToLongFunction<Block> BLOCK_DURATION = Block::duration;
+    private static final ToLongFunction<Pause> PAUSE_START = Pause::start;
+    private static final ToLongFunction<Pause> PAUSE_DURATION = Pause::duration;
+    /**
+     * Precedence between judged candidates that overlap, strongest first, after the event
+     * stalls, which are exact and claim their time before any of them: a silence a JVM pause
+     * explains (exact too, cut to the pauses), a run of samples (as good as the sampling),
+     * and last a silence explained by blocks or by nothing, the weakest evidence there is.
+     */
+    private static final int TIER_PAUSE = 0;
+    private static final int TIER_RUN = 1;
+    private static final int TIER_SILENCE = 2;
+    private static final ToLongFunction<Interval> INTERVAL_END = Interval::end;
+    private static final ToLongFunction<Sample> SAMPLE_TIME = Sample::time;
+    private static final Comparator<Interval> INTERVAL_BY_START = Comparator.comparingLong(Interval::start);
+    private static final long PERCH = 1;
+    private static final long NOT_PERCH = 0;
 
     private final long gap;
     /** Which parks are a worker with nothing to do rather than a wait someone is paying for. */
     private final IdleMatcher workWaits;
     /** A culprit's qualified name, built once per distinct frame (G-2.3). */
     private final ObjObjHashMap<Frame, String> culpritNames = new ObjObjHashMap<>(1024);
-    /** Scratch for {@link #busy}: culprit counts in first-seen order, and a stack per culprit. */
+    /** Scratch for {@link #busy}: culprit counts in first-seen order, a stack per culprit, and their pool (G-3.1). */
     private final ObjList<Culprit> culprits = new ObjList<>();
+    private final ObjList<Culprit> culpritPool = new ObjList<>();
     private final ObjObjHashMap<String, Culprit> culpritByName = new ObjObjHashMap<>(64);
     /** Event stalls cut down to the recording's span in the current analysis; reset per {@link #analyse}. */
     private int clippedStalls;
     /** Blocks left out as "waiting for work" in the current analysis, and their total. */
     private int workWaitCount;
     /** The loops {@link Perch} recognised in this recording, as their stacks print. */
-    private Set<String> perchRenderings = Set.of();
-    /** That verdict per distinct stack, so a rendering is built once and not once per block. */
-    private final Map<Stack, Boolean> perchVerdict = new HashMap<>();
+    private final ObjHashSet<String> perchRenderings = new ObjHashSet<>(16);
+    /** That verdict per distinct stack, so a rendering is built once and not once per block (G-2.2). */
+    private final ObjLongHashMap<Stack> perchVerdict = new ObjLongHashMap<>(256);
     private long workWaitNanos;
 
     /** Whether a block is a worker parked on its own empty queue rather than a wait that costs someone. */
@@ -117,9 +150,13 @@ public final class StallAnalysis {
         return isWaitingForWork(verdictOf(b.kind()), b.stack());
     }
 
-    /** The same question from a candidate's explanation, which carries the representative stack. */
+    /**
+     * The same question from a candidate's explanation, which carries the representative
+     * stack. A park, a wait or a sleep can be a thread with nothing to do; a monitor or an
+     * I/O call is always waiting for something someone else has.
+     */
     private boolean isWaitingForWork(final Verdict verdict, final Stack stack) {
-        return (verdict == Verdict.PARKED || verdict == Verdict.OBJECT_WAIT)
+        return (verdict == Verdict.PARKED || verdict == Verdict.OBJECT_WAIT || verdict == Verdict.SLEEP)
                 && (workWaits.isIdle(stack) || onAPerch(stack));
     }
 
@@ -133,44 +170,34 @@ public final class StallAnalysis {
         if (perchRenderings.isEmpty()) {
             return false;
         }
-        return perchVerdict.computeIfAbsent(stack, s -> perchRenderings.contains(rendering(s)));
-    }
-
-    private static String rendering(final Stack stack) {
-        return stack.pretty("", PERCH_FRAMES);
+        final int index = perchVerdict.keyIndex(stack);
+        if (index < 0) {
+            return perchVerdict.valueAtQuick(index) == PERCH;
+        }
+        final String loop = Perch.loop(stack);
+        final boolean perch = loop != null && perchRenderings.contains(loop);
+        perchVerdict.putAt(index, stack, perch ? PERCH : NOT_PERCH);
+        return perch;
     }
 
     /**
-     * The stacks of the locks that {@link Perch} recognised: a worker loop this JVM has and no
-     * idle list knows about. Found once for the whole analysis, because the evidence is what a
-     * lock did across every watched thread, not what one block did.
+     * The loops {@link Perch} recognised: a worker loop this JVM has and no idle list knows
+     * about. Found once for the whole analysis, because the evidence is what a lock did across
+     * every thread in the recording, not what one block did.
      */
-    private Set<String> perchRenderings(final List<ThreadTimeline> timelines, final Interval span) {
+    private void findPerches(final ParkShapes parks, final Interval span) {
+        perchRenderings.clear();
+        perchVerdict.clear();
         if (workWaits.matchesNothing()) {
-            return Set.of();
+            return;
         }
-        final Map<String, Perch.Shape> byLock = new HashMap<>();
-        for (final ThreadTimeline tl : timelines) {
-            for (final Block b : tl.blocks()) {
-                if (b.kind() != BlockKind.PARK) {
-                    continue;
-                }
-                final long inside = b.interval().clampTo(span).length();
-                if (inside > 0) {
-                    // A park has no holder to record, so the lock is never owned; the name of
-                    // the lock is what the collector put in the detail.
-                    byLock.computeIfAbsent(b.detail(), _ -> new Perch.Shape())
-                            .add(tl.thread(), inside, b.stack(), false);
-                }
+        final ObjList<Stack> stacks = parks.perchStacks(span);
+        for (int i = 0, n = stacks.size(); i < n; i++) {
+            final String loop = Perch.loop(stacks.getQuick(i));
+            if (loop != null) {
+                perchRenderings.add(loop);
             }
         }
-        final Set<String> found = new HashSet<>();
-        byLock.forEach((_, shape) -> {
-            if (shape.matches(span.length()) && !shape.stack().isEmpty()) {
-                found.add(rendering(shape.stack()));
-            }
-        });
-        return found;
     }
 
     public StallAnalysis(final long gapNanos) {
@@ -189,15 +216,40 @@ public final class StallAnalysis {
         return gap;
     }
 
+    /**
+     * Stalls in {@code timelines}, with {@link Perch} judged on the parks the timelines hold.
+     * That is every thread's evidence only when the timelines are every thread; the collector,
+     * which sees the whole recording, weighs the parks of the threads it does not watch too.
+     */
     public StallReport analyse(final RecordingInfo info, final List<ThreadTimeline> timelines, final List<Pause> pauses) {
+        final ParkShapes parks = new ParkShapes();
+        for (int t = 0, n = timelines.size(); t < n; t++) {
+            final ThreadTimeline tl = timelines.get(t);
+            final List<Block> blocks = tl.blocks();
+            for (int i = 0, m = blocks.size(); i < m; i++) {
+                final Block b = blocks.get(i);
+                if (b.kind() == BlockKind.PARK) {
+                    parks.add(tl.thread(), b.detail(), b.start(), b.interval().end(), b.stack());
+                }
+            }
+        }
+        return analyse(info, timelines, pauses, parks, List.of());
+    }
+
+    /**
+     * @param parks  every thread's parks, watched or not, for {@link Perch}
+     * @param silent threads the filter matched that have neither a sample nor a blocking event
+     */
+    StallReport analyse(final RecordingInfo info, final List<ThreadTimeline> timelines, final List<Pause> pauses,
+                        final ParkShapes parks, final List<String> silent) {
         final List<String> warnings = new ArrayList<>();
         warnRecording(info, warnings);
+        warnSilent(silent, warnings);
         final long period = samplerPeriod(info);
         clippedStalls = 0;
         workWaitCount = 0;
         workWaitNanos = 0;
-        perchVerdict.clear();
-        perchRenderings = perchRenderings(timelines, info.span());
+        findPerches(parks, info.span());
 
         final ObjList<Pause> sortedPauses = new ObjList<>(pauses.size());
         for (int i = 0, n = pauses.size(); i < n; i++) {
@@ -207,7 +259,7 @@ public final class StallAnalysis {
         final ObjList<Pause> longPauses = new ObjList<>();
         for (int i = 0, n = sortedPauses.size(); i < n; i++) {
             final Pause p = sortedPauses.getQuick(i);
-            if (p.length() >= gap) {
+            if (p.duration() >= gap) {
                 longPauses.add(p);
             }
         }
@@ -245,9 +297,9 @@ public final class StallAnalysis {
             }
         }
         if (workWaitCount > 0) {
-            warnings.add(workWaitCount + (workWaitCount == 1 ? " park totalling " : " parks totalling ")
-                    + Durations.format(workWaitNanos) + " were workers waiting for their own queue and are not "
-                    + "stalls; --idle replaces the patterns that decide this");
+            warnings.add(workWaitCount + (workWaitCount == 1 ? " wait totalling " : " waits totalling ")
+                    + Durations.format(workWaitNanos) + " were workers waiting for their own queue, or at a frame "
+                    + "--idle names, and are not stalls; --idle none turns this off");
         }
         if (clippedStalls > 0) {
             warnings.add(clippedStalls == 1
@@ -283,12 +335,12 @@ public final class StallAnalysis {
             return stalls;
         }
         unexplained.sort(BY_START);
-        final long longest = Sorted.maxLength(unexplained, Stall::duration);
+        final long longest = Sorts.maxDuration(unexplained, STALL_DURATION);
         final IdentityObjObjHashMap<Stall, Stall> marked = new IdentityObjObjHashMap<>(unexplained.size());
         for (int u = 0, n = unexplained.size(); u < n; u++) {
             final Stall s = unexplained.getQuick(u);
             int count = 0;
-            final int from = Sorted.lowerBound(unexplained, Stall::start, s.start() - longest);
+            final int from = Sorts.lowerBound(unexplained, STALL_START, s.start() - longest);
             for (int i = from; i < n; i++) {
                 final Stall o = unexplained.getQuick(i);
                 if (o.start() >= s.interval().end()) {
@@ -330,6 +382,30 @@ public final class StallAnalysis {
         return period;
     }
 
+    /**
+     * The threads a filter matched that the analysis has nothing on: the JVM's own threads,
+     * which the sampler never visits, and any thread blocked through the whole window with no
+     * call ending inside it. Named, so that a thread {@code jfrq info} lists is not silently
+     * missing from the report.
+     */
+    private static void warnSilent(final List<String> silent, final List<String> warnings) {
+        if (silent.isEmpty()) {
+            return;
+        }
+        final StringBuilder names = new StringBuilder();
+        final int shown = Math.min(silent.size(), SILENT_THREADS_SHOWN);
+        for (int i = 0; i < shown; i++) {
+            names.append(i > 0 ? ", " : "").append(silent.get(i));
+        }
+        if (silent.size() > shown) {
+            names.append(" and ").append(silent.size() - shown).append(" more");
+        }
+        warnings.add(silent.size() + (silent.size() == 1 ? " matching thread has" : " matching threads have")
+                + " no samples and no blocking events, so nothing to judge by (" + names + "): the sampler "
+                + "visits only threads running Java or native code, and a thread blocked through the whole "
+                + "recording leaves no event");
+    }
+
     private void warnRecording(final RecordingInfo info, final List<String> warnings) {
         if (!info.has(EventKinds.nameOf(EventKinds.EXECUTION_SAMPLE))
                 && !info.has(EventKinds.nameOf(EventKinds.NATIVE_METHOD_SAMPLE))) {
@@ -338,7 +414,7 @@ public final class StallAnalysis {
         final StringBuilder throttled = new StringBuilder();
         for (final int kind : THRESHOLDED_BLOCK_EVENTS) {
             final String type = EventKinds.nameOf(kind);
-            if (!info.enabled(type)) {
+            if (!info.isEnabled(type)) {
                 continue;
             }
             final long threshold = info.thresholdNanos(type);
@@ -364,11 +440,18 @@ public final class StallAnalysis {
      * bursts with long regular gaps between). Silence is judged against the percentile,
      * run chaining against the median.
      *
-     * @param java       median spacing between consecutive Java samples
-     * @param inNative   median spacing between consecutive native samples
-     * @param javaP90    90th percentile of the Java spacing
-     * @param nativeP90  90th percentile of the native spacing
-     * @param period     the configured sampler period, or the Java median if unknown
+     * <p>A median is only printed for a kind the thread has consecutive pairs of: a thread
+     * seen only in native code has no Java cadence, and the spacing of its native samples
+     * standing in for one would feed run chaining a number that is not about running Java.
+     * The routine absence still falls back to every consecutive pair, since it is about any
+     * observation.
+     *
+     * @param java       median spacing between consecutive Java samples; 0 without such a pair
+     * @param inNative   median spacing between consecutive native samples; 0 without such a pair
+     * @param javaP90    90th percentile of the Java spacing, or of all spacings without a Java pair
+     * @param nativeP90  90th percentile of the native spacing, or of all spacings without a native pair
+     * @param period     the configured sampler period; the Java median, then the median of all
+     *                   spacings, if unknown
      */
     record Cadence(long java, long inNative, long javaP90, long nativeP90, long period) {
         static Cadence of(final List<Sample> samples, final long configuredPeriod) {
@@ -381,21 +464,22 @@ public final class StallAnalysis {
                 final Sample b = samples.get(i);
                 final long d = b.time() - a.time();
                 allDiffs.add(d);
-                if (!a.inNative() && !b.inNative()) {
+                if (!a.isInNative() && !b.isInNative()) {
                     javaDiffs.add(d);
-                } else if (a.inNative() && b.inNative()) {
+                } else if (a.isInNative() && b.isInNative()) {
                     nativeDiffs.add(d);
                 }
             }
-            final LongList javaSpacing = javaDiffs.isEmpty() ? allDiffs : javaDiffs;
-            final LongList nativeSpacing = nativeDiffs.isEmpty() ? allDiffs : nativeDiffs;
             // Sorting in place is fine: only the order statistics are read from here on.
-            javaSpacing.sort();
-            nativeSpacing.sort();
-            final long java = percentile(javaSpacing, 0.5);
-            final long period = configuredPeriod > 0 ? configuredPeriod : java;
-            return new Cadence(java, percentile(nativeSpacing, 0.5), percentile(javaSpacing, 0.9),
-                    percentile(nativeSpacing, 0.9), period);
+            javaDiffs.sort();
+            nativeDiffs.sort();
+            allDiffs.sort();
+            final long java = percentile(javaDiffs, 0.5);
+            final long inNative = percentile(nativeDiffs, 0.5);
+            final long all = percentile(allDiffs, 0.5);
+            final long period = configuredPeriod > 0 ? configuredPeriod : java > 0 ? java : all;
+            return new Cadence(java, inNative, percentile(javaDiffs.isEmpty() ? allDiffs : javaDiffs, 0.9),
+                    percentile(nativeDiffs.isEmpty() ? allDiffs : nativeDiffs, 0.9), period);
         }
 
         /**
@@ -423,39 +507,47 @@ public final class StallAnalysis {
         // 1. Event-based stalls: precise, independent of sampling.
         final List<Block> blocks = tl.blocks();
         final ObjList<Stall> eventStalls = new ObjList<>();
+        long claimedTo = Long.MIN_VALUE;
         for (int i = 0, n = blocks.size(); i < n; i++) {
             final Block b = blocks.get(i);
             // A block that began before the recording, or was still running at its end, is in
             // the file whole; only the part inside the span happened in the window the report
             // is about, and the gap applies to that part.
             final Interval inside = b.interval().clampTo(span);
-            if (inside.length() >= gap) {
+            if (inside.duration() >= gap) {
                 // A worker parked on its own empty queue is not stalled, it is unemployed. The
                 // block stays in the timeline below, because it is still what explains the
                 // silence in the samples; it just does not become a stall of its own.
                 if (isWaitingForWork(b)) {
-                    workWaitNanos += inside.length();
+                    workWaitNanos += inside.duration();
                     workWaitCount++;
+                    continue;
+                }
+                // Blocks come in start order. One that begins inside an earlier event stall is
+                // part of that stall's time: nested, it adds nothing; overlapping, only what
+                // it adds past the end is its own, and that must still be a gap long.
+                final Interval own = inside.start() < claimedTo
+                        ? new Interval(Math.min(claimedTo, inside.end()), inside.end()) : inside;
+                if (own.duration() < gap) {
                     continue;
                 }
                 if (inside != b.interval()) {
                     clippedStalls++;
                 }
-                eventStalls.add(new Stall(tl.thread(), inside, verdictOf(b.kind()), describe(b), b.stack(),
+                eventStalls.add(new Stall(tl.thread(), own, verdictOf(b.kind()), describe(b), b.stack(),
                         Evidence.EVENT, 0));
+                claimedTo = own.end();
             }
         }
         stalls.addAll(eventStalls);
         windows.of(blocks, eventStalls);
 
-        // 2. Sample-based candidates.
+        // 2. Sample-based candidates: the silences between samples and the runs of non-idle ones.
+        final ObjList<Candidate> candidates = new ObjList<>();
+        edgeSilences(tl, candidates);
         final List<Sample> samples = tl.samples();
-        long runLimit = Math.min(gap, RUN_FACTOR * Math.max(cadence.period, cadence.java));
-        if (runLimit <= 0) {
-            runLimit = gap;
-        }
-        final ObjList<Candidate> runs = new ObjList<>();
-        final ObjList<Interval> silences = new ObjList<>();
+        final long runLimit = runLimit(cadence);
+        final long unexplainedThreshold = silentThreshold(cadence);
         int i = 0;
         final int n = samples.size();
         while (i < n) {
@@ -464,12 +556,11 @@ public final class StallAnalysis {
                 // Every gap of at least the stall length is a candidate; whether an unexplained
                 // one is evidence of anything is decided against the cadence below.
                 final Sample prev = samples.get(i - 1);
-                final long d = first.time() - prev.time();
-                if (d >= gap) {
-                    silences.add(new Interval(prev.time(), first.time()));
+                if (first.time() - prev.time() >= gap) {
+                    candidates.add(Candidate.silence(new Interval(prev.time(), first.time()), MID));
                 }
             }
-            if (first.idle()) {
+            if (first.isIdle()) {
                 i++;
                 continue;
             }
@@ -477,7 +568,8 @@ public final class StallAnalysis {
             while (j + 1 < n) {
                 final Sample cur = samples.get(j);
                 final Sample next = samples.get(j + 1);
-                if (next.idle() || next.time() - cur.time() > runLimit) {
+                if (next.isIdle() || next.time() - cur.time() > runLimit
+                        || stops(windows, cur.time(), next.time(), unexplainedThreshold)) {
                     break;
                 }
                 j++;
@@ -492,69 +584,361 @@ public final class StallAnalysis {
             }
             end = Math.max(Math.min(end, span.end()), last.time());
             final Interval run = new Interval(first.time(), end);
-            if (run.length() >= gap && j + 1 - i >= RUN_MIN_SAMPLES) {
-                runs.add(new Candidate(run, samples.subList(i, j + 1)));
+            if (run.duration() >= gap && j + 1 - i >= RUN_MIN_SAMPLES) {
+                candidates.add(Candidate.run(run, samples.subList(i, j + 1)));
             }
-            // Pairs inside the run were within runLimit <= gap of each other, so none is a silence.
+            // A pair inside the run was chained, so it is not a silence: two samples are either
+            // evidence the thread kept running or a candidate absence, never both.
             i = j + 1;
         }
 
-        final long unexplainedThreshold = silentThreshold(cadence);
-        for (int s = 0, m = silences.size(); s < m; s++) {
-            final Interval silence = silences.getQuick(s);
-            if (windows.coveredByEvent(silence)) {
-                continue;
-            }
-            // A silence shorter than the routine absence is not evidence by itself, so what
-            // explains it must cover a whole gap on its own; a longer one is, and half is enough.
-            final long minCover = silence.length() < unexplainedThreshold ? Math.max(gap, cover(silence)) : cover(silence);
-            final Explanation ex = windows.explain(silence, true, minCover);
-            if (ex != null) {
-                // The same rule as above, at the other door: a silence whose explanation is a
-                // worker's own empty queue is not a stall either, and must not fall through to
-                // UNEXPLAINED, which would be a worse answer than the one just rejected.
-                if (!isWaitingForWork(ex.verdict, ex.stack)) {
-                    stalls.add(new Stall(tl.thread(), silence, ex.verdict, ex.detail, ex.stack, Evidence.SILENCE, 0));
+        // 3. Judged, then kept disjoint: what the stronger evidence claims first is not the
+        // weaker evidence's to count again.
+        final ObjList<Stall> judged = new ObjList<>(candidates.size());
+        for (int c = 0, m = candidates.size(); c < m; c++) {
+            final Candidate candidate = candidates.getQuick(c);
+            // Already in the report when the thread's event stalls cover half of it together.
+            judged.add(windows.coveredByEvent(candidate.interval) ? null
+                    : judge(tl, cadence, windows, candidate, unexplainedThreshold));
+        }
+        ObjList<Interval> claimed = new ObjList<>(eventStalls.size());
+        for (int e = 0, m = eventStalls.size(); e < m; e++) {
+            claimed.add(eventStalls.getQuick(e).interval());
+        }
+        ObjList<Stall> runs = null;
+        for (int tier = TIER_PAUSE; tier <= TIER_SILENCE; tier++) {
+            final ObjList<Stall> kept = new ObjList<>();
+            for (int c = 0, m = candidates.size(); c < m; c++) {
+                final Stall stall = judged.getQuick(c);
+                if (stall != null && tierOf(stall) == tier) {
+                    keepUnclaimed(tl, cadence, windows, candidates.getQuick(c), stall, claimed,
+                            unexplainedThreshold, kept);
                 }
-            } else if (silence.length() >= unexplainedThreshold) {
-                // Longer than the thread's routine absence: the sampler would have seen it otherwise.
-                stalls.add(new Stall(tl.thread(), silence, Verdict.UNEXPLAINED,
-                        "no samples and no blocking event: blocked below the recording's thresholds, "
-                                + "or sampled too sparsely", Stack.EMPTY, Evidence.SILENCE, 0));
+            }
+            if (tier == TIER_RUN) {
+                // A run claims up to its last sample only: the period after it is an estimate,
+                // and gives way to a silence that starts there.
+                runs = kept;
+                claimed = claim(claimed, sampledParts(tl, kept));
+            } else {
+                if (runs != null) {
+                    giveWayTails(runs, kept);
+                }
+                stalls.addAll(kept);
+                claimed = claim(claimed, intervals(kept));
             }
         }
+        if (runs != null) {
+            stalls.addAll(runs);
+        }
+    }
 
-        for (int r = 0, m = runs.size(); r < m; r++) {
-            final Candidate run = runs.getQuick(r);
-            if (windows.coveredByEvent(run.interval)) {
-                continue;
+    /** Each run up to its last sample, the part the samples are evidence for. */
+    private static ObjList<Interval> sampledParts(final ThreadTimeline tl, final ObjList<Stall> runs) {
+        final List<Sample> samples = tl.samples();
+        final ObjList<Interval> parts = new ObjList<>(runs.size());
+        for (int i = 0, n = runs.size(); i < n; i++) {
+            final Interval run = runs.getQuick(i).interval();
+            final int after = Sorts.lowerBound(samples, SAMPLE_TIME, run.end());
+            final long last = after > 0 ? samples.get(after - 1).time() : run.end();
+            parts.add(new Interval(run.start(), Math.max(run.start(), Math.min(last, run.end()))));
+        }
+        return parts;
+    }
+
+    /** Cuts each run's estimated tail where a later-tier stall starts inside it, so stalls stay disjoint. */
+    private static void giveWayTails(final ObjList<Stall> runs, final ObjList<Stall> kept) {
+        for (int i = 0, n = runs.size(); i < n; i++) {
+            final Stall run = runs.getQuick(i);
+            long end = run.interval().end();
+            for (int j = 0, m = kept.size(); j < m; j++) {
+                final long start = kept.getQuick(j).start();
+                if (start > run.start() && start < end) {
+                    end = start;
+                }
             }
-            final Explanation ex = windows.explain(run.interval, false, cover(run.interval));
-            if (ex != null) {
-                // The third door, and the same rule as the other two: a run of samples whose
-                // explanation is the thread's own empty queue is not a stall. The samples are
-                // not idle by the sampler's reckoning — a park shows as native code, not as the
-                // idle point — so without this a worker's own waiting reappears here after
-                // being kept out of the event stalls and the silences.
-                if (!isWaitingForWork(ex.verdict, ex.stack)) {
-                    stalls.add(new Stall(tl.thread(), run.interval, ex.verdict, ex.detail, ex.stack,
-                            Evidence.SAMPLES, run.samples.size()));
-                }
-            } else {
-                final Stall b = busy(tl, run);
-                if (b != null) {
-                    stalls.add(b);
-                }
+            if (end != run.interval().end()) {
+                runs.setQuick(i, new Stall(run.thread(), new Interval(run.start(), end), run.verdict(), run.detail(),
+                        run.stack(), run.evidence(), run.samples()));
             }
         }
     }
 
-    private record Candidate(Interval interval, List<Sample> samples) {
+    private static ObjList<Interval> intervals(final ObjList<Stall> stalls) {
+        final ObjList<Interval> out = new ObjList<>(stalls.size());
+        for (int i = 0, n = stalls.size(); i < n; i++) {
+            out.add(stalls.getQuick(i).interval());
+        }
+        return out;
+    }
+
+    private static int tierOf(final Stall stall) {
+        if (stall.evidence() == Evidence.SAMPLES) {
+            return TIER_RUN;
+        }
+        return stall.verdict().isThreadLocal() ? TIER_SILENCE : TIER_PAUSE;
+    }
+
+    /**
+     * Keeps a judged candidate if nothing stronger claims any of its time; otherwise what is
+     * left of it, piece by piece, judged again as the same kind of candidate. A piece is
+     * judged afresh rather than trimmed, because the explanation of the whole may rest on
+     * the very events that now stand as stalls of their own: "29 × parked" over a run that
+     * holds one long park listed separately counted that park twice.
+     */
+    private void keepUnclaimed(final ThreadTimeline tl, final Cadence cadence, final Windows windows,
+                               final Candidate candidate, final Stall stall, final ObjList<Interval> claimed,
+                               final long unexplainedThreshold, final ObjList<Stall> kept) {
+        final int free = Sorts.lowerBound(claimed, INTERVAL_END, stall.start() + 1);
+        if (free == claimed.size() || claimed.getQuick(free).start() >= stall.interval().end()) {
+            kept.add(stall);
+            return;
+        }
+        int k = Sorts.lowerBound(claimed, INTERVAL_END, candidate.interval.start() + 1);
+        long from = candidate.interval.start();
+        final long to = candidate.interval.end();
+        while (from < to) {
+            final long pieceEnd = k < claimed.size() ? Math.min(to, claimed.getQuick(k).start()) : to;
+            if (pieceEnd - from >= gap) {
+                final Stall piece = judge(tl, cadence, windows, candidate.piece(from, pieceEnd), unexplainedThreshold);
+                if (piece != null) {
+                    kept.add(piece);
+                }
+            }
+            if (k == claimed.size()) {
+                break;
+            }
+            from = Math.max(from, claimed.getQuick(k).end());
+            k++;
+        }
+    }
+
+    /** The claimed intervals with the newly kept ones merged in; both are disjoint, so the result is. */
+    private static ObjList<Interval> claim(final ObjList<Interval> claimed, final ObjList<Interval> kept) {
+        if (kept.isEmpty()) {
+            return claimed;
+        }
+        kept.sort(INTERVAL_BY_START);
+        final ObjList<Interval> merged = new ObjList<>(claimed.size() + kept.size());
+        int a = 0;
+        int b = 0;
+        while (a < claimed.size() || b < kept.size()) {
+            if (b == kept.size() || a < claimed.size() && claimed.getQuick(a).start() <= kept.getQuick(b).start()) {
+                merged.add(claimed.getQuick(a++));
+            } else {
+                merged.add(kept.getQuick(b++));
+            }
+        }
+        return merged;
+    }
+
+    /**
+     * Whether two chained samples have something between them that stops the run: a stretch
+     * at least a gap long that the thread's event stalls, a JVM pause or its blocking events
+     * explain as a silence would be. The chaining limit can reach past the gap, since it never
+     * falls below the sampler's resolution; without this a collection between two busy
+     * samples was folded into the run and reported as the thread's own work.
+     */
+    private boolean stops(final Windows windows, final long from, final long to, final long unexplainedThreshold) {
+        if (to - from < gap) {
+            return false;
+        }
+        final Interval between = new Interval(from, to);
+        return windows.coveredByEvent(between) || explainSilence(windows, between, unexplainedThreshold) != null;
+    }
+
+    private Stall judge(final ThreadTimeline tl, final Cadence cadence, final Windows windows, final Candidate c,
+                        final long unexplainedThreshold) {
+        return c.samples == null ? judgeSilence(tl, cadence, windows, c.interval, c.edge, unexplainedThreshold)
+                : judgeRun(tl, windows, c.interval, c.samples);
+    }
+
+    /**
+     * A silence explained by the blocks or pauses that cover it, as the coverage rule has it,
+     * or unexplained when it is longer than the thread's routine absence; otherwise nothing.
+     */
+    private Stall judgeSilence(final ThreadTimeline tl, final Cadence cadence, final Windows windows,
+                               final Interval silence, final long edge, final long unexplainedThreshold) {
+        final Explanation ex = explainSilence(windows, silence, unexplainedThreshold);
+        if (ex != null) {
+            // The same rule as for events, at the other door: a silence whose explanation is a
+            // worker's own empty queue is not a stall either, and must not fall through to
+            // UNEXPLAINED, which would be a worse answer than the one just rejected.
+            if (isWaitingForWork(ex.verdict, ex.stack)) {
+                return null;
+            }
+            // Pauses explain only the stretch from the first of them to the last: the thread may
+            // have been running on either side, and a stall longer than what stopped it would
+            // overstate it. When that stretch is shorter than a gap, the pauses still cover the
+            // silence by the rule blocks are held to, so the silence is theirs, whole, and the
+            // detail says how much of it they stopped.
+            final boolean cut = ex.extent != null && ex.extent.duration() >= gap;
+            final Interval explained = cut ? ex.extent : silence;
+            final String detail = ex.extent == null || cut ? ex.detail
+                    : ex.detail + ", " + Durations.format(ex.stopped) + " of a " + Durations.format(silence.duration())
+                            + " silence";
+            return new Stall(tl.thread(), explained, ex.verdict, detail + edgeNote(tl, explained, edge), ex.stack,
+                    Evidence.SILENCE, 0);
+        }
+        // Longer than the thread's routine absence: the sampler would have seen it otherwise.
+        // A thread seen fewer than twice has no routine absence to be longer than, and its
+        // silence says nothing unless something explains it. Nor does the stretch after the
+        // last sample of a thread that waits for work where the sampler cannot see it: its
+        // last park may simply not have ended yet.
+        if (cadence.routineAbsence() > 0 && silence.duration() >= unexplainedThreshold
+                && ((edge & TO_END) == 0 || !waitsForWork(tl.blocks()))) {
+            return new Stall(tl.thread(), silence, Verdict.UNEXPLAINED,
+                    "no samples and no blocking event: blocked below the recording's thresholds, "
+                            + "or sampled too sparsely" + edgeNote(tl, silence, edge), Stack.EMPTY,
+                    Evidence.SILENCE, 0);
+        }
+        return null;
+    }
+
+    /**
+     * A silence shorter than the routine absence is not evidence by itself, so what explains
+     * it must cover a whole gap on its own; a longer one is, and half is enough.
+     */
+    private Explanation explainSilence(final Windows windows, final Interval silence, final long unexplainedThreshold) {
+        final long minCover = silence.duration() < unexplainedThreshold ? Math.max(gap, cover(silence)) : cover(silence);
+        return windows.explain(silence, true, minCover, false);
+    }
+
+    /**
+     * Blocking events together, whatever they were, covering half the run say the thread was
+     * not running, and the verdict is the largest group's; otherwise the samples name what it
+     * was busy with.
+     */
+    private Stall judgeRun(final ThreadTimeline tl, final Windows windows, final Interval run,
+                           final List<Sample> samples) {
+        if (run.duration() < gap || samples.size() < RUN_MIN_SAMPLES) {
+            return null;
+        }
+        final Explanation ex = windows.explain(run, false, cover(run), true);
+        if (ex == null) {
+            return busy(tl, run, samples);
+        }
+        // The third door, and the same rule as the other two: a run of samples whose
+        // explanation is the thread's own empty queue is not a stall. The samples are
+        // not idle by the sampler's reckoning — a park shows as native code, not as the
+        // idle point — so without this a worker's own waiting reappears here after
+        // being kept out of the event stalls and the silences.
+        return isWaitingForWork(ex.verdict, ex.stack) ? null
+                : new Stall(tl.thread(), run, ex.verdict, ex.detail, ex.stack, Evidence.SAMPLES, samples.size());
+    }
+
+    /**
+     * A silence or a run of samples, before it is judged.
+     *
+     * @param samples the run's samples in time order; {@code null} for a silence
+     * @param edge    for a silence, where it sits against the thread's life ({@link #MID},
+     *                {@link #FROM_START}, {@link #TO_END})
+     */
+    private record Candidate(Interval interval, List<Sample> samples, long edge) {
+        static Candidate silence(final Interval interval, final long edge) {
+            return new Candidate(interval, null, edge);
+        }
+
+        static Candidate run(final Interval interval, final List<Sample> samples) {
+            return new Candidate(interval, samples, MID);
+        }
+
+        /**
+         * The part of this candidate in {@code [from, to)}: a run keeps the samples taken in
+         * it, a silence keeps an end of the thread's life only if the piece still reaches it.
+         */
+        Candidate piece(final long from, final long to) {
+            final Interval part = new Interval(from, to);
+            if (samples == null) {
+                final long kept = (from == interval.start() ? edge & FROM_START : 0)
+                        | (to == interval.end() ? edge & TO_END : 0);
+                return silence(part, kept);
+            }
+            int lo = 0;
+            while (lo < samples.size() && samples.get(lo).time() < from) {
+                lo++;
+            }
+            int hi = lo;
+            while (hi < samples.size() && samples.get(hi).time() < to) {
+                hi++;
+            }
+            return run(part, samples.subList(lo, hi));
+        }
+    }
+
+    /** Whether the thread was seen, anywhere in the recording, waiting for work. */
+    private boolean waitsForWork(final List<Block> blocks) {
+        for (int i = 0, n = blocks.size(); i < n; i++) {
+            if (isWaitingForWork(blocks.get(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * How far apart two non-idle samples may be and still chain: three of the thread's Java
+     * cadences, or three sampler periods when that is longer. Capped at the gap, because a
+     * stretch a whole stall long with nothing seen in it is not evidence of running — but
+     * never below three periods, the resolution of the sampler itself: capped there, a gap at
+     * or below the period chained nothing at all, and a smaller gap found fewer stalls than a
+     * larger one.
+     */
+    private long runLimit(final Cadence cadence) {
+        final long limit = Math.min(Math.max(gap, RUN_FACTOR * cadence.period),
+                RUN_FACTOR * Math.max(cadence.period, cadence.java));
+        return limit > 0 ? limit : gap;
+    }
+
+    /**
+     * The stretches of the thread's life before its first sample and after its last, when the
+     * recording bounds that life; the whole of it for a thread never sampled. A call still in
+     * progress when the recording stopped has written no event, so a thread stuck from the
+     * middle of the recording to its end leaves nothing but this.
+     */
+    private void edgeSilences(final ThreadTimeline tl, final ObjList<Candidate> candidates) {
+        if (!tl.isLifeKnown()) {
+            return;
+        }
+        final List<Sample> samples = tl.samples();
+        if (samples.isEmpty()) {
+            addEdge(tl.lifeStart(), tl.lifeEnd(), FROM_START | TO_END, candidates);
+            return;
+        }
+        addEdge(tl.lifeStart(), samples.getFirst().time(), FROM_START, candidates);
+        addEdge(samples.getLast().time(), tl.lifeEnd(), TO_END, candidates);
+    }
+
+    private void addEdge(final long from, final long to, final long edge, final ObjList<Candidate> candidates) {
+        if (to - from >= gap) {
+            candidates.add(Candidate.silence(new Interval(from, to), edge));
+        }
+    }
+
+    /** What a silence at an end of the thread's life means, appended to its detail. */
+    private static String edgeNote(final ThreadTimeline tl, final Interval silence, final long edge) {
+        if (edge == MID) {
+            return "";
+        }
+        final StringBuilder note = new StringBuilder("; ");
+        if ((edge & FROM_START) != 0 && silence.start() == tl.lifeStart()) {
+            note.append("from the thread's first moment in the recording");
+            if ((edge & TO_END) != 0 && silence.end() == tl.lifeEnd()) {
+                note.append(" to its last, without a single sample");
+            }
+        } else if ((edge & TO_END) != 0 && silence.end() == tl.lifeEnd()) {
+            note.append("runs to the thread's last moment in the recording")
+                    .append(tl.samples().isEmpty() ? ", which has no sample of it" : ", after its last sample")
+                    .append(": a call still in progress when the recording stopped has written no event");
+        } else {
+            return "";
+        }
+        return note.toString();
     }
 
     /** The coverage an explanation needs for an interval that is evidence in its own right. */
     private static long cover(final Interval interval) {
-        return (long) Math.ceil(COVER * interval.length());
+        return (long) Math.ceil(COVER * interval.duration());
     }
 
     /** The shortest silence that means anything on its own: above the gap and above the routine absence. */
@@ -562,7 +946,13 @@ public final class StallAnalysis {
         return Math.max(gap, CADENCE_FACTOR * cadence.routineAbsence());
     }
 
-    private record Explanation(Verdict verdict, String detail, Stack stack) {
+    /**
+     * @param extent  for an explanation by pauses, the part of the candidate from the first
+     *                pause to the last, which is all they account for; {@code null} for blocks
+     * @param stopped for an explanation by pauses, how long they stopped the JVM inside the
+     *                candidate; 0 for blocks
+     */
+    private record Explanation(Verdict verdict, String detail, Stack stack, Interval extent, long stopped) {
     }
 
     /** Coverage of one (kind, detail) group of blocks over a candidate interval; reused across candidates. */
@@ -607,7 +997,7 @@ public final class StallAnalysis {
         @SuppressWarnings({"unchecked", "rawtypes"}) // an array of a generic type has no other spelling
         Windows(final ObjList<Pause> pauses) {
             this.pauses = pauses;
-            this.longestPause = Sorted.maxLength(pauses, Pause::length);
+            this.longestPause = Sorts.maxDuration(pauses, PAUSE_DURATION);
             final BlockKind[] kinds = BlockKind.values();
             this.groupByDetail = new ObjObjHashMap[kinds.length];
             for (int i = 0; i < kinds.length; i++) {
@@ -617,32 +1007,45 @@ public final class StallAnalysis {
 
         void of(final List<Block> blocks, final ObjList<Stall> eventStalls) {
             this.blocks = blocks;
-            this.longestBlock = Sorted.maxLength(blocks, Block::length);
+            this.longestBlock = Sorts.maxDuration(blocks, BLOCK_DURATION);
             this.eventStalls = eventStalls;
-            this.longestEventStall = Sorted.maxLength(eventStalls, Stall::duration);
+            this.longestEventStall = Sorts.maxDuration(eventStalls, STALL_DURATION);
         }
 
+        /**
+         * Whether the thread's event stalls, together, already cover half the candidate: its
+         * time is then already in the report, however many events it took. Taken one at a
+         * time, two one-minute waits inside a silence of two and a half came back as a third
+         * stall the length of both.
+         */
         boolean coveredByEvent(final Interval candidate) {
-            final int from = Sorted.lowerBound(eventStalls, Stall::start, candidate.start() - longestEventStall);
+            long covered = 0;
+            long coveredTo = candidate.start();
+            final int from = Sorts.lowerBound(eventStalls, STALL_START, candidate.start() - longestEventStall);
             for (int i = from, n = eventStalls.size(); i < n; i++) {
                 final Stall s = eventStalls.getQuick(i);
                 if (s.start() >= candidate.end()) {
                     break;
                 }
-                if (s.interval().overlap(candidate) >= COVER * candidate.length()) {
-                    return true;
+                final long end = Math.min(s.interval().end(), candidate.end());
+                final long start = Math.max(s.start(), coveredTo);
+                if (end > start) {
+                    covered += end - start;
+                    coveredTo = end;
                 }
             }
-            return false;
+            return covered >= COVER * candidate.duration();
         }
 
         /**
          * Groups blocking events overlapping the interval by kind and detail; the group with
-         * the most coverage wins if it covers at least {@code minCover} nanoseconds. Failing
-         * that, and only when {@code tryPauses}, JVM pauses are tried the same way.
+         * the most coverage wins if it covers at least {@code minCover} nanoseconds, or, when
+         * {@code together}, if all of them between them do. Failing that, and only when
+         * {@code tryPauses}, JVM pauses are tried the same way.
          */
-        Explanation explain(final Interval interval, final boolean tryPauses, final long minCover) {
-            final Explanation byBlock = explainByBlocks(interval, minCover);
+        Explanation explain(final Interval interval, final boolean tryPauses, final long minCover,
+                            final boolean together) {
+            final Explanation byBlock = explainByBlocks(interval, minCover, together);
             if (byBlock != null || !tryPauses) {
                 return byBlock;
             }
@@ -652,10 +1055,14 @@ public final class StallAnalysis {
         /**
          * Blocks are grouped by kind and detail, which for I/O is the peer or the path and
          * not the byte count, so that many short reads from one peer add up to one answer.
+         * Coverage together is the union of the blocks, so a block inside another counts once.
          */
-        private Explanation explainByBlocks(final Interval interval, final long minCover) {
+        private Explanation explainByBlocks(final Interval interval, final long minCover, final boolean together) {
             clearGroups();
-            final int from = Sorted.lowerBound(blocks, Block::start, interval.start() - longestBlock);
+            long union = 0;
+            long coveredTo = interval.start();
+            int count = 0;
+            final int from = Sorts.lowerBound(blocks, BLOCK_START, interval.start() - longestBlock);
             for (int i = from, n = blocks.size(); i < n; i++) {
                 final Block b = blocks.get(i);
                 if (b.start() >= interval.end()) {
@@ -665,11 +1072,18 @@ public final class StallAnalysis {
                 if (overlap == 0) {
                     continue;
                 }
+                final long end = Math.min(b.interval().end(), interval.end());
+                final long start = Math.max(b.start(), coveredTo);
+                if (end > start) {
+                    union += end - start;
+                }
+                coveredTo = Math.max(coveredTo, end);
+                count++;
                 final Group g = group(b.kind(), b.detail());
                 g.overlap += overlap;
                 g.count++;
                 g.bytes += b.bytes();
-                if (g.representative == null || b.length() > g.representative.length()) {
+                if (g.representative == null || b.duration() > g.representative.duration()) {
                     g.representative = b;
                 }
             }
@@ -680,10 +1094,14 @@ public final class StallAnalysis {
                     best = g;
                 }
             }
-            if (best != null && best.overlap >= minCover) {
+            if (best != null && (together ? union : best.overlap) >= minCover) {
                 final Block rep = best.representative;
                 final String detail = best.count > 1 ? best.count + " × " + describe(rep, best.bytes) : describe(rep);
-                return new Explanation(verdictOf(rep.kind()), detail, rep.stack());
+                // Named only when the largest group needed them: then they are part of the answer.
+                final long others = best.overlap < minCover ? count - best.count : 0;
+                return new Explanation(verdictOf(rep.kind()), others == 0 ? detail
+                        : detail + ", with " + others + (others == 1 ? " other blocking event" : " other blocking events"),
+                        rep.stack(), null, 0);
             }
             return null;
         }
@@ -716,40 +1134,54 @@ public final class StallAnalysis {
             groups.clear();
         }
 
+        /**
+         * GC pauses first, then other safepoints, each kind on its own. Several pauses explain
+         * a silence together, and the answer says how many and how long they stopped the JVM
+         * for: many short collections are one pause's worth of label otherwise, and read as a
+         * single multi-second stop that never happened.
+         */
         private Explanation explainByPauses(final Interval interval, final long minCover) {
-            long gc = 0;
-            long safepoint = 0;
-            Pause gcRep = null;
-            Pause spRep = null;
-            final int from = Sorted.lowerBound(pauses, Pause::start, interval.start() - longestPause);
+            final Explanation gc = explainByPauses(interval, minCover, PauseKind.GC, Verdict.GC_PAUSE);
+            return gc != null ? gc : explainByPauses(interval, minCover, PauseKind.SAFEPOINT, Verdict.SAFEPOINT);
+        }
+
+        private Explanation explainByPauses(final Interval interval, final long minCover, final PauseKind kind,
+                                            final Verdict verdict) {
+            long covered = 0;
+            long coveredTo = interval.start();
+            long first = Nulls.LONG_NULL;
+            int count = 0;
+            Pause longest = null;
+            final int from = Sorts.lowerBound(pauses, PAUSE_START, interval.start() - longestPause);
             for (int i = from, n = pauses.size(); i < n; i++) {
                 final Pause p = pauses.getQuick(i);
                 if (p.start() >= interval.end()) {
                     break;
                 }
-                final long overlap = p.interval().overlap(interval);
-                if (overlap == 0) {
+                if (p.kind() != kind || p.interval().overlap(interval) == 0) {
                     continue;
                 }
-                if (p.kind() == PauseKind.GC) {
-                    gc += overlap;
-                    if (gcRep == null || p.length() > gcRep.length()) {
-                        gcRep = p;
-                    }
-                } else {
-                    safepoint += overlap;
-                    if (spRep == null || p.length() > spRep.length()) {
-                        spRep = p;
-                    }
+                final long end = Math.min(p.interval().end(), interval.end());
+                final long start = Math.max(p.start(), coveredTo);
+                if (end > start) {
+                    covered += end - start;
+                }
+                if (first == Nulls.LONG_NULL) {
+                    first = Math.max(p.start(), interval.start());
+                }
+                coveredTo = Math.max(coveredTo, end);
+                count++;
+                if (longest == null || p.duration() > longest.duration()) {
+                    longest = p;
                 }
             }
-            if (gcRep != null && gc >= minCover) {
-                return new Explanation(Verdict.GC_PAUSE, gcRep.kind().label() + ": " + gcRep.detail(), Stack.EMPTY);
+            if (longest == null || covered < minCover) {
+                return null;
             }
-            if (spRep != null && safepoint >= minCover) {
-                return new Explanation(Verdict.SAFEPOINT, spRep.kind().label() + ": " + spRep.detail(), Stack.EMPTY);
-            }
-            return null;
+            final String detail = count == 1 ? kind.label() + ": " + longest.detail()
+                    : count + " × " + kind.label() + ", " + Durations.format(covered) + " stopped in total, longest "
+                    + Durations.format(longest.duration()) + " (" + longest.detail() + ")";
+            return new Explanation(verdict, detail, Stack.EMPTY, new Interval(first, coveredTo), covered);
         }
     }
 
@@ -767,25 +1199,38 @@ public final class StallAnalysis {
         }
     }
 
-    private Stall busy(final ThreadTimeline tl, final Candidate run) {
+    /** A culprit from the pool, re-pointed; the pool only grows to the most culprits one run had. */
+    private Culprit culprit(final String name, final Stack stack) {
+        final Culprit c;
+        if (culprits.size() < culpritPool.size()) {
+            c = culpritPool.getQuick(culprits.size());
+        } else {
+            c = new Culprit();
+            culpritPool.add(c);
+        }
+        culprits.add(c);
+        return c.of(name, stack);
+    }
+
+    /**
+     * {@code BUSY} when one culprit owns at least half the run's samples and at least two of
+     * them: a name resting on one sample is a guess, however few samples the run has.
+     * {@code SATURATED} when none does and there are enough samples to say the thread never
+     * yielded; otherwise nothing.
+     */
+    private Stall busy(final ThreadTimeline tl, final Interval run, final List<Sample> samples) {
         culprits.clear();
         culpritByName.clear();
         int nativeTop = 0;
-        final List<Sample> samples = run.samples;
         final int n = samples.size();
         for (int i = 0; i < n; i++) {
             final Sample s = samples.get(i);
             final String name = culpritName(s.stack());
             final int index = culpritByName.keyIndex(name);
-            Culprit c;
-            if (index < 0) {
-                c = culpritByName.valueAtQuick(index);
-            } else {
-                c = culpritByName.putAt(index, name, new Culprit().of(name, s.stack()));
-                culprits.add(c);
-            }
+            final Culprit c = index < 0 ? culpritByName.valueAtQuick(index)
+                    : culpritByName.putAt(index, name, culprit(name, s.stack()));
             c.count++;
-            if (s.inNative()) {
+            if (s.isInNative()) {
                 nativeTop++;
             }
         }
@@ -797,18 +1242,19 @@ public final class StallAnalysis {
             }
         }
         final double share = top == null ? 0 : (double) top.count / n;
-        final String pct = String.format(Locale.ROOT, "%.0f%%", share * 100);
-        final String nativeNote = nativeTop * 2 >= n && n > 0 ? " [mostly in native code]" : "";
-        if (share >= DOMINANT) {
-            return new Stall(tl.thread(), run.interval, Verdict.BUSY,
-                    "busy in " + top.name + " (" + pct + " of " + n + " samples)" + nativeNote,
-                    top.stack, Evidence.SAMPLES, n);
-        }
-        if (n < SATURATED_MIN_SAMPLES) {
+        final boolean dominant = share >= DOMINANT && top.count >= RUN_MIN_SAMPLES;
+        if (!dominant && n < SATURATED_MIN_SAMPLES) {
             // Too few samples to claim the thread never yielded; the run is not reported.
             return null;
         }
-        return new Stall(tl.thread(), run.interval, Verdict.SATURATED,
+        final String pct = String.format(Locale.ROOT, "%.0f%%", share * 100);
+        final String nativeNote = nativeTop * 2 >= n ? " [mostly in native code]" : "";
+        if (dominant) {
+            return new Stall(tl.thread(), run, Verdict.BUSY,
+                    "busy in " + top.name + " (" + pct + " of " + n + " samples)" + nativeNote,
+                    top.stack, Evidence.SAMPLES, n);
+        }
+        return new Stall(tl.thread(), run, Verdict.SATURATED,
                 "no return to idle across " + n + " samples; " + culprits.size() + " distinct culprits, top "
                         + top.name + " " + pct + nativeNote,
                 top.stack, Evidence.SAMPLES, n);
@@ -850,13 +1296,7 @@ public final class StallAnalysis {
         }
         if (b.kind() == BlockKind.MONITOR) {
             sb.append(" held by ").append(b.owner() == null ? "unknown" : b.owner().name());
-            if (!b.via().isEmpty()) {
-                sb.append(" (handed on through ");
-                for (int i = 0, n = b.via().size(); i < n; i++) {
-                    sb.append(i > 0 ? ", " : "").append(b.via().get(i).name());
-                }
-                sb.append(')');
-            }
+            Holders.appendVia(sb, b.via());
         }
         return sb.toString();
     }

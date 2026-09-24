@@ -27,6 +27,8 @@ tasks.test {
     useJUnitPlatform()
     // The JFR-backed tests start in-process recordings; give them a predictable heap.
     maxHeapSize = "1g"
+    // HashTablesTest replays a failing run from its seed: ./gradlew :core:test -Djfrq.test.seed=<seed>
+    providers.systemProperty("jfrq.test.seed").orNull?.let { systemProperty("jfrq.test.seed", it) }
     testLogging {
         events("failed", "skipped")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
