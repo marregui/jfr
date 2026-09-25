@@ -86,4 +86,15 @@ class RecordingSummaryTest {
                         "jdk.ObjectAllocationSample"));
         assertEquals("", RecordingSummary.settings(info, "jdk.SocketRead"));
     }
+
+    @Test
+    void theThrottledLineNamesTheThrottleEvenWhereAThresholdIsSetToo() {
+        final RecordingInfo info = new RecordingInfo(Path.of("a.jfr"), new Interval(0, 1), 1, Map.of(),
+                Map.of("jdk.FileRead", Map.of("enabled", "true", "threshold", "1 ms", "throttle", "300/s"),
+                        "jdk.ThreadPark", Map.of("enabled", "true", "threshold", "10 ms"),
+                        "jdk.SocketRead", Map.of("enabled", "true", "threshold", "1 ms", "throttle", "off")),
+                Set.of(), List.of());
+        assertEquals("FileRead 300/s", RecordingSummary.throttles(info, "jdk.FileRead", "jdk.ThreadPark",
+                "jdk.SocketRead"));
+    }
 }

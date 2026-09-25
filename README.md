@@ -48,13 +48,15 @@ the file once and turns those events into one answer per question.
 JDK Mission Control shows you the data; `jfr view` shows you aggregate tables. Neither
 tells you *why the event loop stopped at 14:03:07*, *who held the lock that thread was
 waiting for*, or *what changed between the recording before the fix and the one after*.
-`jfrq` answers those three questions and nothing else.
+`jfrq` answers those three questions, and one that comes before them: *what does the
+JVM already report about itself that points at trouble ahead*.
 
 | Command | Question it answers |
 |---|---|
 | `jfrq stalls` | When did a thread not return to its idle point, and why: a lock (and who held it), a blocking socket or file call, a sleep, a GC pause, or CPU-bound code? |
 | `jfrq locks` | Which locks did threads wait for, how long, who held them, and which holders were themselves blocked (convoys)? |
 | `jfrq alloc` | Which threads, classes and sites allocate, in bytes per second; and with `--baseline`, what changed between two recordings? |
+| `jfrq health` | What the JVM reported about itself: an `OutOfMemoryError` for direct memory, a failed evacuation, a full collection, GC time or pauses over its own goals, a collection forced by a humongous allocation, metaspace or `System.gc()`; how heap after GC, resident memory, threads and CPU moved; and which throwables were created, by class and by site. |
 | `jfrq info` | What is in the file: span, threads, event counts, and the thresholds and periods that were active when it was made. |
 
 Common options: `--top N` (rows per table, default 15; every command but `info`),
@@ -97,6 +99,7 @@ and start-up is merely ordinary.
 
 ```
 jfrq info   recording.jfr [--json]
+jfrq health recording.jfr [--top N] [--html out.html] [--json]
 jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html] [--json]
 jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html] [--json]
 jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html] [--json]
@@ -133,6 +136,20 @@ or `$` boundary: `io.netty` matches `io.netty.buffer` and `io.nett` matches neit
 but not `com.example.HandlerFactory`.
 `locks --by-site` does the same for lock instances: fifteen queues of the same kind become
 one row of fifteen instances, ranked across all of them.
+
+`health` reads what the other commands leave: the collector's own events, the JVM's
+once-a-second statistics and the throwables it created. A finding is only something the
+JVM itself reported, each with when it happened (`5 collections caused by Metadata GC
+Threshold, from +0.487s to +1.152s` is a JVM starting; the same five spread over an hour
+are classes loaded faster than they are unloaded). Trends are numbers without a verdict: each series has its start, end, range
+and the floor of its first and last thirds, so heap after GC whose floor climbs is growth
+that did not come back down, and whether that matters is yours to say. Throwables are
+counted exactly from `jdk.ExceptionStatistics` and ranked from `jdk.JavaExceptionThrow`,
+which fires in the constructor: a site is the code that made the throwable, past its own
+constructors and factory. JFR records an `OutOfMemoryError` only when Java code
+constructs one (direct buffer memory): the JVM makes its own, for the heap or metaspace,
+and every `StackOverflowError`, without running a constructor, so they never reach the
+file. A failed evacuation is the step before a heap one.
 
 A thread parked on its own empty queue is not contention and is not a stall: `locks` lists
 those apart and `stalls` leaves them out. They are recognised by the frame of a pool
@@ -177,6 +194,11 @@ monitor threshold means no wait shorter than 20 ms exists in the file, whatever 
 application did. The `profile` settings also throttle socket and file events to 300 per
 second across the JVM (JDK 25); `jfrq stalls` warns when a throttle is in force, and the
 line above switches it off so no blocking call goes unrecorded.
+
+`jfrq health` needs nothing beyond either JDK 25 settings file: both record the
+collector's events, the once-a-second statistics and `jdk.JavaExceptionThrow`, throttled
+to 100 per second in `default` and 300 in `profile`. Under the throttle the class and site
+shares are of a sample; the total created is exact either way.
 
 ## On a running JVM
 

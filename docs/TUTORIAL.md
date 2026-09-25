@@ -466,7 +466,12 @@ to a ticket.
    loop that sleeps between polls is not reported as stalled in its own sleep.
 5. For locks and allocation the thread filter is optional; both commands look at the
    whole recording by default.
-6. If a report opens with a `WARNING` about the file itself, read it first: a truncated
+6. `jfrq health app.jfr` before you have a question: what the JVM reported about itself
+   (a failed evacuation, a full collection, a collection a humongous allocation forced),
+   how heap after GC, memory and threads moved, and which throwables your code creates
+   and where. On the demo it shows the leak detector making a stack trace for 97 % of
+   the throwables, 41 a second.
+7. If a report opens with a `WARNING` about the file itself, read it first: a truncated
    recording is answered as far as it goes, and a file copied while the JVM was still
    writing it is refused with the command that produces a readable one.
 

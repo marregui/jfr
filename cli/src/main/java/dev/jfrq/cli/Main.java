@@ -30,6 +30,8 @@ import dev.jfrq.core.alloc.AllocationCollector;
 import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
 import dev.jfrq.core.alloc.SiteKey;
+import dev.jfrq.core.health.HealthCollector;
+import dev.jfrq.core.health.HealthReport;
 import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionCollector;
@@ -49,6 +51,7 @@ import dev.jfrq.core.util.Glob;
  *   jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html] [--json]
  *   jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html] [--json]
  *   jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html] [--json]
+ *   jfrq health recording.jfr [--top N] [--html out.html] [--json]
  * </pre>
  */
 public final class Main {
@@ -65,6 +68,9 @@ public final class Main {
               alloc   allocation pressure by thread, class and site; --baseline diffs two recordings
               locks   lock contention: which locks, who waited, who held them, convoys
               stalls  when a thread did not return to its idle point, and why
+              health  what the JVM reported about itself (failed evacuations, full GCs, GC over
+                      its own goals), how heap, memory, threads and CPU moved, which throwables
+                      were created where
 
             common options:
               --top N        rows per table (default 15; not for info)
@@ -136,6 +142,8 @@ public final class Main {
                 flags.add("by-site");
             }
             case "stalls" -> valued.addAll(Set.of("thread", "gap", "idle"));
+            case "health" -> {
+            }
             default -> throw new Args.UsageException("unknown command '" + command + "'");
         }
         return Args.parse(rest, valued, flags);
@@ -285,6 +293,7 @@ public final class Main {
                 case final Alloc q -> alloc(q);
                 case final Locks q -> locks(q);
                 case final Stalls q -> stalls(q);
+                case final Health q -> health(q);
             };
         } catch (final Args.UsageException e) {
             line(err, "jfrq: " + e.getMessage());
@@ -305,7 +314,7 @@ public final class Main {
     }
 
     /** A question with every option resolved into a final value, before any file is read. */
-    private sealed interface Question permits Info, Alloc, Locks, Stalls {
+    private sealed interface Question permits Info, Alloc, Locks, Stalls, Health {
         Path recording();
     }
 
@@ -324,12 +333,16 @@ public final class Main {
             IdleMatcher workWaits, Path html) implements Question {
     }
 
+    private record Health(Path recording, int top, Path html) implements Question {
+    }
+
     private static Question resolve(final String command, final Args args, final Path recording) throws IOException {
         return switch (command) {
             case "info" -> new Info(recording, htmlTarget(args, recording, null));
             case "alloc" -> alloc(args, recording);
             case "locks" -> locks(args, recording);
             case "stalls" -> stalls(args, recording);
+            case "health" -> new Health(recording, args.top(), htmlTarget(args, recording, null));
             default -> throw new IllegalStateException(command);
         };
     }
@@ -342,6 +355,17 @@ public final class Main {
         // --app says how to group the sites, so asking for it is asking for them.
         final boolean sites = args.flag("sites") || args.option("app").isPresent();
         return new Alloc(recording, baseline, top, sites, key, htmlTarget(args, recording, baseline));
+    }
+
+    private int health(final Health q) throws IOException {
+        final HealthCollector collector = new HealthCollector();
+        JfrReader.read(q.recording(), collector);
+        phase("read");
+        final HealthReport report = collector.report();
+        out.print(json ? Json.health(report, q.top(), VERSION) : Text.health(report, q.top()));
+        html(q.html(), () -> Html.health(report, q.top()));
+        phase("render");
+        return 0;
     }
 
     private int info(final Info q) throws IOException {

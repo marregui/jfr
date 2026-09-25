@@ -92,6 +92,20 @@ public final class Events {
         return has(e, field, interner) ? e.getLong(Fields.nameOf(field)) : fallback;
     }
 
+    /**
+     * A timespan field in nanoseconds, whatever unit the recording stores it in (GC pause sums
+     * are in ticks), or {@code fallback}.
+     */
+    public static long durationNanosOr(@Transient final RecordedEvent e, final int field, final long fallback,
+            final Interner interner) {
+        return has(e, field, interner) ? e.getDuration(Fields.nameOf(field)).toNanos() : fallback;
+    }
+
+    public static double doubleOr(@Transient final RecordedEvent e, final int field, final double fallback,
+            final Interner interner) {
+        return has(e, field, interner) ? e.getDouble(Fields.nameOf(field)) : fallback;
+    }
+
     public static boolean booleanOr(@Transient final RecordedEvent e, final int field, final boolean fallback,
             final Interner interner) {
         return has(e, field, interner) ? e.getBoolean(Fields.nameOf(field)) : fallback;

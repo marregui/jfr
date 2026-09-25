@@ -5,6 +5,7 @@ package dev.jfrq.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -20,6 +21,7 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
@@ -76,6 +78,11 @@ class MainTest {
             r.enable("jdk.JavaMonitorEnter").withThreshold(Duration.ZERO).withStackTrace();
             r.enable("jdk.ThreadPark").withThreshold(Duration.ZERO).withStackTrace();
             r.enable("jdk.ObjectAllocationSample").with("throttle", "2000/s").withStackTrace();
+            // For health.
+            r.enable("jdk.GarbageCollection");
+            r.enable("jdk.GCConfiguration");
+            r.enable("jdk.ExceptionStatistics").withPeriod(Duration.ofMillis(100));
+            r.enable("jdk.JavaExceptionThrow").withStackTrace();
             r.setDestination(recording);
             r.start();
 
@@ -126,6 +133,11 @@ class MainTest {
             allocator.join(Duration.ofSeconds(60));
             assertFalse(allocator.isAlive(), "alloc-cli never finished");
             assertTrue(stuck.isEmpty(), stuck.toString());
+            // For health, once the threads the other commands judge are done: a collection a
+            // heap this size would not otherwise need, and one throwable made at a known site.
+            System.gc();
+            assertNotNull(new IllegalStateException("made for health"));
+            Thread.sleep(150);
             r.stop();
         }
     }
@@ -427,6 +439,25 @@ class MainTest {
         final Map<String, Object> diff = JsonParser.object(json("alloc", recording.toString(), "--baseline",
                 recording.toString()));
         assertEquals(0L, map(diff, "change").get("bytesPerSecondChange"));
+
+        final Map<String, Object> health = JsonParser.object(json("health", recording.toString()));
+        final String healthText = run("health", recording.toString()).out();
+        assertTrue(healthText.contains("Collections  " + map(health, "gc").get("collections") + " ("),
+                healthText + health);
+    }
+
+    @Test
+    void health() throws Exception {
+        final Path html = dir.resolve("health.html");
+        final Run r = run("health", recording.toString(), "--top", "2", "--html", html.toString());
+        assertEquals(0, r.status(), r.err());
+        for (final String section : List.of("FINDINGS", "GC", "TRENDS", "THROWABLES CREATED")) {
+            assertTrue(r.out().contains("\n" + section), section + " in " + r.out());
+        }
+        assertTrue(r.out().contains("caused by System.gc()"), r.out());
+        assertTrue(r.out().contains("java.lang.IllegalStateException"), r.out());
+        assertTrue(Files.readString(html).contains("<title>jfrq health"));
+        assertEquals(2, run("health", recording.toString(), "--sites").status());
     }
 
     /** The command's standard output with --json appended, which must be the JSON document alone. */

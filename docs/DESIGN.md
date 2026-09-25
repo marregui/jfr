@@ -737,6 +737,9 @@ is a guess; `jfrq-live` used to print local time beside a UTC header.
 - The two-recordings span and the safepoint-by-VM-operation cases are tested on
   recordings made for them: an on-demand recording dumped while an older one runs, and
   two hundred parked threads dumped with `SafepointEnd` disabled.
+- `health`'s evacuation-failure finding needs a heap with no room left, which the test
+  JVM does not have: the test starts a JVM of its own with a 48 MB heap held nearly full,
+  records it, and checks the count of failed collections against the file's own `gcId`s.
 - JaCoCo enforces line coverage of 85 % on `core` and 80 % on `cli` and `live` in `./gradlew check`.
   At the time of writing `core` is at 97 % and `cli` at 90 %.
 
@@ -917,7 +920,84 @@ both files.
 - Lock addresses move with the objects; a lock that was compacted mid-recording appears
   twice under the same class, and a perch split that way can fall under the half-window
   line and be listed as contention (section 3).
+- `health` cannot see the JVM's own `OutOfMemoryError` (the heap, metaspace) or any
+  `StackOverflowError`: JFR does not record them (section 10). For the heap, a failed
+  evacuation or a full collection is the warning it can give.
+- `health`'s count of throwables created covers the stretch between the first and last
+  `jdk.ExceptionStatistics` reading, once a second in both settings files; a burst in the
+  last second of a recording is in the events but not the count.
 - Verdicts name threads by the name JFR recorded for them. On JDK 25 a thread renamed
   after it started keeps the name it started with in every event (verified on a 21-chunk
   recording of a thread renamed a thousand times), so a pool that renames its workers per
   task shows none of the task names.
+
+## 10. `health`: what the JVM reports about itself
+
+The other commands answer a question about a problem already seen. A four-minute window
+of a soak test held 2,829 throwables, a collection forced by a humongous allocation, and
+heap, resident-set and thread counts once a second, and no command read any of it.
+`health` reads what the others leave, in one pass: the collector's events
+(`jdk.GarbageCollection`, `jdk.OldGarbageCollection`, `jdk.GCHeapSummary`,
+`jdk.GCConfiguration`, `jdk.GCHeapConfiguration`, `jdk.EvacuationFailed`), the
+once-a-second statistics (`jdk.CPULoad`, `jdk.JavaThreadStatistics`,
+`jdk.ResidentSetSize`, `jdk.ExceptionStatistics`) and the throwables
+(`jdk.JavaExceptionThrow`, `jdk.JavaErrorThrow`). Both JDK 25 settings files enable all of
+them. On the 39-minute soak recording it takes 274 ms, against 327 ms for `info`.
+
+**Findings are only what the JVM reported.** Each is one of a fixed list, ranked in this
+order: an `OutOfMemoryError` created; a collection that failed to evacuate; a full
+collection (`G1Full`, `SerialOld`, `ParallelOld`); pause time over the JVM's own goal of
+`1 / (1 + GCTimeRatio)` of the time (7.7 % for G1's default 12); a pause over
+`MaxGCPauseMillis`; a collection caused by a humongous allocation, by the metaspace
+threshold, or by `System.gc()`. Each carries its count and when it first and last
+happened. The times do work a rule would otherwise do badly: five metaspace collections
+in the first 1.2 s are a JVM starting, and the same five spread over an hour are classes
+loaded faster than they are unloaded. `GCConfiguration` reports a pause target only when
+one was set; it was unset in every recording examined, so the pause finding is usually
+absent rather than passed.
+
+The out-of-memory finding sees only part of what its name says. JFR emits its throwable
+events from the constructors, and the JVM makes its own `OutOfMemoryError` (the heap,
+metaspace, an array over the size limit) and every `StackOverflowError` without running
+one: a JVM driven out of heap three times, past the array limit and out of direct memory
+recorded only the last, which `java.nio` constructs in Java. So the finding reports
+direct-memory exhaustion, with its message, and says what it cannot see; there is no
+stack-overflow finding, since it would only ever report a `new StackOverflowError()` in
+someone's code. The heap's warning is an evacuation failure instead: G1 found no room to
+copy live objects and left them in place. It is counted once per collection (`gcId`), because one collection can report
+it more than once. In a 48 MB heap held nearly full, 379 of 779 failed collections
+reported it twice.
+
+A cause is counted once per trigger. G1 reports its concurrent marking cycle (`G1Old`)
+as a collection of its own, with the cause of the young pause that started it, a
+millisecond earlier. Counting both counted every humongous and metaspace trigger twice
+(eight humongous collections on the soak recording that were four), so a `G1Old` event
+counts as a collection and adds its pauses (remark and cleanup), but not a cause.
+
+**Trends are numbers without a verdict.** Heap after GC, resident set, live threads and
+JVM and machine CPU each get their start, end, range, mean, and the floor (the lowest
+value) of their first and last thirds. A heap that leaks has a floor that climbs; one
+that is merely busy has peaks that come and go. A "rising" rule on those floors was tried
+and rejected as noisy: the 39-minute soak recording starts with the JVM, and its heap
+floor climbs from 18 MB to 61 MB as the application warms up. Whether 3 MB of resident growth in four minutes matters
+is the reader's call.
+
+**Throwables are counted exactly and ranked from a sample.** `jdk.ExceptionStatistics`
+carries the JVM's running total of throwables created. The difference between its first
+and last reading is exact, but it covers only that stretch, so on a short recording the
+events can outnumber it: the demo recording has 650 events against 596 created in 14.1 s
+of its 15.2 s. An `Error` is traced twice in JDK 25, from `Throwable`'s constructor and
+again from `Error`'s (`OutOfMemoryError` excepted), each time adding one to the running
+total and emitting a `jdk.JavaExceptionThrow`; the second also emits the
+`jdk.JavaErrorThrow`. So an event with `Error.<init>` on top is skipped, and the total loses
+one per `jdk.JavaErrorThrow` inside its stretch. The test checks the corrected total
+against the events inside the stretch, exactly. `jdk.JavaExceptionThrow` fires in the `Throwable` constructor, so it counts
+creations: an object made only for its stack trace counts, and a rethrow does not. It is
+throttled (100/s in `default`, 300/s in `profile`), so the class and site shares are of
+the events, and a class's rate is the exact total's rate times its share. A site is the
+code that made the throwable. The top of every such stack is its own construction:
+`Throwable.<init>`, the superclass constructors (an application's own base exception
+among them), the class's constructor, and sometimes a static factory of the class. The
+site is the first frame outside the JDK below all that, and the stack shown starts there.
+Naming the innermost frame outside the JDK instead would put every subclass of an
+application's base exception on the base class's constructor.

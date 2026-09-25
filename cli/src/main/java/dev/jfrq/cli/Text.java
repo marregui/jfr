@@ -12,6 +12,8 @@ import java.util.Set;
 import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
 import dev.jfrq.core.alloc.SiteKey;
+import dev.jfrq.core.coll.Nulls;
+import dev.jfrq.core.health.HealthReport;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
@@ -51,7 +53,10 @@ final class Text {
         if (!info.hasSettings()) {
             return String.format(Locale.ROOT, "%-10s unknown: the recording has no jdk.ActiveSetting events\n", label);
         }
-        final String settings = RecordingSummary.settings(info, types);
+        return line(label, RecordingSummary.settings(info, types));
+    }
+
+    private static String line(final String label, final String settings) {
         return settings.isEmpty() ? "" : String.format(Locale.ROOT, "%-10s %s\n", label, settings);
     }
 
@@ -65,7 +70,8 @@ final class Text {
         // Derived, not a whitelist: this line exists to answer "did the settings I asked for
         // take effect", and a fixed list answers it for the events someone thought of in 2026.
         sb.append(settingsLine(info, "Thresholds", RecordingSummary.thresholded(info)));
-        sb.append(settingsLine(info, "Throttled", RecordingSummary.throttled(info)));
+        sb.append(info.hasSettings() ? line("Throttled", RecordingSummary.throttles(info, RecordingSummary.throttled(info)))
+                : settingsLine(info, "Throttled"));
         sb.append(settingsLine(info, "Allocation", "jdk.ObjectAllocationSample", "jdk.ObjectAllocationInNewTLAB"));
         sb.append('\n');
         final TextTable t = new TextTable("Event type", "Count", "Enabled", "Threshold", "Period").numeric(1);
@@ -99,6 +105,114 @@ final class Text {
             table.row(RecordingSummary.familyCells(f, census));
         }
         sb.append(table.render("  "));
+        return sb.toString();
+    }
+
+    static String health(final HealthReport r, final int top) {
+        final StringBuilder sb = new StringBuilder(header(r.info()));
+        sb.append("\nFINDINGS (from the JVM's own events, the most serious first)\n");
+        if (r.findings().isEmpty()) {
+            sb.append("  none: no OutOfMemoryError Java code created, no failed evacuation or full collection, GC time "
+                    + "and pauses within the JVM's goals, and no collection forced by a humongous allocation, metaspace "
+                    + "or System.gc()\n");
+        }
+        int n = 1;
+        for (final HealthReport.Finding f : r.findings()) {
+            sb.append(String.format(Locale.ROOT, "  %2d  %s\n", n++, f.text()));
+        }
+
+        final HealthReport.Gc gc = r.gc();
+        sb.append("\nGC\n");
+        if (gc.count() == 0) {
+            sb.append("  no jdk.GarbageCollection events in the recording\n");
+        } else {
+            sb.append(String.format(Locale.ROOT, "  %-12s %d (%s); %d old-generation cycle%s\n", "Collections",
+                    gc.count(), counts(gc.collections()), gc.oldCycles(), gc.oldCycles() == 1 ? "" : "s"));
+            sb.append(String.format(Locale.ROOT, "  %-12s %s in %s, %.2f%% of the time%s\n", "Paused",
+                    Durations.format(gc.pauseNanos()), Durations.format(r.info().span().duration()),
+                    100.0 * gc.pauseNanos() / Math.max(1, r.info().span().duration()),
+                    gc.gcTimeRatio() == Nulls.INT_NULL ? "" : String.format(Locale.ROOT,
+                            " (the JVM's goal: at most %.1f%%, GCTimeRatio %d)", 100.0 / (1 + gc.gcTimeRatio()),
+                            gc.gcTimeRatio())));
+            sb.append(String.format(Locale.ROOT, "  %-12s %s%s\n", "Longest", Durations.format(gc.longestPauseNanos()),
+                    gc.pauseTargetNanos() == Nulls.LONG_NULL ? " (no pause target set)"
+                            : " (target " + Durations.format(gc.pauseTargetNanos()) + ")"));
+            if (gc.maxHeapBytes() != Nulls.LONG_NULL) {
+                sb.append(String.format(Locale.ROOT, "  %-12s %s\n", "Heap max", Bytes.format(gc.maxHeapBytes())));
+            }
+            sb.append(String.format(Locale.ROOT, "  %-12s %s\n", "Causes", counts(gc.causes()) + gc.causesNote()));
+        }
+
+        sb.append("\nTRENDS (floor: the lowest value in the first and in the last third of the window; a floor that "
+                + "rises is growth that did not come back down)\n");
+        if (r.trends().isEmpty()) {
+            sb.append("  ").append(HealthReport.NO_TRENDS).append('\n');
+        } else {
+            final TextTable trends = new TextTable("Series", "Start", "End", "Min", "Max", "Mean", "Floor, first third",
+                    "Floor, last third").numeric(1, 2, 3, 4, 5, 6, 7);
+            for (final HealthReport.Series s : r.trends()) {
+                trends.row(s.name(), s.format(s.start()), s.format(s.end()), s.format(s.min()), s.format(s.max()),
+                        s.format(s.mean()), s.format(s.floorFirst()), s.format(s.floorLast()));
+            }
+            sb.append(trends.render("  "));
+        }
+        final HealthReport.Threads threads = r.threads();
+        if (threads.started() != Nulls.LONG_NULL) {
+            sb.append(String.format(Locale.ROOT, "  %d thread%s started in the window%s\n", threads.started(),
+                    threads.started() == 1 ? "" : "s", threads.peak() == Nulls.LONG_NULL ? ""
+                            : "; at most " + threads.peak() + " alive at once since the JVM started"));
+        }
+        sb.append(throwables(r, top));
+        return sb.toString();
+    }
+
+    private static String throwables(final HealthReport r, final int top) {
+        final HealthReport.Throwables t = r.throwables();
+        final StringBuilder sb = new StringBuilder("\nTHROWABLES CREATED (jdk.JavaExceptionThrow fires in the constructor: "
+                + "an object made only for its stack trace counts, a rethrow does not)\n");
+        final double rate = t.rate();
+        sb.append(String.format(Locale.ROOT, "  %-8s %s\n", "Created", Double.isNaN(rate)
+                ? "unknown: jdk.ExceptionStatistics was not recorded twice"
+                : String.format(Locale.ROOT, "%d in %s = %.1f/s, exactly (jdk.ExceptionStatistics, its first reading to its last)", t.created(),
+                        Durations.format(t.createdNanos()), rate)));
+        if (t.samples() == 0) {
+            sb.append("  ").append(HealthReport.NO_THROWS).append('\n');
+        } else {
+            sb.append(String.format(Locale.ROOT, "  %-8s %d jdk.JavaExceptionThrow%s\n", "Events", t.samples(),
+                    t.throttle() == null ? ", every one" : " (throttled at " + t.throttle()
+                            + ": every one below that rate, a sample above it; the shares below are of the events)"));
+        }
+        if (!t.errors().isEmpty()) {
+            sb.append(String.format(Locale.ROOT, "  %-8s %s (jdk.JavaErrorThrow)\n", "Errors", counts(t.errors())));
+        }
+        if (t.samples() == 0) {
+            return sb.toString();
+        }
+        sb.append("\n  BY CLASS\n");
+        final TextTable classes = new TextTable("Class", "Events", "Share", "Per second", "Example message")
+                .numeric(1, 2, 3);
+        for (final HealthReport.ClassRow c : t.byClass().subList(0, Math.min(top, t.byClass().size()))) {
+            classes.row(ClassNames.pretty(c.className()), c.samples(), pct(c.share()),
+                    Double.isNaN(rate) ? "" : String.format(Locale.ROOT, "~%.1f", c.share() * rate),
+                    c.message() == null ? "" : c.message().replace('\n', ' '));
+        }
+        sb.append(classes.render("    "));
+        sb.append("\n  BY SITE (the innermost frame outside the JDK)\n");
+        int n = 1;
+        for (final HealthReport.SiteRow s : t.bySite().subList(0, Math.min(top, t.bySite().size()))) {
+            sb.append(String.format(Locale.ROOT, "  %2d  %6d  %6s  %s  %s\n", n++, s.samples(), pct(s.share()), s.site(),
+                    ClassNames.pretty(s.className())));
+            sb.append(s.stack().pretty("        ", STACK_FRAMES));
+        }
+        return sb.toString();
+    }
+
+    /** {@code G1New 37, G1Old 17}, in the order the map has them. */
+    private static String counts(final Map<String, Long> counts) {
+        final StringBuilder sb = new StringBuilder();
+        for (final Map.Entry<String, Long> e : counts.entrySet()) {
+            sb.append(sb.isEmpty() ? "" : ", ").append(e.getKey()).append(' ').append(e.getValue());
+        }
         return sb.toString();
     }
 

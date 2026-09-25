@@ -17,6 +17,8 @@ import java.util.regex.Pattern;
 import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
 import dev.jfrq.core.alloc.SiteKey;
+import dev.jfrq.core.coll.Nulls;
+import dev.jfrq.core.health.HealthReport;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
@@ -420,6 +422,93 @@ public final class Html {
         return p.finish();
     }
 
+    public static String health(final HealthReport r, final int top) {
+        final Page p = new Page("jfrq health", r.info());
+        p.h2("Findings (from the JVM's own events, the most serious first)");
+        if (r.findings().isEmpty()) {
+            p.kv("None", "no OutOfMemoryError Java code created, no failed evacuation or full collection, GC time and "
+                    + "pauses within the JVM's goals, and no collection forced by a humongous allocation, metaspace or "
+                    + "System.gc()");
+        } else {
+            p.tableStart("Finding", "Count", "What it means");
+            for (final HealthReport.Finding f : r.findings()) {
+                p.row(f.kind().name(), f.count(), f.text());
+            }
+            p.tableEnd();
+        }
+        final HealthReport.Gc gc = r.gc();
+        p.h2("GC");
+        if (gc.count() == 0) {
+            p.kv("Collections", "no jdk.GarbageCollection events in the recording");
+        } else {
+            p.kv("Collections", gc.count() + " (" + counts(gc.collections()) + "); " + gc.oldCycles()
+                    + " old-generation cycles");
+            p.kv("Paused", Durations.format(gc.pauseNanos()) + " in " + Durations.format(r.info().span().duration())
+                    + String.format(Locale.ROOT, ", %.2f%% of the time", 100.0 * gc.pauseNanos()
+                    / Math.max(1, r.info().span().duration()))
+                    + (gc.gcTimeRatio() == Nulls.INT_NULL ? "" : String.format(Locale.ROOT,
+                    " (the JVM's goal: at most %.1f%%, GCTimeRatio %d)", 100.0 / (1 + gc.gcTimeRatio()), gc.gcTimeRatio())));
+            p.kv("Longest", Durations.format(gc.longestPauseNanos()) + (gc.pauseTargetNanos() == Nulls.LONG_NULL
+                    ? " (no pause target set)" : " (target " + Durations.format(gc.pauseTargetNanos()) + ")"));
+            if (gc.maxHeapBytes() != Nulls.LONG_NULL) {
+                p.kv("Heap max", Bytes.format(gc.maxHeapBytes()));
+            }
+            p.kv("Causes", counts(gc.causes()) + gc.causesNote());
+        }
+        p.h2("Trends (floor: the lowest value in the first and in the last third of the window)");
+        if (r.trends().isEmpty()) {
+            p.kv("None", HealthReport.NO_TRENDS);
+        } else {
+            p.tableStart("Series", "Start", "End", "Min", "Max", "Mean", "Floor, first third", "Floor, last third");
+            for (final HealthReport.Series s : r.trends()) {
+                p.row(s.name(), s.format(s.start()), s.format(s.end()), s.format(s.min()), s.format(s.max()),
+                        s.format(s.mean()), s.format(s.floorFirst()), s.format(s.floorLast()));
+            }
+            p.tableEnd();
+        }
+        if (r.threads().started() != Nulls.LONG_NULL) {
+            p.kv("Threads started", Long.toString(r.threads().started()));
+        }
+        final HealthReport.Throwables t = r.throwables();
+        p.h2("Throwables created (counted in the constructor: a rethrow does not count again)");
+        final double rate = t.rate();
+        p.kv("Created", Double.isNaN(rate) ? "unknown: jdk.ExceptionStatistics was not recorded twice"
+                : String.format(Locale.ROOT, "%d in %s = %.1f/s, exactly", t.created(), Durations.format(t.createdNanos()),
+                rate));
+        p.kv("Events", t.samples() == 0 ? HealthReport.NO_THROWS : t.samples() + " jdk.JavaExceptionThrow"
+                + (t.throttle() == null ? ", every one"
+                : " (throttled at " + t.throttle()
+                + ": every one below that rate, a sample above it; the shares below are of the events)"));
+        if (!t.errors().isEmpty()) {
+            p.kv("Errors", counts(t.errors()));
+        }
+        if (t.samples() > 0) {
+            p.tableStart("Class", "Events", "Share", "Per second", "Example message");
+            for (final HealthReport.ClassRow c : t.byClass().subList(0, Math.min(top, t.byClass().size()))) {
+                p.row(ClassNames.pretty(c.className()), c.samples(), pct(c.share()),
+                        Double.isNaN(rate) ? "" : String.format(Locale.ROOT, "~%.1f", c.share() * rate),
+                        c.message() == null ? "" : c.message());
+            }
+            p.tableEnd();
+            p.tableStart("Site", "Class", "Events", "Share");
+            for (final HealthReport.SiteRow s : t.bySite().subList(0, Math.min(top, t.bySite().size()))) {
+                p.row(s.site(), ClassNames.pretty(s.className()), s.samples(), pct(s.share()));
+                p.stackRow(4, s.stack());
+            }
+            p.tableEnd();
+        }
+        return p.finish();
+    }
+
+    /** {@code G1New 37, G1Old 17}, in the order the map has them. */
+    private static String counts(final Map<String, Long> counts) {
+        final StringBuilder sb = new StringBuilder();
+        for (final Map.Entry<String, Long> e : counts.entrySet()) {
+            sb.append(sb.isEmpty() ? "" : ", ").append(e.getKey()).append(' ').append(e.getValue());
+        }
+        return sb.toString();
+    }
+
     public static String info(final RecordingInfo info, final ThreadCensus.Result census) {
         final Page p = new Page("jfrq info", info);
         final String lives = RecordingSummary.lives(census);
@@ -428,7 +517,10 @@ public final class Html {
         if (info.hasSettings()) {
             settingsKv(p, info, "Sampling", "jdk.ExecutionSample", "jdk.NativeMethodSample");
             settingsKv(p, info, "Thresholds", RecordingSummary.thresholded(info));
-            settingsKv(p, info, "Throttled", RecordingSummary.throttled(info));
+            final String throttles = RecordingSummary.throttles(info, RecordingSummary.throttled(info));
+            if (!throttles.isEmpty()) {
+                p.kv("Throttled", throttles);
+            }
             settingsKv(p, info, "Allocation", "jdk.ObjectAllocationSample", "jdk.ObjectAllocationInNewTLAB");
         } else {
             p.kv("Settings", "unknown: the recording has no jdk.ActiveSetting events");

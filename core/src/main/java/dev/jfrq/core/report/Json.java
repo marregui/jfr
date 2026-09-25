@@ -14,6 +14,7 @@ import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
 import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.coll.Nulls;
+import dev.jfrq.core.health.HealthReport;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
@@ -43,6 +44,105 @@ public final class Json {
     static final int STACK_FRAMES = 12;
 
     private Json() {
+    }
+
+    // --------------------------------------------------------------------------- health
+
+    public static String health(final HealthReport r, final int top, final String version) {
+        final Writer w = envelope("health", version, r.info());
+        w.name("findings").array();
+        for (final HealthReport.Finding f : r.findings()) {
+            w.object();
+            w.name("kind").value(f.kind().name());
+            w.name("count").value(f.count());
+            w.name("first").value(f.firstNanos() == Nulls.LONG_NULL ? null : iso(f.firstNanos()));
+            w.name("firstOffsetNanos").value(f.firstNanos() == Nulls.LONG_NULL ? Nulls.LONG_NULL
+                    : f.firstNanos() - r.info().startNanos());
+            w.name("last").value(f.lastNanos() == Nulls.LONG_NULL ? null : iso(f.lastNanos()));
+            w.name("lastOffsetNanos").value(f.lastNanos() == Nulls.LONG_NULL ? Nulls.LONG_NULL
+                    : f.lastNanos() - r.info().startNanos());
+            w.name("text").value(f.text());
+            w.end();
+        }
+        w.end();
+        final HealthReport.Gc gc = r.gc();
+        w.name("gc").object();
+        w.name("collections").value(gc.count());
+        w.name("byCollector").object();
+        for (final Map.Entry<String, Long> e : gc.collections().entrySet()) {
+            w.name(e.getKey()).value(e.getValue());
+        }
+        w.end();
+        w.name("byCause").object();
+        for (final Map.Entry<String, Long> e : gc.causes().entrySet()) {
+            w.name(e.getKey()).value(e.getValue());
+        }
+        w.end();
+        w.name("oldCycles").value(gc.oldCycles());
+        w.name("pauseNanos").value(gc.pauseNanos());
+        w.name("pauseShare").value(r.info().span().duration() > 0
+                ? (double) gc.pauseNanos() / r.info().span().duration() : Double.NaN);
+        w.name("longestPauseNanos").value(gc.longestPauseNanos());
+        w.name("gcTimeRatio").value(intOrNull(gc.gcTimeRatio()));
+        w.name("pauseTargetNanos").value(gc.pauseTargetNanos());
+        w.name("maxHeapBytes").value(gc.maxHeapBytes());
+        w.end();
+        w.name("trends").array();
+        for (final HealthReport.Series s : r.trends()) {
+            w.object();
+            w.name("series").value(s.name());
+            w.name("unit").value(s.unit().name());
+            w.name("points").value(s.points());
+            w.name("start").value(s.start());
+            w.name("end").value(s.end());
+            w.name("min").value(s.min());
+            w.name("max").value(s.max());
+            w.name("mean").value(s.mean());
+            w.name("floorFirstThird").value(s.floorFirst());
+            w.name("floorLastThird").value(s.floorLast());
+            w.end();
+        }
+        w.end();
+        w.name("threadsStarted").value(r.threads().started());
+        w.name("threadsPeak").value(r.threads().peak());
+        final HealthReport.Throwables t = r.throwables();
+        w.name("throwables").object();
+        w.name("created").value(t.created());
+        w.name("createdNanos").value(t.created() == Nulls.LONG_NULL ? Nulls.LONG_NULL : t.createdNanos());
+        w.name("perSecond").value(t.rate());
+        w.name("events").value(t.samples());
+        w.name("throttle").value(t.throttle());
+        w.name("errors").object();
+        for (final Map.Entry<String, Long> e : t.errors().entrySet()) {
+            w.name(e.getKey()).value(e.getValue());
+        }
+        w.end();
+        w.name("classesFound").value(t.byClass().size());
+        w.name("byClass").array();
+        for (final HealthReport.ClassRow c : top(t.byClass(), top)) {
+            w.object();
+            w.name("class").value(c.className());
+            w.name("events").value(c.samples());
+            w.name("share").value(c.share());
+            w.name("perSecond").value(c.share() * t.rate());
+            w.name("message").value(c.message());
+            w.end();
+        }
+        w.end();
+        w.name("sitesFound").value(t.bySite().size());
+        w.name("bySite").array();
+        for (final HealthReport.SiteRow s : top(t.bySite(), top)) {
+            w.object();
+            w.name("site").value(s.site());
+            w.name("class").value(s.className());
+            w.name("events").value(s.samples());
+            w.name("share").value(s.share());
+            stack(w, s.stack());
+            w.end();
+        }
+        w.end();
+        w.end();
+        return w.finish();
     }
 
     // ----------------------------------------------------------------------------- info

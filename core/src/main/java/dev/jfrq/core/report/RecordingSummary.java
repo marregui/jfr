@@ -51,12 +51,26 @@ public final class RecordingSummary {
      * holds no settings at all ({@link RecordingInfo#hasSettings()} tells the two apart).
      */
     public static String settings(final RecordingInfo info, final String... types) {
+        return list(info, false, types);
+    }
+
+    /**
+     * The throttle in force for each of {@code types} that has one, as
+     * {@code JavaExceptionThrow 300/s}, for the {@code Throttled} line: a type that is both
+     * thresholded and throttled (a file read) has its threshold on the other line.
+     */
+    public static String throttles(final RecordingInfo info, final String... types) {
+        return list(info, true, types);
+    }
+
+    private static String list(final RecordingInfo info, final boolean throttles, final String... types) {
         final StringBuilder sb = new StringBuilder();
         for (final String t : types) {
-            final String value = info.threshold(t).map(Durations::format)
-                    .or(() -> info.period(t).map(Durations::format))
-                    .or(() -> info.setting(t, "throttle"))
-                    .orElse(null);
+            final String value = throttles ? info.throttle(t).orElse(null)
+                    : info.threshold(t).map(Durations::format)
+                            .or(() -> info.period(t).map(Durations::format))
+                            .or(() -> info.setting(t, "throttle"))
+                            .orElse(null);
             if (value == null) {
                 continue;
             }

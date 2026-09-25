@@ -23,7 +23,10 @@ with `--json` after `--` gets standard output to itself: the dump's own lines (`
 - **Enumerations** are upper-case names: `verdict` (`BLOCKED_MONITOR`, `PARKED`,
   `OBJECT_WAIT`, `SLEEP`, `BLOCKING_IO`, `BUSY`, `SATURATED`, `GC_PAUSE`, `SAFEPOINT`,
   `UNEXPLAINED`), `evidence` (`EVENT`, `SAMPLES`, `SILENCE`), `sight` (`CLEAR`,
-  `NATIVE_SAMPLER`, `JAVA_SAMPLER`, `OWN_ABSENCE`), lock `kind` (`MONITOR_ENTER`, `PARK`).
+  `NATIVE_SAMPLER`, `JAVA_SAMPLER`, `OWN_ABSENCE`), lock `kind` (`MONITOR_ENTER`, `PARK`),
+  finding `kind` (`OUT_OF_MEMORY`, `EVACUATION_FAILED`, `FULL_GC`, `GC_TIME_OVER_GOAL`,
+  `PAUSE_OVER_TARGET`, `HUMONGOUS_ALLOCATION`, `METASPACE_GC`, `SYSTEM_GC`), trend `unit`
+  (`BYTES`, `COUNT`, `FRACTION`).
 - **A stack** is `{"frames": [...], "culprit": ..., "truncated": ...}`: the innermost
   frames as a stack trace prints them (twelve at most; six for a lock site, the depth sites
   are grouped at), the innermost frame outside the JDK as `package.Class.method` (named even
@@ -83,6 +86,16 @@ with `--json` after `--` gets standard output to itself: the dump's own lines (`
 | `convoys[]` | each an array of waits, outermost first: `waiter`, `start`, `offsetNanos`, `durationNanos`, `lock`, `heldBy`, `handedOnThrough` |
 | `waitingForWork` | `threads`, `parks`, `totalNanos`, `byShape` (locks recognised by shape rather than name), `queues[]` shaped like `locks[]` |
 | `longest[]` | the longest waits, shaped like a convoy link with a `stack` |
+
+## `health`
+
+| Field | |
+|---|---|
+| `findings[]` | most serious first: `kind`, `count`, `first`, `firstOffsetNanos`, `last`, `lastOffsetNanos` (all `null` for `GC_TIME_OVER_GOAL`, which is about the whole window), `text` |
+| `gc` | `collections`, `byCollector` and `byCause` (objects, most first; a G1 concurrent cycle, `G1Old`, is in `byCollector` but not in `byCause`), `oldCycles`, `pauseNanos`, `pauseShare`, `longestPauseNanos`, `gcTimeRatio`, `pauseTargetNanos`, `maxHeapBytes` |
+| `trends[]` | `series` (`Heap after GC`, `Resident set`, `Live threads`, `JVM CPU`, `Machine CPU`; one the recording has no events for is left out), `unit`, `points`, `start`, `end`, `min`, `max`, `mean`, `floorFirstThird`, `floorLastThird` (the lowest value in each; `null` under three points) |
+| `threadsStarted`, `threadsPeak` | threads started in the window, and the most alive at once since the JVM started |
+| `throwables` | `created` (exact, between the first and last `jdk.ExceptionStatistics`), `createdNanos` (that stretch), `perSecond`, `events` (`jdk.JavaExceptionThrow`), `throttle`, `errors` (`jdk.JavaErrorThrow` per class), `classesFound`, `byClass[]` (`class`, `events`, `share`, `perSecond`, `message`: one example), `sitesFound`, `bySite[]` (`site`, `class`, `events`, `share`, `stack`: from below the throwable's own construction) |
 
 ## `alloc`
 

@@ -43,7 +43,19 @@ public final class EventKinds {
     public static final int THREAD_ALLOCATION_STATISTICS = OBJECT_ALLOCATION_OUTSIDE_TLAB + 1;
     public static final int THREAD_START = THREAD_ALLOCATION_STATISTICS + 1;
     public static final int THREAD_END = THREAD_START + 1;
-    public static final int COUNT = THREAD_END + 1;
+    public static final int GARBAGE_COLLECTION = THREAD_END + 1;
+    public static final int OLD_GARBAGE_COLLECTION = GARBAGE_COLLECTION + 1;
+    public static final int GC_HEAP_SUMMARY = OLD_GARBAGE_COLLECTION + 1;
+    public static final int GC_CONFIGURATION = GC_HEAP_SUMMARY + 1;
+    public static final int GC_HEAP_CONFIGURATION = GC_CONFIGURATION + 1;
+    public static final int CPU_LOAD = GC_HEAP_CONFIGURATION + 1;
+    public static final int JAVA_THREAD_STATISTICS = CPU_LOAD + 1;
+    public static final int RESIDENT_SET_SIZE = JAVA_THREAD_STATISTICS + 1;
+    public static final int EXCEPTION_STATISTICS = RESIDENT_SET_SIZE + 1;
+    public static final int JAVA_EXCEPTION_THROW = EXCEPTION_STATISTICS + 1;
+    public static final int JAVA_ERROR_THROW = JAVA_EXCEPTION_THROW + 1;
+    public static final int EVACUATION_FAILED = JAVA_ERROR_THROW + 1;
+    public static final int COUNT = EVACUATION_FAILED + 1;
 
     private static final String[] NAMES = new String[COUNT];
     private static final ObjLongHashMap<String> BY_NAME = new ObjLongHashMap<>(COUNT, UNKNOWN);
@@ -71,6 +83,18 @@ public final class EventKinds {
         NAMES[THREAD_ALLOCATION_STATISTICS] = "jdk.ThreadAllocationStatistics";
         NAMES[THREAD_START] = "jdk.ThreadStart";
         NAMES[THREAD_END] = "jdk.ThreadEnd";
+        NAMES[GARBAGE_COLLECTION] = "jdk.GarbageCollection";
+        NAMES[OLD_GARBAGE_COLLECTION] = "jdk.OldGarbageCollection";
+        NAMES[GC_HEAP_SUMMARY] = "jdk.GCHeapSummary";
+        NAMES[GC_CONFIGURATION] = "jdk.GCConfiguration";
+        NAMES[GC_HEAP_CONFIGURATION] = "jdk.GCHeapConfiguration";
+        NAMES[CPU_LOAD] = "jdk.CPULoad";
+        NAMES[JAVA_THREAD_STATISTICS] = "jdk.JavaThreadStatistics";
+        NAMES[RESIDENT_SET_SIZE] = "jdk.ResidentSetSize";
+        NAMES[EXCEPTION_STATISTICS] = "jdk.ExceptionStatistics";
+        NAMES[JAVA_EXCEPTION_THROW] = "jdk.JavaExceptionThrow";
+        NAMES[JAVA_ERROR_THROW] = "jdk.JavaErrorThrow";
+        NAMES[EVACUATION_FAILED] = "jdk.EvacuationFailed";
         for (int kind = 0; kind < COUNT; kind++) {
             assert NAMES[kind] != null : kind;
             BY_NAME.put(NAMES[kind], kind);
