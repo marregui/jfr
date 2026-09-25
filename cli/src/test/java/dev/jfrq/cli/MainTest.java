@@ -103,9 +103,17 @@ class MainTest {
                     Thread.sleep(150);
                     Loop.idle();
                     final CountDownLatch held = new CountDownLatch(1);
+                    final Thread me = Thread.currentThread();
                     final Thread holder = new Thread(() -> {
                         synchronized (lock) {
                             held.countDown();
+                            // Hold on until the loop is blocked on the lock, then a gap's worth more: a
+                            // fixed head start lost the race on a Windows runner, where a 20 ms sleep took
+                            // 126 ms and the loop found the lock free.
+                            final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+                            while (me.getState() != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+                                Thread.onSpinWait();
+                            }
                             sleep();
                         }
                         sleep();
@@ -114,7 +122,6 @@ class MainTest {
                     if (!held.await(30, TimeUnit.SECONDS)) {
                         stuck.add("holder-cli never took the lock");
                     }
-                    Thread.sleep(20);
                     synchronized (lock) {
                         lock.notifyAll();
                     }
