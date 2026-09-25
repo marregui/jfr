@@ -241,6 +241,9 @@ public final class StallCollector implements JfrReader.Sink {
                 t.ended = Events.startNanos(e);
                 return;
             }
+            // Counted for every thread: how often the sampler saw a thread depends on how many others it saw.
+            case EventKinds.EXECUTION_SAMPLE -> t.javaSamples++;
+            case EventKinds.NATIVE_METHOD_SAMPLE -> t.nativeSamples++;
             default -> {
             }
         }
@@ -322,11 +325,13 @@ public final class StallCollector implements JfrReader.Sink {
         final boolean lifetimes = info.isEnabled(EventKinds.nameOf(EventKinds.THREAD_START))
                 && info.isEnabled(EventKinds.nameOf(EventKinds.THREAD_END));
         final ObjList<ThreadTimeline> timelines = new ObjList<>();
+        final StallAnalysis.SamplerShares shares = new StallAnalysis.SamplerShares();
         for (int s = 0, n = threads.slots(); s < n; s++) {
             if (!threads.hasKeyAtSlot(s)) {
                 continue;
             }
             final ThreadEvents t = threads.valueAtSlot(s);
+            shares.add(t.javaSamples, t.nativeSamples, lifetimes ? life(t, span) : span.duration());
             if (!t.watched || (t.samples.isEmpty() && t.blocks.isEmpty())) {
                 continue;
             }
@@ -341,12 +346,26 @@ public final class StallCollector implements JfrReader.Sink {
             long lifeStart = Nulls.LONG_NULL;
             long lifeEnd = Nulls.LONG_NULL;
             if (lifetimes) {
-                lifeStart = t.started == Nulls.LONG_NULL ? span.start() : Math.min(Math.max(t.started, span.start()), span.end());
-                lifeEnd = t.ended == Nulls.LONG_NULL ? span.end() : Math.max(Math.min(t.ended, span.end()), lifeStart);
+                lifeStart = lifeStart(t, span);
+                lifeEnd = lifeEnd(t, span, lifeStart);
             }
             timelines.add(new ThreadTimeline(thread, t.samples.toList(), blocks.toList(), lifeStart, lifeEnd));
         }
-        report = analysis.analyse(info, timelines.toList(), pauses(), parks, silentThreads(info));
+        report = analysis.analyse(info, timelines.toList(), pauses(), parks, silentThreads(info), shares);
+    }
+
+    /** A thread's life inside the window, from its start and end events where it has them. */
+    private static long life(final ThreadEvents t, final Interval span) {
+        final long start = lifeStart(t, span);
+        return lifeEnd(t, span, start) - start;
+    }
+
+    private static long lifeStart(final ThreadEvents t, final Interval span) {
+        return t.started == Nulls.LONG_NULL ? span.start() : Math.min(Math.max(t.started, span.start()), span.end());
+    }
+
+    private static long lifeEnd(final ThreadEvents t, final Interval span, final long lifeStart) {
+        return t.ended == Nulls.LONG_NULL ? span.end() : Math.max(Math.min(t.ended, span.end()), lifeStart);
     }
 
     /**
@@ -465,6 +484,9 @@ public final class StallCollector implements JfrReader.Sink {
         final boolean watched;
         final ObjList<Sample> samples = new ObjList<>(16);
         final ObjList<Block> blocks = new ObjList<>(8);
+        /** How often the sampler saw the thread in Java and in native code, watched or not. */
+        int javaSamples;
+        int nativeSamples;
         /** When the thread started and ended, if the recording saw it happen. */
         long started = Nulls.LONG_NULL;
         long ended = Nulls.LONG_NULL;

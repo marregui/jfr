@@ -356,6 +356,22 @@ class TextTest {
     }
 
     @Test
+    void stallsLeadsWithWhatTheRecordingCannotShowAndSaysSoWhenItFoundNothing() {
+        // The field case: 24 event loops, 0 stalls, and a recording blind to anything under 1.75 s.
+        final ThreadRef loop = new ThreadRef(1, "event-loop-1");
+        final StallReport r = new StallReport(window(), 50 * MS,
+                List.of(new StallReport.ThreadSummary(loop, 460, 0, 571 * MS, 0, 0, 0, 1_750 * MS,
+                        StallReport.Sight.NATIVE_SAMPLER, 571 * MS)),
+                List.of(), List.of(), List.of("a warning"));
+        final String text = Text.stalls(r, 15);
+        // Before the warnings, and before the empty list it qualifies.
+        assertTrue(text.contains("Unseen     on 1 of 1 threads, a stall no event explains is seen only from 1.75 s"), text);
+        assertTrue(text.indexOf("Unseen") < text.indexOf("WARNING    a warning"), text);
+        assertTrue(text.contains("  none this recording can show: see Unseen above"), text);
+        assertTrue(section(text, "PER THREAD").contains("1.75 s"), text);
+    }
+
+    @Test
     void stallsRanksUnexplainedGapsApartFromTheStallsItCanExplain() {
         final ThreadRef worker = new ThreadRef(1, "browse-1");
         final Stall gap = new Stall(worker, new Interval(1_000 * MS, 1_474 * MS), Stall.Verdict.UNEXPLAINED,

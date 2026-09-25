@@ -485,11 +485,40 @@ the configured period as long as fewer than five threads are in Java at once.
 An *unexplained* silence counts as evidence only when it exceeds
 `3 × max(Java p90, native p90)`, whatever the neighbouring samples showed, because
 between any two samples the thread may have passed through the other state unseen. The
-per-thread warning prints that threshold (for up to three threads; the rest are
-counted). An explained silence does not depend on it, with one condition: below the
-threshold, what explains it must itself cover a whole gap, because the thread may have
-been idle for the rest; above it, half of the silence is enough, because the silence is
-evidence in its own right. Event stalls never depend on it.
+PER THREAD table prints that threshold as `Unseen below`. An explained silence does not
+depend on it, with one condition: below the threshold, what explains it must itself cover
+a whole gap, because the thread may have been idle for the rest; above it, half of the
+silence is enough, because the silence is evidence in its own right. Event stalls never
+depend on it.
+
+**The verdict comes first.** On a live node, `stalls` on 24 event loops printed `0 found`,
+above three per-thread warnings, "21 more", and a table of zeros; the answer to "did the
+loops stall" was really "this recording cannot see a loop stall shorter than 1.75 s unless
+an event explains it", and nothing said so up front. So an `Unseen` line leads the report,
+before the warnings and the stalls, one per kind of limit, and an empty stall list points
+at it. The kind matters, because it decides the remedy:
+
+- *The sampler's pace.* A thread where one slot can see it for at least half its life,
+  whose routine absence is mostly that slot's round trip (at most twice it), is limited by
+  the sampler. Its share is estimated from the round-robin: when a slot is contended, every
+  thread that sat in its state all along gets the same, highest, sample rate, so a thread's
+  rate against the highest rate of that kind, over every thread in the recording, watched
+  or not, is the share of its life the slot could see it in (inferred from the sampler's
+  design; threads with fewer than ten samples set no rate). The round trip is the gap
+  between samples of the most-sampled thread. The line says how often each is sampled, how
+  many threads share the slot (round trip over period), and the period that would do:
+  a thread's absence is the round trip, which scales with the period, plus time of its own,
+  which does not, so the shortest visible stall at period *p* is
+  `3 × (absence − round trip × (1 − p / period))`. The JFR sampler takes no period shorter
+  than 1 ms: on JDK 25, with twenty threads in native socket reads, 20 ms sampled each
+  every ~454 ms, 10 ms every ~233 ms, 1 ms every ~25 ms, and 0.5 ms the same as 1 ms. The
+  prediction errs on the safe side: 10 ms predicted ~97 ms at 1 ms, and a recording at
+  1 ms measured 76.8 ms, because the part the model calls the thread's own is taken from
+  the 90th percentile. On the node, 1 ms would take the loops from 1.75 s to ~123 ms.
+- *The thread's own absences.* Everything else with a blind spot: idle workers and timers
+  parked where no slot sees them, and threads seen in long bursts, like the demo's loops
+  blocked on the registry for stretches of a quarter of a second. No period helps much,
+  the line says so, and blocking events are what show their stalls.
 
 ### 4.4 Pauses
 
@@ -842,9 +871,11 @@ both files.
   in a wide one. The `locks` note and the `stalls` warning say when this happened.
   Neither a `stalls` per-thread share nor a `locks` one can exceed 100 %: a thread's
   stalls are disjoint (section 4.5).
-- Unexplained silences below `3 × routine absence` are invisible; the warning prints the
-  number. Reducing the count of threads in native code during the recording, or lowering
-  the blocking thresholds so the explanation comes from events, are the two remedies.
+- Unexplained silences below `3 × routine absence` are invisible; the `Unseen` line says on
+  how many threads, why, and which sampling period would help (section 4.3). A thread is
+  sampled at best every 1 ms times the threads sharing its slot; below that, lowering the
+  blocking thresholds so the explanation comes from events, or running fewer threads in
+  native code during the recording, are the remedies.
 - A throttled event type (`jdk.SocketRead` at 300/s in the JDK's `profile` settings) is
   sampled, not recorded in full; the warning names it, and `throttle=off` in the
   recording settings removes the limit.

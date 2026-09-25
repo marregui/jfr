@@ -23,6 +23,7 @@ import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.stalls.Stall.Evidence;
 import dev.jfrq.core.stalls.Stall.Verdict;
+import dev.jfrq.core.stalls.StallReport.Sight;
 import dev.jfrq.core.stalls.StallReport.ThreadSummary;
 import dev.jfrq.core.stalls.Timeline.Block;
 import dev.jfrq.core.stalls.Timeline.BlockKind;
@@ -85,8 +86,6 @@ public final class StallAnalysis {
     static final int RUN_MIN_SAMPLES = 2;
     /** A "saturated" verdict (no dominant culprit) needs at least this many samples. */
     static final int SATURATED_MIN_SAMPLES = 5;
-    /** How many per-thread cadence warnings are spelled out before the rest are counted. */
-    private static final int CADENCE_WARNINGS_SHOWN = 3;
 
     private static final int[] THRESHOLDED_BLOCK_EVENTS = {
             EventKinds.JAVA_MONITOR_ENTER, EventKinds.THREAD_PARK, EventKinds.JAVA_MONITOR_WAIT,
@@ -338,7 +337,66 @@ public final class StallAnalysis {
                 }
             }
         }
-        return analyse(info, timelines, pauses, parks, List.of());
+        final SamplerShares shares = new SamplerShares();
+        for (int t = 0, n = timelines.size(); t < n; t++) {
+            final ThreadTimeline tl = timelines.get(t);
+            int inNative = 0;
+            for (int i = 0, m = tl.samples().size(); i < m; i++) {
+                inNative += tl.samples().get(i).isInNative() ? 1 : 0;
+            }
+            shares.add(tl.samples().size() - inNative, inNative, life(tl, info.span()));
+        }
+        return analyse(info, timelines, pauses, parks, List.of(), shares);
+    }
+
+    /** The thread's life inside the window, or the window when the recording cannot say. */
+    static long life(final ThreadTimeline tl, final Interval span) {
+        return tl.isLifeKnown() ? tl.lifeEnd() - tl.lifeStart() : span.duration();
+    }
+
+    /**
+     * The highest rate at which any thread was sampled in Java and in native code, over every
+     * thread in the recording, watched or not. The sampler goes round the threads in each state
+     * in turn, so when a slot is contended every thread that sat in that state all along gets
+     * the same share, the highest there is; a thread's own rate against it is the share of its
+     * life it spent where that slot could see it. Threads with too few samples for a rate are
+     * left out: two samples a millisecond apart are not a rate.
+     */
+    public static final class SamplerShares {
+        static final int MIN_SAMPLES = 10;
+        private double java;
+        private double inNative;
+
+        public void add(final int javaSamples, final int nativeSamples, final long lifeNanos) {
+            if (lifeNanos <= 0) {
+                return;
+            }
+            if (javaSamples >= MIN_SAMPLES) {
+                java = Math.max(java, (double) javaSamples / lifeNanos);
+            }
+            if (nativeSamples >= MIN_SAMPLES) {
+                inNative = Math.max(inNative, (double) nativeSamples / lifeNanos);
+            }
+        }
+
+        /**
+         * How long the slot takes to come round to a thread that sits in its state all along:
+         * the gap between samples of the most-sampled thread of that kind; 0 when unknown.
+         */
+        long roundTrip(final boolean inNative) {
+            final double rate = inNative ? this.inNative : java;
+            return rate > 0 ? (long) (1 / rate) : 0;
+        }
+
+        /** The estimated share of a life of {@code lifeNanos} the sampler could see the thread in. */
+        double observed(final int javaSamples, final int nativeSamples, final long lifeNanos) {
+            if (lifeNanos <= 0) {
+                return 0;
+            }
+            final double j = java > 0 ? javaSamples / (java * lifeNanos) : 0;
+            final double n = inNative > 0 ? nativeSamples / (inNative * lifeNanos) : 0;
+            return j + n;
+        }
     }
 
     /**
@@ -346,7 +404,7 @@ public final class StallAnalysis {
      * @param silent threads the filter matched that have neither a sample nor a blocking event
      */
     StallReport analyse(final RecordingInfo info, final List<ThreadTimeline> timelines, final List<Pause> pauses,
-                        final ParkShapes parks, final List<String> silent) {
+                        final ParkShapes parks, final List<String> silent, final SamplerShares shares) {
         final List<String> warnings = new ArrayList<>();
         warnRecording(info, warnings);
         warnSilent(silent, warnings);
@@ -380,7 +438,6 @@ public final class StallAnalysis {
         ordered.sort(BY_THREAD_NAME);
         final ObjList<Stall> stalls = new ObjList<>();
         final ObjList<ThreadSummary> summaries = new ObjList<>(ordered.size());
-        final ObjList<String> cadenceWarnings = new ObjList<>();
         final Windows windows = new Windows(sortedPauses);
         for (int i = 0, n = ordered.size(); i < n; i++) {
             final ThreadTimeline tl = ordered.getQuick(i);
@@ -394,16 +451,12 @@ public final class StallAnalysis {
                 stalled += duration;
                 worst = Math.max(worst, duration);
             }
+            final long unseenBelow = cadence.routineAbsence() * CADENCE_FACTOR;
+            final Sight sight = sight(tl, cadence, unseenBelow, info.span(), shares);
+            final long roundTrip = sight == Sight.NATIVE_SAMPLER ? shares.roundTrip(true)
+                    : sight == Sight.JAVA_SAMPLER ? shares.roundTrip(false) : 0;
             summaries.add(new ThreadSummary(tl.thread(), tl.samples().size(), cadence.java, cadence.inNative,
-                    stalls.size() - before, stalled, worst));
-            final long absence = cadence.routineAbsence();
-            if (absence > 0 && absence * CADENCE_FACTOR > gap) {
-                cadenceWarnings.add(String.format(Locale.ROOT,
-                        "%s: samples routinely up to %s apart; unexplained silences shorter than ~%s "
-                                + "cannot be seen, only ones a blocking event or a JVM pause explains",
-                        tl.thread().name(), Durations.format(absence),
-                        Durations.format(absence * CADENCE_FACTOR)));
-            }
+                    stalls.size() - before, stalled, worst, unseenBelow, sight, roundTrip));
         }
         if (workWaitCount > 0) {
             warnings.add(workWaitCount + (workWaitCount == 1 ? " wait totalling " : " waits totalling ")
@@ -417,15 +470,41 @@ public final class StallAnalysis {
                     : clippedStalls + " stalls extend beyond the recording's span and are counted only for the "
                             + "part inside it");
         }
-        final int shown = Math.min(cadenceWarnings.size(), CADENCE_WARNINGS_SHOWN);
-        for (int i = 0; i < shown; i++) {
-            warnings.add(cadenceWarnings.getQuick(i));
-        }
-        if (cadenceWarnings.size() > shown) {
-            warnings.add((cadenceWarnings.size() - shown) + " more threads with coarse sampling cadence");
-        }
         return new StallReport(info, gap, summaries.toList(), markSimultaneous(stalls.toList()), longPauses.toList(),
                 warnings);
+    }
+
+    /**
+     * What limits what the samples can show of a thread, when anything does: when the shortest
+     * silence that counts as evidence is longer than the gap, or the thread was seen fewer than
+     * twice. The sampler's slot limits it when the thread was where that slot sees it for at
+     * least half its life, by its share of the sampler's attention ({@link SamplerShares}), and
+     * its routine absence is mostly the slot's own round trip, at most twice it. Otherwise the
+     * absences are the thread's own, parked or blocked where no slot sees it: an idle worker,
+     * a timer, an event loop blocked on a lock for stretches; a shorter period would not
+     * change those much.
+     */
+    private Sight sight(final ThreadTimeline tl, final Cadence cadence, final long unseenBelow, final Interval span,
+                        final SamplerShares shares) {
+        final long life = life(tl, span);
+        final List<Sample> samples = tl.samples();
+        if (samples.size() < 2) {
+            return life >= gap ? Sight.OWN_ABSENCE : Sight.CLEAR;
+        }
+        if (unseenBelow <= gap) {
+            return Sight.CLEAR;
+        }
+        int inNative = 0;
+        for (int i = 0, n = samples.size(); i < n; i++) {
+            inNative += samples.get(i).isInNative() ? 1 : 0;
+        }
+        final boolean inNativeSlot = cadence.nativeP90 >= cadence.javaP90;
+        final long roundTrip = shares.roundTrip(inNativeSlot);
+        if (shares.observed(samples.size() - inNative, inNative, life) < COVER
+                || roundTrip == 0 || cadence.routineAbsence() > 2 * roundTrip) {
+            return Sight.OWN_ABSENCE;
+        }
+        return inNativeSlot ? Sight.NATIVE_SAMPLER : Sight.JAVA_SAMPLER;
     }
 
     /**

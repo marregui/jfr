@@ -398,7 +398,13 @@ class StallAnalysisTest {
         final StallReport r = analyse(longer, List.of(), List.of());
         assertEquals(1, r.stalls().size());
         assertEquals(new Interval(900 * MS, 1400 * MS), r.stalls().getFirst().interval());
-        assertTrue(r.warnings().stream().anyMatch(w -> w.contains("routinely up to 100 ms apart")), r.warnings().toString());
+        // The reader is told what the samples cannot show: three routine absences.
+        final StallReport.ThreadSummary t = r.threads().getFirst();
+        assertEquals(StallReport.Sight.NATIVE_SAMPLER, t.sight());
+        assertEquals(300 * MS, t.unseenBelowNanos());
+        assertEquals("300 ms", t.unseenBelow());
+        assertTrue(r.unseen().getFirst().startsWith("on 1 of 1 threads, a stall no event explains is seen only from "
+                + "300 ms: each is sampled in native code every ~100 ms"), r.unseen().toString());
     }
 
     @Test
@@ -698,11 +704,13 @@ class StallAnalysisTest {
         everyone.add(CONSUMER_2, queue, 8_500 * MS, 8_600 * MS, CONSUMER);
         final List<ThreadTimeline> watched = List.of(new ThreadTimeline(LOOP, List.of(), mine));
 
-        final StallReport shared = new StallAnalysis(50 * MS).analyse(sampledInfo(), watched, List.of(), everyone, List.of());
+        final StallReport shared = new StallAnalysis(50 * MS).analyse(sampledInfo(), watched, List.of(), everyone, List.of(),
+                new StallAnalysis.SamplerShares());
         assertEquals(2, shared.stalls().size(), shared.stalls().toString());
         assertEquals(Verdict.PARKED, shared.stalls().getFirst().verdict());
 
-        final StallReport own = new StallAnalysis(50 * MS).analyse(sampledInfo(), watched, List.of(), alone, List.of());
+        final StallReport own = new StallAnalysis(50 * MS).analyse(sampledInfo(), watched, List.of(), alone, List.of(),
+                new StallAnalysis.SamplerShares());
         assertTrue(own.stalls().isEmpty(), own.stalls().toString());
     }
 
@@ -947,13 +955,14 @@ class StallAnalysisTest {
     @Test
     void matchingThreadsWithNothingToJudgeAreNamed() {
         final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(), List.of(), List.of(), new ParkShapes(),
-                List.of("VM Thread"));
+                List.of("VM Thread"), new StallAnalysis.SamplerShares());
         assertTrue(r.threads().isEmpty());
         assertEquals(1, r.warnings().size(), r.warnings().toString());
         assertTrue(r.warnings().getFirst().startsWith("1 matching thread has no samples and no blocking events, "
                 + "so nothing to judge by (VM Thread)"), r.warnings().getFirst());
         final List<String> many = List.of("a", "b", "c", "d", "e", "f", "g");
-        final String w = new StallAnalysis(50 * MS).analyse(sampledInfo(), List.of(), List.of(), new ParkShapes(), many)
+        final String w = new StallAnalysis(50 * MS).analyse(sampledInfo(), List.of(), List.of(), new ParkShapes(), many,
+                new StallAnalysis.SamplerShares())
                 .warnings().getFirst();
         assertTrue(w.startsWith("7 matching threads have no samples and no blocking events, so nothing to judge by "
                 + "(a, b, c, d, e and 2 more)"), w);

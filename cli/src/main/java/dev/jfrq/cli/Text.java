@@ -426,6 +426,12 @@ final class Text {
         // A count, not the roll call: thirteen dispatchers made this one line 1200 characters wide,
         // and every name on it is in the PER THREAD table below, with the same samples and cadence.
         sb.append(String.format(Locale.ROOT, "%-10s %d matched\n", "Threads", r.threads().size()));
+        // The verdict on the question comes before the stalls, and before the warnings: "0 found"
+        // on threads the recording cannot see into is not an answer.
+        final List<String> unseen = r.unseen();
+        for (final String u : unseen) {
+            sb.append(String.format(Locale.ROOT, "%-10s %s\n", "Unseen", u));
+        }
         for (final String w : r.warnings()) {
             sb.append("WARNING    ").append(w).append('\n');
         }
@@ -436,7 +442,7 @@ final class Text {
                 Durations.format(r.gapNanos()), explained.size(),
                 shown.size() < explained.size() ? ", showing " + shown.size() : ""));
         if (explained.isEmpty()) {
-            sb.append("  none\n");
+            sb.append(unseen.isEmpty() ? "  none\n" : "  none this recording can show: see Unseen above\n");
         }
         sb.append(rows(r, shown));
 
@@ -463,11 +469,11 @@ final class Text {
 
         sb.append("\nPER THREAD (cadence: median interval between samples, which bounds what can be seen)\n");
         final TextTable summary = new TextTable("Thread", "Samples", "Java cadence", "Native cadence",
-                "Stalls", "Stalled", "Share", "Worst").numeric(1, 2, 3, 4, 5, 6, 7);
+                "Unseen below", "Stalls", "Stalled", "Share", "Worst").numeric(1, 2, 3, 4, 5, 6, 7, 8);
         final double span = Math.max(1, r.info().span().duration());
         for (final StallReport.ThreadSummary t : r.threads()) {
             summary.row(t.thread().name(), t.samples(), Durations.formatOrDash(t.javaCadenceNanos()),
-                    Durations.formatOrDash(t.nativeCadenceNanos()), t.stalls(),
+                    Durations.formatOrDash(t.nativeCadenceNanos()), t.unseenBelow(), t.stalls(),
                     Durations.format(t.stalledNanos()), pct(t.stalledNanos() / span),
                     Durations.format(t.worstNanos()));
         }
@@ -475,6 +481,7 @@ final class Text {
         sb.append(pauses(r, top));
         return sb.toString();
     }
+
 
     private static String pauses(final StallReport r, final int top) {
         if (r.pauses().isEmpty()) {

@@ -214,8 +214,10 @@ jfrq locks  demo-lock.jfr
 [docs/DESIGN.md](docs/DESIGN.md) explains the detectors, the JFR events each one reads,
 and the limits that follow from how the JFR sampler works. The short version: anything a
 blocking event or a pause event explains is exact; anything that rests on samples alone
-is only as good as the sampling cadence, and `jfrq` measures that cadence and warns when
-it is too coarse to trust.
+is only as good as the sampling cadence. `jfrq` measures that cadence per thread, and
+`stalls` opens with an `Unseen` line when it is too coarse: how long a stall no event
+explains must be to be seen on the threads you asked about, whether the sampler's pace or
+the thread's own absences are why, and the sampling period that would help.
 
 ## Layout
 

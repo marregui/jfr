@@ -67,6 +67,9 @@ public final class Html {
     public static String stalls(final StallReport report, final int top) {
         final Page p = new Page("jfrq stalls", report.info());
         p.kv("Gap", Durations.format(report.gapNanos()));
+        for (final String u : report.unseen()) {
+            p.kv("Unseen", u);
+        }
         p.warnings(report.warnings());
         p.kv("Evidence", "event: exact to the event's timestamps; samples: as good as the sampling density; "
                 + "silence: an absence of samples explained by what covered it");
@@ -78,11 +81,12 @@ public final class Html {
         }
 
         p.h2("Threads");
-        p.tableStart("Thread", "Samples", "Java cadence", "Native cadence", "Stalls", "Stalled", "Worst");
+        p.tableStart("Thread", "Samples", "Java cadence", "Native cadence", "Unseen below", "Stalls", "Stalled",
+                "Worst");
         for (final StallReport.ThreadSummary t : report.threads()) {
             p.row(t.thread().name(), t.samples(), Durations.formatOrDash(t.javaCadenceNanos()),
-                    Durations.formatOrDash(t.nativeCadenceNanos()), t.stalls(), Durations.format(t.stalledNanos()),
-                    Durations.format(t.worstNanos()));
+                    Durations.formatOrDash(t.nativeCadenceNanos()), t.unseenBelow(), t.stalls(),
+                    Durations.format(t.stalledNanos()), Durations.format(t.worstNanos()));
         }
         p.tableEnd();
 
@@ -120,6 +124,7 @@ public final class Html {
         pauses(p, report);
         return p.finish();
     }
+
 
     private static void pauses(final Page p, final StallReport report) {
         if (!report.pauses().isEmpty()) {
