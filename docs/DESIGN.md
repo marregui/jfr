@@ -219,8 +219,10 @@ So a park whose stack shows the *pool's own* idle frame goes to a `WAITING FOR W
 section with its own total, and the contention sections are what is left.
 
 The patterns name that frame and nothing else: `ThreadPoolExecutor.getTask`,
-`ForkJoinPool.awaitWork`, `DelayedWorkQueue.take`, Netty's
-`SingleThreadEventExecutor.takeTask`, logback's `AsyncAppenderBase$Worker.run`. Not the
+`ForkJoinPool.awaitWork`, `DelayedWorkQueue.take`, the common pool's
+`DelayScheduler.loop` (its thread only hands due tasks to the pool, so it parks nowhere
+else), Netty's `SingleThreadEventExecutor.takeTask`, logback's
+`AsyncAppenderBase$Worker.run`. Not the
 queue class: a request thread waiting for a reply on a `SynchronousQueue` is a real wait
 and looks identical one frame up. Not the worker loop either: `runWorker` is on the
 stack while a task is running too. Not `ForkJoinPool.managedBlock`: on JDK 25 every
@@ -551,6 +553,27 @@ would turn a 1m10s idle worker into a 1m10s `UNEXPLAINED` stall, which is a wors
 than the one being rejected. The same check therefore runs on the explanation of a
 silence as well as on the event itself.
 
+**Timer loops are scheduled idle.** With `--thread '*'` on a live node, every one of the
+top 25 stalls and 99 % of the stalled time were threads waiting on purpose: a cleaner, a
+configuration poll in `wait(60 s)`, two `java.util.Timer` threads, a wheel timer's 2,634
+sleeps of 100 ms. The recording says which waits were the thread's own choice of time:
+`jdk.JavaMonitorWait` carries `timedOut`, `jdk.ThreadPark` its `timeout` (nanoseconds) or
+`until` (an epoch-millisecond deadline) to hold its duration against, and `jdk.ThreadSleep`
+its `time`. A wait that ran out its own timeout was not held up by anyone. It is not idle
+by that alone, though: an event loop that sleeps is the bug this command exists to find,
+and a caller whose `get` with a timeout gave up waited the whole time for nothing. So the
+rule takes the shape `Perch` takes (section 3), per thread: waits from one place (the loop
+as its stack prints) that ran out their timeout at least twice and, those waits alone,
+for more than half the thread's life in the window. Every wait from that place is then the
+thread at rest, including one something woke early, since a timer thread is woken whenever
+a sooner task is scheduled, and it is kept out at all three doors, like a worker waiting
+for work, with one warning that counts the waits and names the threads. On that node the
+rule set aside 2,930 waits, 20m41s, on five threads, exactly the count of those waits in
+the file, and the stall count fell from 3,147 to 206; across seven recordings of that
+service every thread it named was a timer. An event loop at its selector cannot meet the
+half-life line with its sleeps, and one timed-out `get` cannot meet the count. Being events
+only, the rule is exact. `--idle none` turns it off.
+
 Every stall is clipped to the recording's span, for the reason section 3 gives for
 waits: a blocking event that began before the file, or was still running at its end, is
 in the file whole, and counted whole it puts more time in the window than the window
@@ -821,6 +844,10 @@ both files.
 - A thread blocked through the whole recording, with nothing ending inside it, is in no
   event at all; a matching thread the recording saw only in other events is named in a
   warning, with nothing to judge it by.
+- A thread that waits for a result with a timeout, from one place, times out at least twice
+  and spends more than half its life in those timed-out waits looks exactly like a timer
+  loop, and its waits are set aside as scheduled idle (section 4.5). The warning names every
+  thread the rule set aside; `--idle none` reports them as stalls.
 - Lock addresses move with the objects; a lock that was compacted mid-recording appears
   twice under the same class, and a perch split that way can fall under the half-window
   line and be listed as contention (section 3).

@@ -95,7 +95,8 @@ public final class StallCollector implements JfrReader.Sink {
 
         @Override
         public Block withHolder(final Block wait, final ThreadRef holder, final List<ThreadRef> via) {
-            return new Block(wait.interval(), wait.kind(), wait.detail(), wait.stack(), holder, via, wait.bytes());
+            return new Block(wait.interval(), wait.kind(), wait.detail(), wait.stack(), holder, via, wait.bytes(),
+                    wait.timedOut());
         }
     };
 
@@ -221,7 +222,8 @@ public final class StallCollector implements JfrReader.Sink {
                 final String lock = parkName(e);
                 if (t.watched) {
                     final Stack stack = Events.stack(e, interner);
-                    final Block park = new Block(Events.interval(e), BlockKind.PARK, lock, stack, 0);
+                    final Interval interval = Events.interval(e);
+                    final Block park = new Block(interval, BlockKind.PARK, lock, stack, parkTimedOut(e, interval));
                     t.blocks.add(park);
                     parks.add(thread, lock, park.start(), park.interval().end(), stack);
                 } else if (!ParkShapes.NO_BLOCKER.equals(lock)) {
@@ -251,9 +253,15 @@ public final class StallCollector implements JfrReader.Sink {
                 final boolean inNative = kind == EventKinds.NATIVE_METHOD_SAMPLE;
                 t.samples.add(new Sample(Events.startNanos(e), stack, idle.isIdle(stack), inNative));
             }
-            case EventKinds.JAVA_MONITOR_WAIT ->
-                    block(t, e, BlockKind.OBJECT_WAIT, lockNames.on(lockName(e, Fields.MONITOR_CLASS)), 0);
-            case EventKinds.THREAD_SLEEP -> block(t, e, BlockKind.SLEEP, "", 0);
+            case EventKinds.JAVA_MONITOR_WAIT -> t.blocks.add(new Block(Events.interval(e), BlockKind.OBJECT_WAIT,
+                    lockNames.on(lockName(e, Fields.MONITOR_CLASS)), Events.stack(e, interner),
+                    Events.booleanOr(e, Fields.TIMED_OUT, false, interner)));
+            case EventKinds.THREAD_SLEEP -> {
+                final Interval interval = Events.interval(e);
+                final long time = Events.longOr(e, Fields.TIME, Nulls.LONG_NULL, interner);
+                t.blocks.add(new Block(interval, BlockKind.SLEEP, "", Events.stack(e, interner),
+                        time != Nulls.LONG_NULL && interval.duration() >= time));
+            }
             case EventKinds.SOCKET_READ -> block(t, e, BlockKind.SOCKET_READ, peerNames.from(peer(e)),
                     Events.longOr(e, Fields.BYTES_READ, 0, interner));
             case EventKinds.SOCKET_WRITE -> block(t, e, BlockKind.SOCKET_WRITE, peerNames.to(peer(e)),
@@ -271,6 +279,20 @@ public final class StallCollector implements JfrReader.Sink {
     private void block(final ThreadEvents t, @Transient final RecordedEvent e, final BlockKind kind, final String detail,
                        final long bytes) {
         t.blocks.add(new Block(Events.interval(e), kind, detail, Events.stack(e, interner), bytes));
+    }
+
+    /**
+     * Whether a park ran out the time it was given: a relative timeout (nanoseconds) it lasted
+     * at least, or an absolute deadline (epoch milliseconds) it ended at or after. An untimed
+     * park carries neither.
+     */
+    private boolean parkTimedOut(@Transient final RecordedEvent e, final Interval interval) {
+        final long timeout = Events.longOr(e, Fields.TIMEOUT, Nulls.LONG_NULL, interner);
+        if (timeout > 0) {
+            return interval.duration() >= timeout;
+        }
+        final long until = Events.longOr(e, Fields.UNTIL, Nulls.LONG_NULL, interner);
+        return until > 0 && interval.end() >= until * 1_000_000L;
     }
 
     /** {@code dev.app.Registry@1f2e}: one string per (class, address), reused across events. */

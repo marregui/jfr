@@ -36,8 +36,12 @@ public final class Fields {
     public static final int SAFEPOINT_ID = SAFEPOINT + 1;
     public static final int STACK_TRACE = SAFEPOINT_ID + 1;
     public static final int THREAD = STACK_TRACE + 1;
-    public static final int TLAB_SIZE = THREAD + 1;
-    public static final int WEIGHT = TLAB_SIZE + 1;
+    public static final int TIME = THREAD + 1;
+    public static final int TIMED_OUT = TIME + 1;
+    public static final int TIMEOUT = TIMED_OUT + 1;
+    public static final int TLAB_SIZE = TIMEOUT + 1;
+    public static final int UNTIL = TLAB_SIZE + 1;
+    public static final int WEIGHT = UNTIL + 1;
     public static final int COUNT = WEIGHT + 1;
 
     private static final String[] NAMES = new String[COUNT];
@@ -64,7 +68,11 @@ public final class Fields {
         NAMES[SAFEPOINT_ID] = "safepointId";
         NAMES[STACK_TRACE] = "stackTrace";
         NAMES[THREAD] = "thread";
+        NAMES[TIME] = "time";
+        NAMES[TIMED_OUT] = "timedOut";
+        NAMES[TIMEOUT] = "timeout";
         NAMES[TLAB_SIZE] = "tlabSize";
+        NAMES[UNTIL] = "until";
         NAMES[WEIGHT] = "weight";
         assert COUNT <= Long.SIZE : COUNT;
         for (int field = 0; field < COUNT; field++) {

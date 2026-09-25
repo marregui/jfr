@@ -103,7 +103,8 @@ public final class Main {
                              'pkg.Class.method' (so no commas inside one); replaces the defaults
                              (JDK selectors, Netty transports, park, Object.wait). A sleep, wait
                              or park under a frame you name is idle too. 'none' also turns off
-                             the split of workers waiting for their own queue
+                             the split of workers waiting for their own queue and of timer
+                             loops waiting out their own timeout
 
             durations take a unit: 50ms, 1.5s, 2m. Options belong to their command; a stalls
             option on locks is an error, as is an option given twice, so a typo never passes

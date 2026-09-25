@@ -74,19 +74,27 @@ public final class Timeline {
      *                 before it comes from their own waits)
      * @param bytes    for socket and file operations, the bytes moved; kept apart from
      *                 {@code detail} so that repeated reads from one peer group together
+     * @param timedOut for a park, a wait or a sleep, whether it ended because the time the
+     *                 thread itself asked for ran out, rather than because something woke it
      */
     public record Block(Interval interval, BlockKind kind, String detail, Stack stack, ThreadRef owner,
-                        List<ThreadRef> via, long bytes) {
+                        List<ThreadRef> via, long bytes, boolean timedOut) {
         public Block {
             via = List.copyOf(via);
         }
 
         public Block(final Interval interval, final BlockKind kind, final String detail, final Stack stack, final ThreadRef owner) {
-            this(interval, kind, detail, stack, owner, List.of(), 0);
+            this(interval, kind, detail, stack, owner, List.of(), 0, false);
         }
 
         public Block(final Interval interval, final BlockKind kind, final String detail, final Stack stack, final long bytes) {
-            this(interval, kind, detail, stack, null, List.of(), bytes);
+            this(interval, kind, detail, stack, null, List.of(), bytes, false);
+        }
+
+        /** A park, a wait or a sleep, which says whether it ran out its own timeout. */
+        public Block(final Interval interval, final BlockKind kind, final String detail, final Stack stack,
+                     final boolean timedOut) {
+            this(interval, kind, detail, stack, null, List.of(), 0, timedOut);
         }
 
         public long start() {

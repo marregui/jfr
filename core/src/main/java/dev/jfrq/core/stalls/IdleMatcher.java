@@ -51,6 +51,7 @@ public final class IdleMatcher {
             "java\\.util\\.concurrent\\.ThreadPoolExecutor\\.getTask",
             "java\\.util\\.concurrent\\.ForkJoinPool\\.awaitWork",
             "java\\.util\\.concurrent\\.ScheduledThreadPoolExecutor\\$DelayedWorkQueue\\.take",
+            "java\\.util\\.concurrent\\.DelayScheduler\\.loop",
             "io\\.netty\\.util\\.concurrent\\.SingleThreadEventExecutor\\.takeTask",
             "ch\\.qos\\.logback\\.core\\.AsyncAppenderBase\\$Worker\\.run");
 

@@ -491,7 +491,7 @@ class StallAnalysisTest {
     @Test
     void describeIncludesTheHandOverChain() {
         final Block b = new Block(new Interval(0, MS), BlockKind.MONITOR, "Registry@1", Stack.EMPTY, HOLDER,
-                List.of(OTHER, LOOP), 0);
+                List.of(OTHER, LOOP), 0, false);
         assertEquals("blocked on monitor Registry@1 held by housekeeper (handed on through event-loop-2, event-loop-1)",
                 StallAnalysis.describe(b));
         assertEquals("blocked on monitor X held by unknown",
@@ -1086,5 +1086,79 @@ class StallAnalysisTest {
             assertEquals(total, stalled, replay + ", round " + round);
             assertTrue(stalled <= info.span().duration(), replay + ", round " + round);
         }
+    }
+
+    /** A {@code java.util.Timer} thread between tasks: a wait with the time to the next one as its timeout. */
+    static final Stack TIMER = stack(new Frame("java.lang.Object", "wait0", 0, "Native"),
+            new Frame("java.lang.Object", "wait", 389, "JIT compiled"),
+            new Frame("java.util.TimerThread", "mainLoop", 563, "JIT compiled"),
+            new Frame("java.util.TimerThread", "run", 516, "Interpreted"));
+    static final Stack NAP = stack(new Frame("java.lang.Thread", "sleep0", 0, "Native"),
+            new Frame("java.lang.Thread", "sleep", 509, "JIT compiled"),
+            new Frame("dev.app.Handler", "channelRead0", 61, "JIT compiled"));
+
+    /** A park, a wait or a sleep that ran out its own timeout, or was woken before it did. */
+    static Block timed(final long fromMs, final long toMs, final BlockKind kind, final Stack stack, final boolean timedOut) {
+        return new Block(new Interval(fromMs * MS, toMs * MS), kind, "on java.util.TaskQueue@1", stack, timedOut);
+    }
+
+    @Test
+    void aTimerLoopWaitingOutItsOwnDeadlinesIsScheduledIdleNotStalled() {
+        // A timer thread for its whole 10 s life: four waits run out their timeout, one is woken
+        // early when a sooner task is scheduled, and it is seen running a task after each.
+        final List<Block> waits = List.of(timed(0, 2_000, BlockKind.OBJECT_WAIT, TIMER, true),
+                timed(2_002, 4_000, BlockKind.OBJECT_WAIT, TIMER, true),
+                timed(4_002, 6_000, BlockKind.OBJECT_WAIT, TIMER, true),
+                timed(6_002, 7_000, BlockKind.OBJECT_WAIT, TIMER, false),
+                timed(7_002, 9_000, BlockKind.OBJECT_WAIT, TIMER, true));
+        final List<Sample> tasks = List.of(new Sample(2_001 * MS, BURN, false, false),
+                new Sample(4_001 * MS, BURN, false, false), new Sample(6_001 * MS, BURN, false, false),
+                new Sample(7_001 * MS, BURN, false, false), new Sample(9_001 * MS, BURN, false, false));
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(), List.of(lived(tasks, waits, 0, 10_000)),
+                List.of());
+        assertTrue(r.stalls().isEmpty(), r.stalls().toString());
+        assertTrue(r.warnings().stream().anyMatch(w -> w.startsWith("5 waits totalling ")
+                && w.contains("(event-loop-1): scheduled idle, not stalls")), r.warnings().toString());
+
+        // --idle none puts nothing aside.
+        final StallReport none = new StallAnalysis(50 * MS, IdleMatcher.none()).analyse(sampledInfo(),
+                List.of(lived(tasks, waits, 0, 10_000)), List.of());
+        assertEquals(5, none.stalls().stream().filter(st -> st.verdict() == Verdict.OBJECT_WAIT).count(),
+                none.stalls().toString());
+        assertTrue(none.warnings().stream().noneMatch(w -> w.contains("scheduled idle")), none.warnings().toString());
+    }
+
+    @Test
+    void oneWaitThatRanOutItsTimeoutIsStillAStall() {
+        // A caller whose get with a timeout gave up once: it waited the whole time for nothing.
+        final Block gaveUp = timed(1_000, 9_000, BlockKind.OBJECT_WAIT, TIMER, true);
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(List.of(), List.of(gaveUp), 0, 10_000)), List.of());
+        assertEquals(List.of(Verdict.OBJECT_WAIT), r.stalls().stream().map(Stall::verdict).toList());
+        assertTrue(r.warnings().stream().noneMatch(w -> w.contains("scheduled idle")), r.warnings().toString());
+    }
+
+    @Test
+    void sleepsThatRanOutOnALoopThatMostlyIdlesAreStalls() {
+        // An event loop at its selector that sleeps twice: its own choice, but not where it idles.
+        final List<Sample> samples = new ArrayList<>(idle(0, 1_000, 10));
+        samples.addAll(idle(1_250, 5_000, 10));
+        samples.addAll(idle(5_250, 10_000, 10));
+        final List<Block> naps = List.of(timed(1_000, 1_250, BlockKind.SLEEP, NAP, true),
+                timed(5_000, 5_250, BlockKind.SLEEP, NAP, true));
+        final StallReport r = analyse(samples, naps, List.of());
+        assertEquals(List.of(Verdict.SLEEP, Verdict.SLEEP), r.stalls().stream().map(Stall::verdict).toList());
+    }
+
+    @Test
+    void waitsFromAnotherPlaceOnATimerThreadAreNotItsLoop() {
+        // The loop is the timed-out sleeps; a monitor wait elsewhere on the same thread is judged on its own.
+        final List<Block> blocks = List.of(timed(0, 3_000, BlockKind.SLEEP, NAP, true),
+                timed(3_000, 6_000, BlockKind.SLEEP, NAP, true),
+                timed(6_000, 6_500, BlockKind.OBJECT_WAIT, TIMER, false));
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(List.of(), blocks, 0, 10_000)), List.of());
+        assertTrue(r.stalls().stream().anyMatch(st -> st.verdict() == Verdict.OBJECT_WAIT), r.stalls().toString());
+        assertTrue(r.stalls().stream().noneMatch(st -> st.verdict() == Verdict.SLEEP), r.stalls().toString());
     }
 }

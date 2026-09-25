@@ -96,6 +96,13 @@ public final class StallAnalysis {
 
     /** How many threads with nothing to judge them by are named before the rest are counted. */
     private static final int SILENT_THREADS_SHOWN = 5;
+    /**
+     * A timer loop has to have run out its own timeout at least this often: one wait that did
+     * is as likely a caller that gave up on a result as a thread that meant to wait.
+     */
+    static final int TIMER_MIN_WAITS = 2;
+    /** Timer-loop threads named in the warning before the rest are counted. */
+    private static final int TIMER_THREADS_SHOWN = 5;
 
     /** A silence's position against the thread's life, for its label. */
     private static final long MID = 0;
@@ -125,6 +132,8 @@ public final class StallAnalysis {
     private static final Comparator<Interval> INTERVAL_BY_START = Comparator.comparingLong(Interval::start);
     private static final long PERCH = 1;
     private static final long NOT_PERCH = 0;
+    private static final long TIMER = 1;
+    private static final long NOT_TIMER = 0;
 
     private final long gap;
     /** Which parks are a worker with nothing to do rather than a wait someone is paying for. */
@@ -144,10 +153,107 @@ public final class StallAnalysis {
     /** That verdict per distinct stack, so a rendering is built once and not once per block (G-2.2). */
     private final ObjLongHashMap<Stack> perchVerdict = new ObjLongHashMap<>(256);
     private long workWaitNanos;
+    /** The loops, as their stacks print, where the thread being analysed waits out its own timeouts. */
+    private final ObjHashSet<String> timerLoops = new ObjHashSet<>(4);
+    /** That verdict per distinct stack, for the thread being analysed (G-2.2). */
+    private final ObjLongHashMap<Stack> timerVerdict = new ObjLongHashMap<>(64);
+    /** Scratch for {@link #findTimerLoops}: per loop, the time its timed-out waits took and how many there were. */
+    private final ObjLongHashMap<String> timerTotals = new ObjLongHashMap<>(16);
+    private final ObjLongHashMap<String> timerCounts = new ObjLongHashMap<>(16);
+    /** A stack's loop as it prints, built once per distinct stack in the analysis (G-2.2). */
+    private final ObjObjHashMap<Stack, String> loopNames = new ObjObjHashMap<>(256);
+    /** Blocks left out as timer loops in the current analysis, their total, and the total per thread. */
+    private int timerWaitCount;
+    private long timerWaitNanos;
+    private final ObjLongHashMap<String> timerWaitByThread = new ObjLongHashMap<>(16);
 
     /** Whether a block is a worker parked on its own empty queue rather than a wait that costs someone. */
     private boolean isWaitingForWork(final Block b) {
         return isWaitingForWork(verdictOf(b.kind()), b.stack());
+    }
+
+    /**
+     * Whether a block, or the explanation of a candidate, is the thread at rest: a worker
+     * waiting for work, or a timer loop of the thread being analysed waiting for its next
+     * deadline. Either way nobody is paying for the wait.
+     */
+    private boolean isAtRest(final Verdict verdict, final Stack stack) {
+        return isWaitingForWork(verdict, stack) || onATimer(verdict, stack);
+    }
+
+    private static boolean canRest(final Verdict verdict) {
+        return verdict == Verdict.PARKED || verdict == Verdict.OBJECT_WAIT || verdict == Verdict.SLEEP;
+    }
+
+    /**
+     * Whether this stack is one of the timer loops {@link #findTimerLoops} found on the thread
+     * being analysed. Matched on what the frames say, as {@link #onAPerch} is, so that every
+     * wait from the loop is at rest, including one something woke before its deadline: a
+     * timer thread is woken early whenever an earlier task is scheduled.
+     */
+    private boolean onATimer(final Verdict verdict, final Stack stack) {
+        if (timerLoops.isEmpty() || !canRest(verdict)) {
+            return false;
+        }
+        final int index = timerVerdict.keyIndex(stack);
+        if (index < 0) {
+            return timerVerdict.valueAtQuick(index) == TIMER;
+        }
+        final String loop = loopName(stack);
+        final boolean timer = loop != null && timerLoops.contains(loop);
+        timerVerdict.putAt(index, stack, timer ? TIMER : NOT_TIMER);
+        return timer;
+    }
+
+    /** {@link Perch#loop}, built once per distinct stack. */
+    private String loopName(final Stack stack) {
+        if (stack.isEmpty()) {
+            return null;
+        }
+        final int index = loopNames.keyIndex(stack);
+        return index < 0 ? loopNames.valueAtQuick(index) : loopNames.putAt(index, stack, Perch.loop(stack));
+    }
+
+    /**
+     * The loops where this thread waits for a deadline of its own choosing: a park, a wait or a
+     * sleep, from one place, that ran out the time the thread gave it at least
+     * {@link #TIMER_MIN_WAITS} times and, in those waits alone, for more than half of the
+     * thread's life in the window. A timer thread, a cleaner, a periodic poll: the recording
+     * says the wait was voluntary ({@code timedOut} on {@code jdk.JavaMonitorWait}, a park's
+     * duration against its {@code timeout} or {@code until}, a sleep against its {@code time}),
+     * so no list of names is needed, and it is exact. An event loop that sleeps once, or a
+     * caller whose {@code get} with a timeout gave up once, is neither repeated nor most of a
+     * life, and stays a stall. Off with {@code --idle none}, like {@link Perch}.
+     */
+    private void findTimerLoops(final ThreadTimeline tl, final Interval span) {
+        timerLoops.clear();
+        timerVerdict.clear();
+        if (workWaits.matchesNothing()) {
+            return;
+        }
+        timerTotals.clear();
+        timerCounts.clear();
+        final Interval life = tl.isLifeKnown() ? new Interval(tl.lifeStart(), tl.lifeEnd()) : span;
+        final List<Block> blocks = tl.blocks();
+        for (int i = 0, n = blocks.size(); i < n; i++) {
+            final Block b = blocks.get(i);
+            if (!b.timedOut() || !canRest(verdictOf(b.kind()))) {
+                continue;
+            }
+            final String loop = loopName(b.stack());
+            if (loop != null) {
+                timerTotals.increment(loop, b.interval().clampTo(life).duration());
+                timerCounts.increment(loop, 1);
+            }
+        }
+        for (int s = 0, n = timerTotals.slots(); s < n; s++) {
+            if (timerTotals.hasKeyAtSlot(s)) {
+                final String loop = timerTotals.keyAtSlot(s);
+                if (timerCounts.get(loop) >= TIMER_MIN_WAITS && timerTotals.valueAtSlot(s) * 2 > life.duration()) {
+                    timerLoops.add(loop);
+                }
+            }
+        }
     }
 
     /**
@@ -156,8 +262,7 @@ public final class StallAnalysis {
      * I/O call is always waiting for something someone else has.
      */
     private boolean isWaitingForWork(final Verdict verdict, final Stack stack) {
-        return (verdict == Verdict.PARKED || verdict == Verdict.OBJECT_WAIT || verdict == Verdict.SLEEP)
-                && (workWaits.isIdle(stack) || onAPerch(stack));
+        return canRest(verdict) && (workWaits.isIdle(stack) || onAPerch(stack));
     }
 
     /**
@@ -249,6 +354,10 @@ public final class StallAnalysis {
         clippedStalls = 0;
         workWaitCount = 0;
         workWaitNanos = 0;
+        timerWaitCount = 0;
+        timerWaitNanos = 0;
+        timerWaitByThread.clear();
+        loopNames.clear();
         findPerches(parks, info.span());
 
         final ObjList<Pause> sortedPauses = new ObjList<>(pauses.size());
@@ -301,6 +410,7 @@ public final class StallAnalysis {
                     + Durations.format(workWaitNanos) + " were workers waiting for their own queue, or at a frame "
                     + "--idle names, and are not stalls; --idle none turns this off");
         }
+        warnTimers(warnings);
         if (clippedStalls > 0) {
             warnings.add(clippedStalls == 1
                     ? "1 stall extends beyond the recording's span and is counted only for the part inside it"
@@ -368,6 +478,34 @@ public final class StallAnalysis {
             out.add(replacement == null ? s : replacement);
         }
         return out.toList();
+    }
+
+    /**
+     * One line for every wait the timer-loop rule left out, naming the threads that waited
+     * longest: a thread that was stalled in a way the rule missed must still be findable.
+     */
+    private void warnTimers(final List<String> warnings) {
+        if (timerWaitCount == 0) {
+            return;
+        }
+        final List<String> threads = new ArrayList<>(timerWaitByThread.size());
+        for (int s = 0, n = timerWaitByThread.slots(); s < n; s++) {
+            if (timerWaitByThread.hasKeyAtSlot(s)) {
+                threads.add(timerWaitByThread.keyAtSlot(s));
+            }
+        }
+        threads.sort(Comparator.comparingLong((String t) -> -timerWaitByThread.get(t)).thenComparing(t -> t));
+        final StringBuilder names = new StringBuilder();
+        final int shown = Math.min(threads.size(), TIMER_THREADS_SHOWN);
+        for (int i = 0; i < shown; i++) {
+            names.append(i > 0 ? ", " : "").append(threads.get(i));
+        }
+        if (threads.size() > shown) {
+            names.append(" and ").append(threads.size() - shown).append(" more");
+        }
+        warnings.add(timerWaitCount + (timerWaitCount == 1 ? " wait totalling " : " waits totalling ")
+                + Durations.format(timerWaitNanos) + " were timer loops waiting out their own timeout (" + names
+                + "): scheduled idle, not stalls; --idle none turns this off");
     }
 
     /** The finer of the two sampler periods in the recording's settings, or 0 if unknown. */
@@ -505,6 +643,7 @@ public final class StallAnalysis {
     private void analyseThread(final ThreadTimeline tl, final Cadence cadence, final Windows windows,
                                final ObjList<Stall> stalls, final Interval span) {
         // 1. Event-based stalls: precise, independent of sampling.
+        findTimerLoops(tl, span);
         final List<Block> blocks = tl.blocks();
         final ObjList<Stall> eventStalls = new ObjList<>();
         long claimedTo = Long.MIN_VALUE;
@@ -521,6 +660,13 @@ public final class StallAnalysis {
                 if (isWaitingForWork(b)) {
                     workWaitNanos += inside.duration();
                     workWaitCount++;
+                    continue;
+                }
+                // Nor is a timer loop waiting for its next deadline: it is where it means to be.
+                if (onATimer(verdictOf(b.kind()), b.stack())) {
+                    timerWaitNanos += inside.duration();
+                    timerWaitCount++;
+                    timerWaitByThread.increment(tl.thread().name(), inside.duration());
                     continue;
                 }
                 // Blocks come in start order. One that begins inside an earlier event stall is
@@ -764,7 +910,7 @@ public final class StallAnalysis {
             // The same rule as for events, at the other door: a silence whose explanation is a
             // worker's own empty queue is not a stall either, and must not fall through to
             // UNEXPLAINED, which would be a worse answer than the one just rejected.
-            if (isWaitingForWork(ex.verdict, ex.stack)) {
+            if (isAtRest(ex.verdict, ex.stack)) {
                 return null;
             }
             // Pauses explain only the stretch from the first of them to the last: the thread may
@@ -786,7 +932,7 @@ public final class StallAnalysis {
         // last sample of a thread that waits for work where the sampler cannot see it: its
         // last park may simply not have ended yet.
         if (cadence.routineAbsence() > 0 && silence.duration() >= unexplainedThreshold
-                && ((edge & TO_END) == 0 || !waitsForWork(tl.blocks()))) {
+                && ((edge & TO_END) == 0 || !restsUnseen(tl.blocks()))) {
             return new Stall(tl.thread(), silence, Verdict.UNEXPLAINED,
                     "no samples and no blocking event: blocked below the recording's thresholds, "
                             + "or sampled too sparsely" + edgeNote(tl, silence, edge), Stack.EMPTY,
@@ -823,7 +969,7 @@ public final class StallAnalysis {
         // not idle by the sampler's reckoning — a park shows as native code, not as the
         // idle point — so without this a worker's own waiting reappears here after
         // being kept out of the event stalls and the silences.
-        return isWaitingForWork(ex.verdict, ex.stack) ? null
+        return isAtRest(ex.verdict, ex.stack) ? null
                 : new Stall(tl.thread(), run, ex.verdict, ex.detail, ex.stack, Evidence.SAMPLES, samples.size());
     }
 
@@ -866,10 +1012,11 @@ public final class StallAnalysis {
         }
     }
 
-    /** Whether the thread was seen, anywhere in the recording, waiting for work. */
-    private boolean waitsForWork(final List<Block> blocks) {
+    /** Whether the thread was seen, anywhere in the recording, waiting for work or for a deadline of its own. */
+    private boolean restsUnseen(final List<Block> blocks) {
         for (int i = 0, n = blocks.size(); i < n; i++) {
-            if (isWaitingForWork(blocks.get(i))) {
+            final Block b = blocks.get(i);
+            if (isAtRest(verdictOf(b.kind()), b.stack())) {
                 return true;
             }
         }

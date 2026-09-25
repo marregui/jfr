@@ -128,8 +128,12 @@ A thread parked on its own empty queue is not contention and is not a stall: `lo
 those apart and `stalls` leaves them out. They are recognised by the frame of a pool
 waiting for work (`locks --idle` replaces the list; in `stalls`, a sleep, wait or park
 under a frame `--idle` names is idle too) and, for a worker loop no list knows about,
-by shape — one thread, no holder, most of the recording parked there. `--idle none` turns
-both off, and in `stalls` it also empties the list of idle frames, so no sample is idle: a
+by shape — one thread, no holder, most of the recording parked there. `stalls` also leaves
+out a timer loop: a thread whose waits from one place ran out the timeout it chose, at least
+twice and for more than half its life (a `java.util.Timer`, a cleaner, a periodic poll); the
+recording says which waits timed out, so no list is needed. One wait that timed out is
+still a stall, and a warning names every thread set aside. `--idle none` turns all of this
+off, and in `stalls` it also empties the list of idle frames, so no sample is idle: a
 loop sitting in its selector counts as working.
 
 Every stall says how it was found: nothing after the detail means a blocking event,

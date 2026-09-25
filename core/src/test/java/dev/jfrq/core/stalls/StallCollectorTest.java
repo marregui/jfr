@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 
 import dev.jfrq.core.jfr.JfrFixtures;
@@ -41,17 +42,21 @@ class StallCollectorTest {
     @Test
     void aLockAnotherThreadAlsoParksOnIsNotTheWatchedThreadsPerch() throws Exception {
         // perch-a spends most of the recording parked on the queue, alone it would be its perch;
-        // other-b parks on the same queue once. Watching perch-a alone must not hide that.
+        // other-b parks on the same queue once. Watching perch-a alone must not hide that. Each
+        // park is woken before its timeout, so none of them is a timer loop's own deadline.
         final Object queue = new Object();
         final Path file = JfrFixtures.record(dir, "shared", StallCollectorTest::parks, () -> {
+            final AtomicInteger parked = new AtomicInteger();
             final Thread a = new Thread(() -> {
                 for (int i = 0; i < 4; i++) {
-                    LockSupport.parkNanos(queue, 250_000_000L);
+                    parked.incrementAndGet();
+                    LockSupport.parkNanos(queue, WOKEN_BEFORE_NANOS);
                 }
             }, "perch-a");
             final Thread b = new Thread(() -> LockSupport.parkNanos(queue, 100_000_000L), "other-b");
             a.start();
             b.start();
+            wake(a, parked, 4);
             a.join();
             b.join();
         });
@@ -65,13 +70,20 @@ class StallCollectorTest {
     @Test
     void aBackoffLoopsBlockerlessParksAreStalls() throws Exception {
         // parkNanos with no blocker: every such park in the JVM shares the one "lock", so the
-        // shape rule must not read a pacing loop as the thread's idle point.
-        final Path file = JfrFixtures.record(dir, "backoff", StallCollectorTest::parks,
-                () -> JfrFixtures.onThread("retrier", () -> {
-                    for (int i = 0; i < 4; i++) {
-                        LockSupport.parkNanos(250_000_000L);
-                    }
-                }));
+        // shape rule must not read a pacing loop as the thread's idle point. Woken before their
+        // timeout, so the timer-loop rule has nothing to say about them either.
+        final Path file = JfrFixtures.record(dir, "backoff", StallCollectorTest::parks, () -> {
+            final AtomicInteger parked = new AtomicInteger();
+            final Thread retrier = new Thread(() -> {
+                for (int i = 0; i < 4; i++) {
+                    parked.incrementAndGet();
+                    LockSupport.parkNanos(WOKEN_BEFORE_NANOS);
+                }
+            }, "retrier");
+            retrier.start();
+            wake(retrier, parked, 4);
+            retrier.join();
+        });
         final StallReport r = stalls(file, "retrier");
         assertEquals(4, count(r, Verdict.PARKED), r.stalls().toString());
         assertTrue(r.stalls().getFirst().detail().contains(ParkShapes.NO_BLOCKER), r.stalls().getFirst().detail());
@@ -138,6 +150,23 @@ class StallCollectorTest {
         return false;
     }
 
+    /** A park timeout no fixture waits out: the thread is always woken first. */
+    private static final long WOKEN_BEFORE_NANOS = 30_000_000_000L;
+
+    /**
+     * Unparks {@code t} {@code times} times, each once its next park has lasted 250 ms;
+     * {@code parked} counts the parks {@code t} has begun.
+     */
+    private static void wake(final Thread t, final AtomicInteger parked, final int times) {
+        for (int i = 0; i < times; i++) {
+            while (parked.get() <= i || t.getState() != Thread.State.TIMED_WAITING) {
+                Thread.onSpinWait();
+            }
+            JfrFixtures.sleep(250);
+            LockSupport.unpark(t);
+        }
+    }
+
     private static StallReport stalls(final Path file, final String glob) throws Exception {
         final StallCollector collector = new StallCollector(Glob.of(glob), IdleMatcher.defaults(), GAP);
         final RecordingInfo info = JfrReader.read(file, collector);
@@ -174,5 +203,58 @@ class StallCollectorTest {
         assertEquals(List.of("parker"), r.threads().stream().map(t -> t.thread().name()).toList());
         assertTrue(r.warnings().stream().anyMatch(w -> w.startsWith("1 matching thread has no samples")
                 && w.contains("(quiet)")), r.warnings().toString());
+    }
+
+    @Test
+    void timerLoopsAreReadFromTheEventsOwnFields() throws Exception {
+        // Each thread waits out its own timeout six times, by each of the three events: a
+        // monitor wait says timedOut, a park carries its timeout, a sleep its time.
+        final Object monitor = new Object();
+        final Path file = JfrFixtures.record(dir, "timers", r -> {
+            r.enable("jdk.JavaMonitorWait").withThreshold(Duration.ofMillis(10)).withStackTrace();
+            r.enable("jdk.ThreadPark").withThreshold(Duration.ofMillis(10)).withStackTrace();
+            r.enable("jdk.ThreadSleep").withThreshold(Duration.ofMillis(10)).withStackTrace();
+            r.enable("jdk.ThreadStart");
+            r.enable("jdk.ThreadEnd");
+        }, () -> {
+            final Thread waiter = new Thread(() -> {
+                for (int i = 0; i < 6; i++) {
+                    synchronized (monitor) {
+                        try {
+                            monitor.wait(150);
+                        } catch (final InterruptedException e) {
+                            throw new IllegalStateException(e);
+                        }
+                    }
+                }
+            }, "wait-timer");
+            final Thread parker = new Thread(() -> {
+                for (int i = 0; i < 6; i++) {
+                    LockSupport.parkNanos(150_000_000L);
+                }
+            }, "park-timer");
+            final Thread sleeper = new Thread(() -> {
+                for (int i = 0; i < 6; i++) {
+                    JfrFixtures.sleep(150);
+                }
+            }, "sleep-timer");
+            waiter.start();
+            parker.start();
+            sleeper.start();
+            waiter.join();
+            parker.join();
+            sleeper.join();
+        });
+        final StallReport r = stalls(file, "*-timer");
+        assertTrue(r.stalls().isEmpty(), r.stalls().toString());
+        assertTrue(r.warnings().stream().anyMatch(w -> w.startsWith("18 waits totalling ")
+                && w.contains("park-timer") && w.contains("sleep-timer") && w.contains("wait-timer")),
+                r.warnings().toString());
+
+        final StallCollector none = new StallCollector(Glob.of("*-timer"), IdleMatcher.none(), IdleMatcher.none(), GAP);
+        JfrReader.read(file, none);
+        assertEquals(6, count(none.report(), Verdict.OBJECT_WAIT), none.report().stalls().toString());
+        assertEquals(6, count(none.report(), Verdict.PARKED), none.report().stalls().toString());
+        assertEquals(6, count(none.report(), Verdict.SLEEP), none.report().stalls().toString());
     }
 }
