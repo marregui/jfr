@@ -410,9 +410,10 @@ public final class Html {
         return p.finish();
     }
 
-    public static String info(final RecordingInfo info) {
+    public static String info(final RecordingInfo info, final ThreadCensus.Result census) {
         final Page p = new Page("jfrq info", info);
-        p.kv("Threads", info.threads().size() + " seen in events");
+        final String lives = RecordingSummary.lives(census);
+        p.kv("Threads", info.threads().size() + " seen in events" + (lives.isEmpty() ? "" : "; " + lives));
         p.kv("Chunks", Integer.toString(info.chunks()));
         if (info.hasSettings()) {
             settingsKv(p, info, "Sampling", "jdk.ExecutionSample", "jdk.NativeMethodSample");
@@ -435,12 +436,12 @@ public final class Html {
         }
         p.tableEnd();
 
-        final List<RecordingSummary.Family> families = RecordingSummary.threadFamilies(info);
+        final List<RecordingSummary.Family> families = RecordingSummary.threadFamilies(info, census);
         if (!families.isEmpty()) {
             p.h2("Threads (the names --thread matches)");
-            p.tableStart("Family", "Count", "Example");
+            p.tableStart(RecordingSummary.familyHeaders(census).toArray(new String[0]));
             for (final RecordingSummary.Family f : families) {
-                p.row(f.count() > 1 ? f.name() + "*" : f.example(), f.count(), f.count() > 1 ? f.example() : "");
+                p.row(RecordingSummary.familyCells(f, census));
             }
             p.tableEnd();
         }

@@ -105,8 +105,12 @@ jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N
 `GLOB` is a comma-separated list of shell globs on thread names (`*`, `?`, `[0-3]`,
 `[!0-9]`; a backslash makes the next character literal): `'event-loop-*'`,
 `'nioEventLoopGroup-*,worker-?'`. `jfrq info` lists them in a `THREADS` table folded into
-families, one row per family with its count and an example (`load-client-N*`, `8`,
-`load-client-1`). Durations take a unit (`50ms`, `1.5s`, `2m`); options belong to their
+families, one row per family with its count, how many some event names, and an example
+(`load-client-N*`, `8`, `8`, `load-client-1`). When the recording holds the JVM's thread
+census (`jdk.ThreadAllocationStatistics`) and `jdk.ThreadStart`/`jdk.ThreadEnd`, as both JDK
+profiles do, each family also says how many threads were alive when the recording began,
+started, ended, and were alive when it ended: a leak is an `At end` that grows window after
+window, which the count of threads seen in a window cannot show. Durations take a unit (`50ms`, `1.5s`, `2m`); options belong to their
 command, so a `stalls` option on `locks` is an error rather than silently ignored, and so
 is an option given twice. A wait or a block that began before the recording, or outlived
 it, is counted only for the part inside it, and that is the part `--min` and `--gap` are

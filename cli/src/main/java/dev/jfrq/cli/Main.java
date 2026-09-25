@@ -34,6 +34,7 @@ import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionCollector;
 import dev.jfrq.core.report.Html;
+import dev.jfrq.core.report.ThreadCensus;
 import dev.jfrq.core.stalls.IdleMatcher;
 import dev.jfrq.core.stalls.StallCollector;
 import dev.jfrq.core.util.Durations;
@@ -330,10 +331,11 @@ public final class Main {
     }
 
     private int info(final Info q) throws IOException {
-        final RecordingInfo info = JfrReader.read(q.recording());
+        final ThreadCensus census = new ThreadCensus();
+        final RecordingInfo info = JfrReader.read(q.recording(), census);
         phase("read");
-        out.print(Text.info(info));
-        html(q.html(), () -> Html.info(info));
+        out.print(Text.info(info, census.result()));
+        html(q.html(), () -> Html.info(info, census.result()));
         phase("render");
         return 0;
     }

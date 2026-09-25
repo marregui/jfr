@@ -64,8 +64,8 @@ the gap this tool fills.
 
 ```
 $ jfrq info demo-lock.jfr
-Recording  demo-lock.jfr  15.2 s  starting 2026-09-24T10:54:59.101922Z
-Threads    30 seen in events
+Recording  demo-lock.jfr  15.1 s  starting 2026-09-25T08:15:12.572128Z
+Threads    31 seen in events; platform threads: 17 alive at start, 12 started, 12 ended, 17 alive at end
 Chunks     1
 Sampling   ExecutionSample 10.0 ms, NativeMethodSample 10.0 ms
 Thresholds Compilation 100 ms, CompilerPhase 10.0 s, FileForce 10.0 ms, FileRead 1.00 ms, FileWrite 1.00 ms, JavaMonitorEnter 1.00 ms, JavaMonitorWait 1.00 ms, SocketRead 1.00 ms, SocketWrite 1.00 ms, ThreadPark 1.00 ms, ThreadSleep 1.00 ms, VirtualThreadPinned 20.0 ms, ZPageAllocation 1.00 ms
@@ -73,10 +73,29 @@ Throttled  JavaExceptionThrow 300/s, ObjectAllocationSample 1000/s
 Allocation ObjectAllocationSample 1000/s
 
 Event type                         Count  Enabled  Threshold  Period
-jdk.ThreadPark                     18301  yes      1.00 ms
-jdk.NativeMethodSample              1267  yes                 10.0 ms
+jdk.ThreadPark                     18093  yes      1.00 ms
+jdk.NativeMethodSample              1128  yes                 10.0 ms
 ...
+THREADS (the names --thread matches)
+  Family                    Threads  Seen  At start  Started  Ended  At end  Example
+  ...
+  GC Thread#N*                   10    10         —        —      —       —  GC Thread#0
+  ...
+  event-loop-N-N*                 2     2         0        2      0       2  event-loop-3-1
+  housekeeper                     1     1         1        0      0       1
+  load-client-N*                  8     8         0        8      8       0  load-client-1
+  ...
 ```
+
+`Threads` has two counts, and they answer different questions. *Seen in events* is how
+many threads some event names in this window: it moves with the window's activity, so a
+pool that starts a worker per task reads 39 in one window and 64 in the next without
+leaking anything. The census after it counts platform threads *alive* when the recording
+began and when it ended, and the starts and ends in between; alive at start, plus started,
+minus ended, is alive at end. A leak is a family whose `At end` grows window after window.
+The eight load clients started and ended inside this one; the event loops started and are
+still alive. A dash is a count the recording cannot give: the census and the start and end
+events cover Java platform threads only, not the JVM's own GC workers or virtual threads.
 
 Read the `Thresholds` line before anything else. It comes from the `jdk.ActiveSetting`
 events in the file and bounds what any analysis can find: with a 20 ms monitor threshold,

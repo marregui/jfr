@@ -24,6 +24,7 @@ import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.report.Html;
+import dev.jfrq.core.report.ThreadCensus;
 import dev.jfrq.core.stalls.Stall;
 import dev.jfrq.core.stalls.StallReport;
 import dev.jfrq.core.stalls.Timeline.Pause;
@@ -93,7 +94,7 @@ class TextTest {
                 Set.of(new ThreadRef(1, "milo-shared-thread-pool-17"), new ThreadRef(2, "milo-shared-thread-pool-3"),
                         new ThreadRef(3, "main"), new ThreadRef(4, "event-loop-1")),
                 List.of());
-        final String text = Text.info(info);
+        final String text = Text.info(info, ThreadCensus.Result.UNKNOWN);
 
         // SocketWrite is outside the old fixed whitelist, and its 1 ms threshold was in force.
         assertTrue(text.contains("Thresholds SocketWrite 1.00 ms"), text);
@@ -138,7 +139,7 @@ class TextTest {
                         "jdk.RetransformClasses", Map.of("enabled", "true", "threshold", "0 ns"),
                         "jdk.GCPhasePause", Map.of("enabled", "true", "threshold", "0 ns")),
                 Set.of(), List.of());
-        final String text = Text.info(info);
+        final String text = Text.info(info, ThreadCensus.Result.UNKNOWN);
         // A threshold of zero suppresses nothing, so it is not a threshold a reader chose.
         assertTrue(text.contains("Thresholds JavaMonitorEnter 10.0 ms, SocketWrite 1.00 ms\n"), text);
         // It is still a fact about the file, and the per-type table below is where it belongs.

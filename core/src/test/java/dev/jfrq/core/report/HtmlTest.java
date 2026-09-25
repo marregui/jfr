@@ -103,7 +103,7 @@ class HtmlTest {
                 Map.of("jdk.ThreadSleep", 3L, "jdk.SocketRead", 7L),
                 Map.of("jdk.SocketRead", Map.of("enabled", "true", "threshold", "1 ms", "throttle", "300/s")),
                 Set.of(LOOP), List.of());
-        final String html = Html.info(info);
+        final String html = Html.info(info, ThreadCensus.Result.UNKNOWN);
         assertTrue(html.contains("<title>jfrq info"));
         assertTrue(html.contains("<dt>Chunks</dt><dd>2</dd>"));
         assertTrue(html.contains("jdk.ThreadSleep"));
@@ -121,22 +121,23 @@ class HtmlTest {
                         "jdk.ObjectAllocationSample", Map.of("enabled", "true", "throttle", "1000/s")),
                 Set.of(new ThreadRef(1, "pool-3-thread-2"), new ThreadRef(2, "pool-3-thread-1"), LOOP),
                 List.of());
-        final String html = Html.info(info);
+        final String html = Html.info(info, ThreadCensus.Result.UNKNOWN);
         assertTrue(html.contains("<dt>Threads</dt><dd>3 seen in events</dd>"), html);
         assertTrue(html.contains("<dt>Sampling</dt><dd>ExecutionSample 10.0 ms</dd>"), html);
         assertTrue(html.contains("<dt>Thresholds</dt><dd>SocketWrite 1.00 ms</dd>"), html);
         assertTrue(html.contains("<dt>Throttled</dt><dd>ObjectAllocationSample 1000/s</dd>"), html);
         assertTrue(html.contains("<dt>Allocation</dt><dd>ObjectAllocationSample 1000/s</dd>"), html);
         assertTrue(html.contains("<h2>Threads (the names --thread matches)</h2>"), html);
-        assertTrue(html.contains("<tr><td>pool-N-thread-N*</td><td class=\"n\">2</td><td>pool-3-thread-1</td></tr>"),
-                html);
+        assertTrue(html.contains("<tr><td>pool-N-thread-N*</td><td class=\"n\">2</td><td class=\"n\">2</td>"
+                + "<td>pool-3-thread-1</td></tr>"), html);
         // A family of one is named by its thread: "event-loop-N" is not a name --thread can match.
-        assertTrue(html.contains("<tr><td>event-loop-1</td><td class=\"n\">1</td><td></td></tr>"), html);
+        assertTrue(html.contains("<tr><td>event-loop-1</td><td class=\"n\">1</td><td class=\"n\">1</td><td></td></tr>"),
+                html);
 
         // A file without settings says so once, and has no settings lines to show.
         final RecordingInfo bare = new RecordingInfo(Path.of("rec.jfr"), new Interval(0, MS), 1, Map.of(), Map.of(),
                 Set.of(), List.of());
-        final String page = Html.info(bare);
+        final String page = Html.info(bare, ThreadCensus.Result.UNKNOWN);
         assertTrue(page.contains("<dt>Settings</dt><dd>unknown: the recording has no jdk.ActiveSetting events</dd>"));
         assertFalse(page.contains("<dt>Sampling</dt>"), page);
         assertFalse(page.contains("Threads (the names"), page);

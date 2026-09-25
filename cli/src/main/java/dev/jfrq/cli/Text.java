@@ -17,6 +17,7 @@ import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
 import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.report.RecordingSummary;
+import dev.jfrq.core.report.ThreadCensus;
 import dev.jfrq.core.stalls.Stall;
 import dev.jfrq.core.stalls.StallReport;
 import dev.jfrq.core.stalls.Timeline.Pause;
@@ -54,9 +55,11 @@ final class Text {
         return settings.isEmpty() ? "" : String.format(Locale.ROOT, "%-10s %s\n", label, settings);
     }
 
-    static String info(final RecordingInfo info) {
+    static String info(final RecordingInfo info, final ThreadCensus.Result census) {
         final StringBuilder sb = new StringBuilder(header(info));
-        sb.append(String.format(Locale.ROOT, "%-10s %d seen in events\n", "Threads", info.threads().size()));
+        final String lives = RecordingSummary.lives(census);
+        sb.append(String.format(Locale.ROOT, "%-10s %d seen in events%s\n", "Threads", info.threads().size(),
+                lives.isEmpty() ? "" : "; " + lives));
         sb.append(String.format(Locale.ROOT, "%-10s %d\n", "Chunks", info.chunks()));
         sb.append(settingsLine(info, "Sampling", "jdk.ExecutionSample", "jdk.NativeMethodSample"));
         // Derived, not a whitelist: this line exists to answer "did the settings I asked for
@@ -75,20 +78,25 @@ final class Text {
                     info.period(type).map(Durations::format).or(() -> info.setting(type, "period")).orElse(""));
         }
         sb.append(t.render());
-        sb.append(threadFamilies(info));
+        sb.append(threadFamilies(info, census));
         return sb.toString();
     }
 
     /** The threads in the file by family ({@link RecordingSummary#threadFamilies}): what {@code --thread} matches. */
-    static String threadFamilies(final RecordingInfo info) {
-        final List<RecordingSummary.Family> families = RecordingSummary.threadFamilies(info);
+    static String threadFamilies(final RecordingInfo info, final ThreadCensus.Result census) {
+        final List<RecordingSummary.Family> families = RecordingSummary.threadFamilies(info, census);
         if (families.isEmpty()) {
             return "";
         }
         final StringBuilder sb = new StringBuilder("\nTHREADS (the names --thread matches)\n");
-        final TextTable table = new TextTable("Family", "Count", "Example").numeric(1);
+        final List<String> headers = RecordingSummary.familyHeaders(census);
+        final int[] numeric = new int[headers.size() - 2];
+        for (int i = 0; i < numeric.length; i++) {
+            numeric[i] = i + 1;
+        }
+        final TextTable table = new TextTable(headers.toArray(new String[0])).numeric(numeric);
         for (final RecordingSummary.Family f : families) {
-            table.row(f.count() > 1 ? f.name() + "*" : f.example(), f.count(), f.count() > 1 ? f.example() : "");
+            table.row(RecordingSummary.familyCells(f, census));
         }
         sb.append(table.render("  "));
         return sb.toString();

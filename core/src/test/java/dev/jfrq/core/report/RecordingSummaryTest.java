@@ -3,6 +3,7 @@
 
 package dev.jfrq.core.report;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.nio.file.Path;
@@ -10,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import dev.jfrq.core.coll.Nulls;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.ThreadRef;
@@ -31,8 +33,45 @@ class RecordingSummaryTest {
                 Set.of(new ThreadRef(1, "worker-9"), new ThreadRef(2, "worker-10"), new ThreadRef(3, "worker-9"),
                         new ThreadRef(4, "main")), List.of());
         // Two threads that share a name are two threads; the example does not depend on hash order.
-        assertEquals(List.of(new RecordingSummary.Family("main", 1, "main"),
-                new RecordingSummary.Family("worker-N", 3, "worker-10")), RecordingSummary.threadFamilies(info));
+        final int unknown = Nulls.INT_NULL;
+        assertEquals(List.of(new RecordingSummary.Family("main", 1, 1, unknown, unknown, unknown, unknown, "main"),
+                new RecordingSummary.Family("worker-N", 3, 3, unknown, unknown, unknown, unknown, "worker-10")),
+                RecordingSummary.threadFamilies(info, ThreadCensus.Result.UNKNOWN));
+        assertEquals(List.of("Family", "Threads", "Seen", "Example"),
+                RecordingSummary.familyHeaders(ThreadCensus.Result.UNKNOWN));
+    }
+
+    @Test
+    void aFamilyOfVirtualThreadsHasNoLifeCountsRatherThanZero() {
+        final ThreadRef pooled = new ThreadRef(1, "pool-1-thread-1");
+        final ThreadRef churn = new ThreadRef(2, "churn-0", true);
+        final RecordingInfo info = new RecordingInfo(Path.of("a.jfr"), new Interval(0, 1), 1, Map.of(), Map.of(),
+                Set.of(pooled, churn), List.of());
+        final ThreadCensus.Result census = new ThreadCensus.Result(Set.of(), Map.of(pooled, 1L), Map.of(),
+                Set.of(pooled), null);
+        final List<RecordingSummary.Family> families = RecordingSummary.threadFamilies(info, census);
+        assertEquals(List.of("churn-N", "pool-N-thread-N"), families.stream().map(RecordingSummary.Family::name).toList());
+        // Neither the census nor ThreadStart/ThreadEnd covers a virtual thread.
+        assertArrayEquals(new Object[] {"churn-0", 1, 1, "—", "—", "—", "—", ""},
+                RecordingSummary.familyCells(families.getFirst(), census));
+        assertArrayEquals(new Object[] {"pool-1-thread-1", 1, 1, 0, 1, 0, 1, ""},
+                RecordingSummary.familyCells(families.get(1), census));
+    }
+
+    @Test
+    void aFamilyTheCensusNeverNamedHasNoLifeCounts() {
+        // A GC worker is seen in events but has no Java identity: in no census, never started or ended.
+        final ThreadRef gc = new ThreadRef(9001, "GC Thread#0");
+        final ThreadRef pooled = new ThreadRef(1, "pool-1-thread-1");
+        final RecordingInfo info = new RecordingInfo(Path.of("a.jfr"), new Interval(0, 1), 1, Map.of(), Map.of(),
+                Set.of(gc, pooled), List.of());
+        final ThreadCensus.Result census = new ThreadCensus.Result(Set.of(pooled), Map.of(), Map.of(),
+                Set.of(pooled), Set.of(pooled));
+        final List<RecordingSummary.Family> families = RecordingSummary.threadFamilies(info, census);
+        assertArrayEquals(new Object[] {"GC Thread#0", 1, 1, "—", "—", "—", "—", ""},
+                RecordingSummary.familyCells(families.getFirst(), census));
+        assertArrayEquals(new Object[] {"pool-1-thread-1", 1, 1, 1, 0, 0, 1, ""},
+                RecordingSummary.familyCells(families.get(1), census));
     }
 
     @Test

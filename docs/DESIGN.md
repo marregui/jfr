@@ -608,6 +608,26 @@ labelled as such; the `THREADS` section folds them into families by replacing ea
 of digits with `N`, because that is what a pool varies per worker and what a `--thread`
 glob has to match.
 
+Seen is not alive, and on a live node the difference read as a leak: one family was 28
+threads in one window and 42 in the next, another 39 then 64, while `jstack` a minute
+apart showed 132 and 133 threads. So `info` also takes a census. At every chunk boundary
+the JVM writes `jdk.ThreadAllocationStatistics`, one row per live Java thread, every row
+of a batch under one timestamp: the earliest batch is who was alive when the recording
+began, the latest who was alive when it ended, including threads parked through the whole
+window that no other event names. `jdk.ThreadStart` and `jdk.ThreadEnd` give the lives in
+between. Three details make the counts add up, and alive at start plus started minus ended
+equals alive at end on every recording it was checked on (eleven, from JVM boot to a
+four-minute window): starts and ends are counted as events, not threads, because the JVM
+stops and restarts its dynamic compiler threads under one id; only those between the two
+batches count, because a recording taken from boot starts threads before its first
+census; and a start is not a new life for a thread already alive, because `main`, in the
+first census of such a recording, gets a `jdk.ThreadStart` afterwards. On that node the
+two worrying families were virtual threads, which the census does not cover, and a pool
+steady at 4 alive while 60 workers started and 60 ended. The census covers Java platform
+threads only: a family with a thread no census row or start or end event names (a
+virtual thread, a GC worker, the VM thread) prints a dash, not a zero, since zero is a
+claim the recording does not make. All of it is exact; none of it is sampled.
+
 ## 5. Output
 
 Text goes to standard output in fixed-width tables meant for tickets and chat; each
