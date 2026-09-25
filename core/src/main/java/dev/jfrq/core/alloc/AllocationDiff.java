@@ -54,6 +54,18 @@ public record AllocationDiff(AllocationReport baseline, AllocationReport current
     public record Site(String label, Stack stack, long beforeSamples, long afterSamples) {
     }
 
+    /**
+     * What the reader must know before trusting the comparison: each recording's
+     * {@link AllocationReport#warnings()}, a warning both carry said once with both counts.
+     */
+    public List<String> warnings() {
+        if (baseline.warnings().isEmpty() && current.warnings().isEmpty()) {
+            return List.of();
+        }
+        return List.of(AllocationReport.virtualWarning("baseline " + baseline.virtualCounts() + "; current "
+                + current.virtualCounts()));
+    }
+
     public Delta<String> total() {
         return new Delta<>("total", baseline.rate(), current.rate());
     }

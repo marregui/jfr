@@ -312,8 +312,9 @@ class HtmlTest {
         assertTrue(html.contains("<ul class=\"warn\"><li>allocation on virtual threads is under-counted, and can "
                 + "still be over-counted: 3 first samples of virtual threads, 4.00 GB, not counted"), html);
         final String diff = Html.allocDiff(new AllocationDiff(vt, vt), 10, false, SiteKey.culpritMethod());
-        assertTrue(diff.contains("<li>baseline: allocation on virtual threads"), diff);
-        assertTrue(diff.contains("<li>current: allocation on virtual threads"), diff);
+        assertTrue(diff.contains("<li>allocation on virtual threads is under-counted, and can still be over-counted: "
+                + "baseline 3 first samples of virtual threads, 4.00 GB; current 3 first samples"), diff);
+        assertEquals(diff.indexOf("allocation on virtual threads"), diff.lastIndexOf("allocation on virtual threads"));
     }
 
     @Test

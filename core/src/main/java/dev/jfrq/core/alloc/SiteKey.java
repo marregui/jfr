@@ -98,7 +98,8 @@ public interface SiteKey {
         return next == '.' || next == '$';
     }
 
+    /** Named without a hidden class's per-JVM address, so a lambda's row is the same row in two recordings. */
     private static String method(final Frame frame) {
-        return frame.type() + "." + frame.method();
+        return frame.stableName();
     }
 }

@@ -49,7 +49,35 @@ public record Frame(String type, String method, int line, boolean isNative) {
 
     /** True for JVM-generated hidden classes such as lambda bodies. */
     public boolean isHidden() {
-        return type.contains("$$Lambda") || type.contains("/0x");
+        return !stableClass(type).equals(type);
+    }
+
+    private static final String LAMBDA = "$$Lambda";
+
+    /**
+     * A class name without the address the JVM gave a hidden class, which differs from one
+     * run to the next: {@code dev.app.Handler$$Lambda.0x0000007e015de000} (and the older
+     * {@code Handler$$Lambda$14/0x0000000800c02a00}) is {@code dev.app.Handler$$Lambda},
+     * {@code java.lang.invoke.LambdaForm$MH.0x800c00400} is {@code java.lang.invoke.LambdaForm$MH}.
+     * Every lambda of one class gets the one name, which is the price of a name that means the
+     * same thing in two recordings. Any other name is returned as it is.
+     */
+    public static String stableClass(final String type) {
+        final int lambda = type.indexOf(LAMBDA);
+        if (lambda > 0) {
+            final int end = lambda + LAMBDA.length();
+            return end == type.length() ? type : type.substring(0, end);
+        }
+        final int hex = type.lastIndexOf("0x");
+        if (hex < 2 || hex + 2 == type.length() || (type.charAt(hex - 1) != '.' && type.charAt(hex - 1) != '/')) {
+            return type;
+        }
+        for (int i = hex + 2, n = type.length(); i < n; i++) {
+            if (Character.digit(type.charAt(i), 16) < 0) {
+                return type;
+            }
+        }
+        return type.substring(0, hex - 1);
     }
 
     /**
@@ -57,18 +85,13 @@ public record Frame(String type, String method, int line, boolean isNative) {
      * {@code dev.app.Handler$$Lambda.run}, the same in every run of the same code.
      */
     public String stableName() {
-        return isHidden() ? stableType() + "." + method : qualifiedName();
-    }
-
-    private String stableType() {
-        final int cut = type.indexOf("$$Lambda");
-        return cut > 0 ? type.substring(0, cut + "$$Lambda".length()) : type;
+        return isHidden() ? stableClass(type) + "." + method : qualifiedName();
     }
 
     /** {@code java.lang.Thread.sleep(Thread.java:509)} in the style of a stack trace line. */
     public String pretty() {
         if (isHidden()) {
-            return stableType() + "." + method + "(lambda)";
+            return stableClass(type) + "." + method + (type.contains(LAMBDA) ? "(lambda)" : "(hidden)");
         }
         String file = type.substring(type.lastIndexOf('.') + 1);
         final int inner = file.indexOf('$');

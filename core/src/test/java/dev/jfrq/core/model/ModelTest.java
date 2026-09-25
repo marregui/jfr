@@ -90,8 +90,25 @@ class ModelTest {
             assertTrue(f.isHidden());
             assertEquals("dev.app.Background$$Lambda.run(lambda)", f.pretty());
             final Frame g = new Frame("dev.app.Hidden/0x1234", "run", 0, "JIT compiled");
-            assertEquals("dev.app.Hidden/0x1234.run(lambda)", g.pretty());
+            assertTrue(g.isHidden());
+            assertEquals("dev.app.Hidden.run(hidden)", g.pretty());
+            assertEquals("dev.app.Hidden.run", g.stableName());
             assertFalse(app("x", 1).isHidden());
+        }
+
+        @Test
+        void aHiddenClassIsNamedAlikeInEveryRun() {
+            assertEquals("java.util.regex.Pattern$$Lambda", Frame.stableClass("java.util.regex.Pattern$$Lambda.0x800000030"));
+            assertEquals("dev.app.Handler$$Lambda", Frame.stableClass("dev.app.Handler$$Lambda$14/0x0000000800c02a00"));
+            assertEquals("dev.app.Handler$$Lambda", Frame.stableClass("dev.app.Handler$$Lambda"));
+            assertEquals("java.lang.invoke.LambdaForm$MH",
+                    Frame.stableClass("java.lang.invoke.LambdaForm$MH.0x000007e00115c400"));
+            assertEquals("dev.app.Hidden", Frame.stableClass("dev.app.Hidden/0xAbC1"));
+            // Anything that is not a hex address after a '.' or a '/' is a name, and stays.
+            for (final String name : List.of("[B", "java.lang.String", "dev.app.v0x12", "dev.app.Hidden.0x",
+                    "dev.app.Hidden.0x12g", "0x12", "a.0x")) {
+                assertSame(name, Frame.stableClass(name), name);
+            }
         }
 
         @Test

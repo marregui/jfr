@@ -193,6 +193,15 @@ carries the samples behind both sides, because several hundred percent on a hand
 them is noise. A key missing on one side is reported against zero. Sorting is by absolute
 change in rate.
 
+A hidden class is named without the address the JVM gave it:
+`Pattern$$Lambda.0x800000030` is `Pattern$$Lambda`, as a class and in a site's method
+name, and `LambdaForm$MH.0x…` is `LambdaForm$MH`. The address differs from one JVM to the
+next, so a before-and-after pair from two runs listed every lambda twice, as gone on one
+side and new on the other: 46 such rows in one A/B diff of two edge nodes, which the fold
+takes to none (and the rows that read `new` or `-100 %` from 77 to 43). The price is that
+every lambda of one class is one row. A warning both recordings carry, such as the
+virtual-thread one, is said once with both counts.
+
 **Limits.** The estimate is statistical; at the JDK's default 150-300 samples per second
 it ranks threads and classes reliably and gets shares within a few percent, but it will
 not tell you that a site allocating 0.1 % of the total grew by half. Class names are

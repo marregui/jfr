@@ -320,16 +320,13 @@ final class Text {
         for (final String w : d.baseline().info().warnings()) {
             sb.append("WARNING    baseline: ").append(w).append('\n');
         }
-        for (final String w : d.baseline().warnings()) {
-            sb.append("WARNING    baseline: ").append(w).append('\n');
-        }
         sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s\n", "Current", d.current().info().file().getFileName(),
                 Durations.format(d.current().info().duration()), Bytes.rate(d.current().rate())));
         for (final String w : d.current().info().warnings()) {
             sb.append("WARNING    current: ").append(w).append('\n');
         }
-        for (final String w : d.current().warnings()) {
-            sb.append("WARNING    current: ").append(w).append('\n');
+        for (final String w : d.warnings()) {
+            sb.append("WARNING    ").append(w).append('\n');
         }
         sb.append(String.format(Locale.ROOT, "%-10s %s (%s)\n", "Change", Bytes.signedRate(d.total().delta()),
                 ratio(d.total().ratio())));

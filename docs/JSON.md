@@ -32,7 +32,8 @@ with `--json` after `--` gets standard output to itself: the dump's own lines (`
   are grouped at), the innermost frame outside the JDK as `package.Class.method` (named even
   when it lies below the frames kept; `null` when every frame is the JDK's), and whether
   frames were left out. A lambda is named without the address the JVM gave its class
-  (`Handler$$Lambda.run`), so the same code has the same name in every run. A stall with no stack (a pause, an unexplained gap) has
+  (`Handler$$Lambda.run`), so the same code has the same name in every run; so is a hidden
+  class wherever a class is named (`Pattern$$Lambda`, `LambdaForm$MH`). A stall with no stack (a pause, an unexplained gap) has
   `"stack": null`.
 
 ## Every document

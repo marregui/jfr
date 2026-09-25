@@ -47,7 +47,8 @@ class SiteKeyTest {
         final Stack other = stack("java.lang.String", "org.lib.Codec", "com.x.HandlerFactory");
         final SiteKey handler = SiteKey.inPackages(List.of("com.x.Handler"));
         assertEquals("com.x.Handler$Inner.m", handler.of(inner));
-        assertEquals("com.x.Handler$$Lambda/0x1234.m", handler.of(lambda));
+        // Without its per-JVM address, so the row is the same row in another recording.
+        assertEquals("com.x.Handler$$Lambda.m", handler.of(lambda));
         // A '$' is a boundary, not a wildcard: HandlerFactory is still another class.
         assertEquals("org.lib.Codec.m", handler.of(other));
         assertEquals("org.lib.Codec.m", SiteKey.inPackages(List.of("com.x.Handl")).of(other));

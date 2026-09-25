@@ -565,16 +565,9 @@ public final class Html {
         for (final String w : diff.baseline().info().warnings()) {
             baselineWarnings.add("baseline: " + w);
         }
-        for (final String w : diff.baseline().warnings()) {
-            baselineWarnings.add("baseline: " + w);
-        }
         p.warnings(baselineWarnings);
         p.kv("Current", diff.current().info().file().toString() + " (" + Bytes.rate(diff.current().rate()) + ")");
-        final List<String> currentWarnings = new ArrayList<>();
-        for (final String w : diff.current().warnings()) {
-            currentWarnings.add("current: " + w);
-        }
-        p.warnings(currentWarnings);
+        p.warnings(diff.warnings());
         p.kv("Change", Bytes.signedRate(diff.total().delta()) + " (" + ratio(diff.total().ratio()) + ")");
         p.para("Rates are bytes/second so recordings of different length compare. The sample counts are the "
                 + "evidence behind each change: a few hundred percent on a handful of samples is noise, not a finding.");

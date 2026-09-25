@@ -164,7 +164,10 @@ public final class Interner {
         return lastFields;
     }
 
-    /** The JVM name of a class ({@code [B}, {@code java.lang.Object}), or {@code null}. */
+    /**
+     * The JVM name of a class ({@code [B}, {@code java.lang.Object}), without a hidden class's
+     * per-JVM address ({@link Frame#stableClass(String)}), or {@code null}.
+     */
     public String className(final RecordedClass c) {
         if (c == null) {
             return null;
@@ -173,7 +176,7 @@ public final class Interner {
         if (index < 0) {
             return classNamesByIdentity.valueAtQuick(index);
         }
-        final String name = c.getName();
+        final String name = Frame.stableClass(c.getName());
         if (classNamesByIdentity.size() >= IDENTITY_LIMIT) {
             classNamesByIdentity.clear();
             index = classNamesByIdentity.keyIndex(c);

@@ -123,15 +123,22 @@ public record AllocationReport(
      * sampled carries that carrier's history on a later sample, which is kept.
      */
     public List<String> warnings() {
+        return virtualFirsts.samples() == 0 ? List.of() : List.of(virtualWarning(virtualCounts()));
+    }
+
+    /** {@code 42 first samples of virtual threads, 40.9 MB}, or {@code none} when there were none. */
+    String virtualCounts() {
         final long n = virtualFirsts.samples();
-        if (n == 0) {
-            return List.of();
-        }
-        return List.of("allocation on virtual threads is under-counted, and can still be over-counted: " + n
-                + " first sample" + (n == 1 ? "" : "s") + " of virtual threads, " + Bytes.format(virtualFirsts.bytes())
+        return n == 0 ? "none" : n + " first sample" + (n == 1 ? "" : "s") + " of virtual threads, "
+                + Bytes.format(virtualFirsts.bytes());
+    }
+
+    /** The virtual-thread warning around what was left out, said once however many recordings it covers. */
+    static String virtualWarning(final String counts) {
+        return "allocation on virtual threads is under-counted, and can still be over-counted: " + counts
                 + ", not counted, because a sample is weighed by its carrier's allocation since the carrier was last "
                 + "sampled, which can reach back before the recording; a virtual thread that moved to a carrier not "
-                + "yet sampled carries that history on a later sample (docs/DESIGN.md, section 2)");
+                + "yet sampled carries that history on a later sample (docs/DESIGN.md, section 2)";
     }
 
     public double seconds() {

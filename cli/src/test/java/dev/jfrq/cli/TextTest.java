@@ -304,9 +304,16 @@ class TextTest {
         final String text = Text.alloc(r, 15, false, SiteKey.culpritMethod());
         assertTrue(text.contains("\nWARNING    allocation on virtual threads is under-counted, and can still be "
                 + "over-counted: 1 first sample of virtual threads, 2.05 KB, not counted"), text);
-        final String diff = Text.allocDiff(new AllocationDiff(r, r), 15, false, SiteKey.culpritMethod());
-        assertTrue(diff.contains("WARNING    baseline: allocation on virtual threads"), diff);
-        assertTrue(diff.contains("WARNING    current: allocation on virtual threads"), diff);
+        // A diff says it once, with both recordings' counts, and names a side that had none.
+        final AllocationReport none = new AllocationReport(window(), "jdk.ObjectAllocationSample", 1000, 1, 2,
+                Map.of(), Map.of("vt-1", 1000L), Map.of(), Map.of(), Map.of(), Map.of(), AllocationReport.Support.NONE,
+                AllocationReport.Dropped.NONE);
+        final String diff = Text.allocDiff(new AllocationDiff(none, r), 15, false, SiteKey.culpritMethod());
+        assertEquals(1, occurrences(diff, "allocation on virtual threads"), diff);
+        assertTrue(diff.contains("\nWARNING    allocation on virtual threads is under-counted, and can still be "
+                + "over-counted: baseline none; current 1 first sample of virtual threads, 2.05 KB, not counted"), diff);
+        assertTrue(Text.allocDiff(new AllocationDiff(none, none), 15, false, SiteKey.culpritMethod())
+                .lines().noneMatch(l -> l.startsWith("WARNING")));
     }
 
     @Test
