@@ -67,8 +67,9 @@ class DemoAppTest {
 
     @Test
     void lookupsAreCountedPerRunNotPerJvm() throws Exception {
-        // Unpaced, so the one-in-400 lookup is reached many times over.
-        final DemoApp.Result first = DemoApp.run(Scenario.BLOCKING_IO, Duration.ofMillis(1500), null, 4, 0, 1);
+        // Unpaced, and long enough to reach the one-in-400 lookup on a slow runner: a Windows CI
+        // machine managed 192 requests in 1.5 s on four connections.
+        final DemoApp.Result first = DemoApp.run(Scenario.BLOCKING_IO, Duration.ofSeconds(5), null, 8, 0, 1);
         assertTrue(first.lookups() > 0, first.describe());
         final DemoApp.Result second = DemoApp.run(Scenario.CLEAN, Duration.ofMillis(300), null, 1, 100, 1);
         assertEquals(0, second.lookups(), second.describe());
