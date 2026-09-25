@@ -73,14 +73,18 @@ analysis falls back to `jdk.ObjectAllocationInNewTLAB` (weight: the TLAB size) a
 `jdk.ObjectAllocationOutsideTLAB` (weight: the allocation size), which is how JDK 11-15
 recordings and explicitly configured profiles report allocation.
 
-**The first sample of every thread is discarded.** A sample's weight is the bytes the
-thread allocated since it was *last sampled*, and for a thread that was never sampled,
-or not since a recording hours earlier, that is its lifetime allocation. Left in, a main
-thread that allocated 150 MB of `MemberName` at start-up and nothing since is reported as
-allocating 150 MB during the recording; the tutorial's first draft showed exactly that.
+**The first sample of every thread already running is discarded.** A sample's weight is
+the bytes the thread allocated since it was *last sampled*, and for a thread that was never
+sampled, or not since a recording hours earlier, that is its lifetime allocation. Left in, a
+main thread that allocated 150 MB of `MemberName` at start-up and nothing since is reported
+as allocating 150 MB during the recording; the tutorial's first draft showed exactly that.
 Dropping the sample loses at most the bytes between the previous sample and this one,
 nothing for a thread sampled hundreds of times a second and unknowable for one sampled
-once. The TLAB events carry no such history and are used as they are.
+once. A platform thread whose `jdk.ThreadStart` is in the file keeps its first sample: its
+lifetime began inside the recording, so all of that weight is in the window, and dropping
+it lost most of what short-lived pool threads allocated. The `Source` line says how many
+first samples were left out, so the sample count and the event count reconcile. The TLAB
+events carry no such history and are used as they are.
 
 **Virtual threads lose theirs too, and the report says how much that was.** The JVM
 counts allocation per carrier, not per virtual thread, so the weight of a sample taken on
@@ -108,13 +112,21 @@ many samples can do it; the warning says so. A single virtual thread's row is th
 carrier bytes it happened to be sampled on, not what it allocated.
 
 **Calibration.** `jdk.ThreadAllocationStatistics`, written at every chunk boundary by
-the JDK's own settings, is each thread's exact allocation counter. For a thread seen at
-least twice, the difference between its last and first counter is what it allocated in
-between, and the report prints it next to the estimate, overall and per thread, so the
-reader knows how far the sampling is from the truth for the threads that matter. A
-thread that started and ended between two counter events has no counter; the
-comparison is restricted to the threads that do, so the two numbers compare like for
-like, and the percentage is only printed when those threads carry at least 1 % of the
+the JDK's own settings, is each thread's exact allocation counter. The difference between
+a thread's last counter and its first is what it allocated in between, and a thread whose
+`jdk.ThreadStart` is in the file had a counter of zero then; the report prints that next to
+the estimate, overall and per thread, so the reader knows how far the sampling is from the
+truth for the threads that matter. The two only compare over the same stretch, so the
+estimate set against a counter is the thread's samples between those two points, which is
+why the collector keeps every sample's time and weight (two longs a sample). Set against
+the whole file instead, a pool thread that started after the first chunk had its early
+allocation in the estimate and not in its counter: a 26-minute node recording in six
+chunks read as an estimate 28 % high whose samples were right, and is 2 % low measured
+over the stretches. A thread's row shows its counter only when that stretch holds 95 % of
+the row's estimate; beside the whole-file figure, one pool thread's counter read 0 against
+212 MB. A thread that started and ended between two counter events has no counter; the
+comparison is restricted to the threads that have one, so the two
+numbers compare like for like, and the percentage is only printed when those threads carry at least 1 % of the
 estimate: below that the two differ by start-up noise (the counters are read a few
 milliseconds after sampling begins, and on the thread that starts the recording those
 milliseconds are JFR's own initialisation), and a percentage would only alarm. The share
@@ -125,7 +137,7 @@ report, and so is any error measured on it.
 `jdk.ThreadAllocationStatistics` is written per platform thread, so there is no counter for
 a virtual thread and its row has an empty `Counted` cell. The carriers
 (`ForkJoinPool-1-worker-N`) do have counters, and theirs include every virtual thread they
-ran, but the samples name the virtual threads, so a carrier seen at both ends of the file
+ran, but the samples name the virtual threads, so a counted carrier
 adds its counter to the comparison with no estimate against it and pulls the percentage
 down. When most of the allocation is on virtual threads the share rule keeps the
 percentage off the line; in a mix of the two, the per-thread `Counted` column of the
@@ -433,9 +445,17 @@ the largest group's; the detail counts the others when they were needed to reach
 absence indicate a state the sampler cannot observe: blocked, in the VM, at a
 safepoint. The silence is attributed to whichever group of blocking events, then GC
 pauses, then safepoints covers at least half of it; otherwise it is `UNEXPLAINED`. A
-group is one kind of block on one lock, peer or path, whatever the byte counts: twelve
+group is one kind of I/O on one peer or path, whatever the byte counts: twelve
 20 ms reads from one backend explain a 300 ms silence together, as
-`12 × blocking socket read from backend:9000 (1.27 KB)`. Pauses group the same way, and
+`12 × blocking socket read from backend:9000 (1.27 KB)`. Lock waits group by stack, not by
+lock instance: an instance is an address, and the collector moves the object a thread parks
+on. A pool worker idle on its own queue for 3m52s of a 26-minute node recording parked 122
+times on three addresses of one `SynchronousQueue`, none of them half the silence, and was
+reported as the recording's worst stall, `UNEXPLAINED`, while its parks covered 230.6 s of
+232.9. A stack is one place in the code waiting for one kind of thing, which is what the
+silence needs; when its waits named several instances the detail names the class
+(`178 × parked on java.util.concurrent.SynchronousQueue$Transferer`). A lock wait without
+a stack falls back to the instance. Pauses group the same way, and
 a silence they explain is cut to them, from the start of the first to the end of the
 last: between pauses the thread may have been running, and a stall longer than what
 stopped it overstates it. When that stretch is shorter than a gap while the pauses still
@@ -494,7 +514,8 @@ the configured period as long as fewer than five threads are in Java at once.
 An *unexplained* silence counts as evidence only when it exceeds
 `3 × max(Java p90, native p90)`, whatever the neighbouring samples showed, because
 between any two samples the thread may have passed through the other state unseen. The
-PER THREAD table prints that threshold as `Unseen below`. An explained silence does not
+PER THREAD table prints that threshold as `Unseen below`, and a dash when it is past the
+recording's length, where nothing the samples could show would count. An explained silence does not
 depend on it, with one condition: below the threshold, what explains it must itself cover
 a whole gap, because the thread may have been idle for the rest; above it, half of the
 silence is enough, because the silence is evidence in its own right. Event stalls never
@@ -664,7 +685,10 @@ two worrying families were virtual threads, which the census does not cover, and
 steady at 4 alive while 60 workers started and 60 ended. The census covers Java platform
 threads only: a family with a thread no census row or start or end event names (a
 virtual thread, a GC worker, the VM thread) prints a dash, not a zero, since zero is a
-claim the recording does not make. All of it is exact; none of it is sampled.
+claim the recording does not make. Those dashes look alike, so when any family has a
+virtual thread the table gains a `Virtual` column with how many are: 202 dashed
+`opcua-metadata-preparation-churn-N` threads on an edge node read like a VM thread's until
+it said they were virtual. All of it is exact; none of it is sampled.
 
 ## 5. Output
 
@@ -1003,7 +1027,12 @@ one per `jdk.JavaErrorThrow` inside its stretch. The test checks the corrected t
 against the events inside the stretch, exactly. `jdk.JavaExceptionThrow` fires in the `Throwable` constructor, so it counts
 creations: an object made only for its stack trace counts, and a rethrow does not. It is
 throttled (100/s in `default`, 300/s in `profile`), so the class and site shares are of
-the events, and a class's rate is the exact total's rate times its share. A site is the
+the events, and a class's rate is the exact total's rate times its share. That rate is an
+average over the window, which a start-up burst and a steady trickle can share: 341
+`ClassNotFoundException`s from +5.1 s to +605.6 s read as 0.3/s, half of them made by
++6.0 s. So each class also prints when its first, median and last were made; the median is
+near the first for a burst and near the middle for a steady rate, whatever straggler comes
+last, which the first and last alone cannot say. A site is the
 code that made the throwable. The top of every such stack is its own construction:
 `Throwable.<init>`, the superclass constructors (an application's own base exception
 among them), the class's constructor, and sometimes a static factory of the class. The

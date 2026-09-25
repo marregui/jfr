@@ -148,6 +148,18 @@ class HealthCollectorTest {
     }
 
     @Test
+    void theMedianTellsAStartUpBurstFromASteadyRate() {
+        // Field case: 341 ClassNotFoundExceptions from +5.1 s to +605.6 s read as ~0.3/s all
+        // along; half of them were made by +6.0 s. The median says so, a straggler or not.
+        final long s = 1_000_000_000L;
+        final ClassRow burst = new ClassRow("java.lang.ClassNotFoundException", 341, 0.02, null, 5_111_000_000L,
+                5_972_000_000L, 605_594_000_000L);
+        assertEquals("+5.111s, +5.972s, +605.594s", HealthReport.when(burst, 0));
+        final ClassRow once = new ClassRow("java.lang.OutOfMemoryError", 1, 0.01, null, 7 * s, 7 * s, 7 * s);
+        assertEquals("+7.000s", HealthReport.when(once, 0));
+    }
+
+    @Test
     void aFindingSaysWhenItHappenedWithinTheRecording() {
         final RecordingInfo info = report.info();
         final Finding gc = finding(Finding.Kind.SYSTEM_GC);
@@ -215,6 +227,17 @@ class HealthCollectorTest {
         // One of them, in file order, which is not time order.
         assertTrue(row.message().matches("request \\d+ refused"), row.message());
         assertEquals((double) THROWN / t.samples(), row.share(), 1e-9);
+        // When the first and the last of the class were made, inside the recording.
+        final long start = report.info().startNanos();
+        assertTrue(start <= row.firstNanos() && row.firstNanos() <= row.medianNanos()
+                && row.medianNanos() <= row.lastNanos() && row.firstNanos() < row.lastNanos()
+                && row.lastNanos() <= report.info().span().end(), row.toString());
+        assertTrue(HealthReport.when(row, start).matches("\\+\\d+\\.\\d{3}s, \\+\\d+\\.\\d{3}s, \\+\\d+\\.\\d{3}s"),
+                HealthReport.when(row, start));
+        final ClassRow once = t.byClass().stream().filter(c -> c.className().equals("java.lang.OutOfMemoryError"))
+                .findFirst().orElseThrow();
+        assertEquals(once.firstNanos(), once.lastNanos());
+        assertTrue(HealthReport.when(once, start).matches("\\+\\d+\\.\\d{3}s"), HealthReport.when(once, start));
         final SiteRow site = t.bySite().stream().filter(s -> s.className().equals(leaf)).findFirst().orElseThrow();
         // Past Throwable.<init>, BaseException.<init>, LeafException.<init> and LeafException.of.
         assertEquals(HealthCollectorTest.class.getName() + ".makeTrouble", site.site());
@@ -352,6 +375,11 @@ class HealthCollectorTest {
         assertEquals(report.throwables().created(), t.get("created"));
         assertEquals((long) report.throwables().byClass().size(), t.get("classesFound"));
         assertEquals(1, list(t, "byClass").size(), "--top 1");
+        final Map<String, Object> firstClass = object(list(t, "byClass").getFirst());
+        final ClassRow top = report.throwables().byClass().getFirst();
+        assertEquals(top.firstNanos() - report.info().startNanos(), firstClass.get("firstOffsetNanos"));
+        assertEquals(top.lastNanos() - report.info().startNanos(), firstClass.get("lastOffsetNanos"));
+        assertTrue(((String) firstClass.get("last")).endsWith("Z"), firstClass.toString());
         assertEquals(1, list(t, "bySite").size(), "--top 1");
         assertEquals((long) ERRORS, map(t, "errors").get("java.lang.AssertionError"));
         assertTrue(Html.health(report, 3).contains("caused by System.gc()"));

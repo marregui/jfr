@@ -34,11 +34,11 @@ class RecordingSummaryTest {
                         new ThreadRef(4, "main")), List.of());
         // Two threads that share a name are two threads; the example does not depend on hash order.
         final int unknown = Nulls.INT_NULL;
-        assertEquals(List.of(new RecordingSummary.Family("main", 1, 1, unknown, unknown, unknown, unknown, "main"),
-                new RecordingSummary.Family("worker-N", 3, 3, unknown, unknown, unknown, unknown, "worker-10")),
+        assertEquals(List.of(new RecordingSummary.Family("main", 1, 1, 0, unknown, unknown, unknown, unknown, "main"),
+                new RecordingSummary.Family("worker-N", 3, 3, 0, unknown, unknown, unknown, unknown, "worker-10")),
                 RecordingSummary.threadFamilies(info, ThreadCensus.Result.UNKNOWN));
         assertEquals(List.of("Family", "Threads", "Seen", "Example"),
-                RecordingSummary.familyHeaders(ThreadCensus.Result.UNKNOWN));
+                RecordingSummary.familyHeaders(ThreadCensus.Result.UNKNOWN, List.of()));
     }
 
     @Test
@@ -51,11 +51,17 @@ class RecordingSummaryTest {
                 Set.of(pooled), null);
         final List<RecordingSummary.Family> families = RecordingSummary.threadFamilies(info, census);
         assertEquals(List.of("churn-N", "pool-N-thread-N"), families.stream().map(RecordingSummary.Family::name).toList());
-        // Neither the census nor ThreadStart/ThreadEnd covers a virtual thread.
-        assertArrayEquals(new Object[] {"churn-0", 1, 1, "—", "—", "—", "—", ""},
-                RecordingSummary.familyCells(families.getFirst(), census));
-        assertArrayEquals(new Object[] {"pool-1-thread-1", 1, 1, 0, 1, 0, 1, ""},
-                RecordingSummary.familyCells(families.get(1), census));
+        // Neither the census nor ThreadStart/ThreadEnd covers a virtual thread; the table says
+        // which dashes are virtual threads, so they do not read like a VM thread's.
+        assertEquals(List.of("Family", "Threads", "Seen", "Virtual", "At start", "Started", "Ended", "At end", "Example"),
+                RecordingSummary.familyHeaders(census, families));
+        assertArrayEquals(new Object[] {"churn-0", 1, 1, 1, "—", "—", "—", "—", ""},
+                RecordingSummary.familyCells(families.getFirst(), census, true));
+        assertArrayEquals(new Object[] {"pool-1-thread-1", 1, 1, "", 0, 1, 0, 1, ""},
+                RecordingSummary.familyCells(families.get(1), census, true));
+        // Without a virtual thread there is no such column.
+        assertEquals(List.of("Family", "Threads", "Seen", "At start", "Started", "Ended", "At end", "Example"),
+                RecordingSummary.familyHeaders(census, families.subList(1, 2)));
     }
 
     @Test
@@ -69,9 +75,9 @@ class RecordingSummaryTest {
                 Set.of(pooled), Set.of(pooled));
         final List<RecordingSummary.Family> families = RecordingSummary.threadFamilies(info, census);
         assertArrayEquals(new Object[] {"GC Thread#0", 1, 1, "—", "—", "—", "—", ""},
-                RecordingSummary.familyCells(families.getFirst(), census));
+                RecordingSummary.familyCells(families.getFirst(), census, false));
         assertArrayEquals(new Object[] {"pool-1-thread-1", 1, 1, 1, 0, 0, 1, ""},
-                RecordingSummary.familyCells(families.get(1), census));
+                RecordingSummary.familyCells(families.get(1), census, false));
     }
 
     @Test

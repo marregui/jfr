@@ -57,8 +57,8 @@ class StallReportTest {
                 + "is sampled in native code every ~571 ms, about 29 threads in native code sharing the sampler's "
                 + "one native slot per 20.0 ms period. Record with jdk.NativeMethodSample#period=1ms, the shortest "
                 + "the sampler takes, to see them from ~123 ms; shorter ones only blocking events can show"), r.unseen());
-        assertEquals("1.75 s", r.threads().getFirst().unseenBelow());
-        assertEquals("", r.threads().get(2).unseenBelow());
+        assertEquals("1.75 s", r.threads().getFirst().unseenBelow(10_000 * MS));
+        assertEquals("", r.threads().get(2).unseenBelow(10_000 * MS));
     }
 
     @Test
@@ -81,6 +81,9 @@ class StallReportTest {
                         + "on 1 of them"));
         assertTrue(report(20, summary(1, Sight.OWN_ABSENCE, 12_000, 51, 0)).unseen().getFirst()
                 .contains("is not seen at all"));
+        // The PER THREAD cell says the same: a dash, as for a thread seen too little to have a bound.
+        assertEquals("—", summary(2, Sight.NATIVE_SAMPLER, 12_000, 4_000, 4_000).unseenBelow(10_000 * MS));
+        assertEquals("10.0 s", summary(2, Sight.NATIVE_SAMPLER, 10_000, 4_000, 4_000).unseenBelow(10_000 * MS));
     }
 
     @Test
@@ -101,7 +104,7 @@ class StallReportTest {
                 + "620 ms: their silences are mostly the thread itself, parked or blocked where the sampler cannot "
                 + "see it, not the sampler's pace, so no sampling period changes that much; blocking events are what "
                 + "show their stalls"), r.unseen());
-        assertEquals("—", r.threads().get(2).unseenBelow());
+        assertEquals("—", r.threads().get(2).unseenBelow(10_000 * MS));
         assertTrue(report(20, summary(1, Sight.OWN_ABSENCE, 0, 0, 0)).unseen().getFirst()
                 .contains("is not seen at all"));
         assertEquals(List.of(), report(20, summary(1, Sight.CLEAR, 0, 0, 0)).unseen());

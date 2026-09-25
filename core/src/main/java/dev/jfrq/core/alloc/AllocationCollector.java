@@ -6,6 +6,7 @@ package dev.jfrq.core.alloc;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import dev.jfrq.core.coll.LongList;
 import dev.jfrq.core.coll.Nulls;
@@ -43,6 +44,9 @@ import jdk.jfr.consumer.RecordedEvent;
  * recording is reported as allocating 100 MB in that minute. Dropping the sample loses at
  * most the bytes between the previous sample and this one, which for a thread sampled at
  * hundreds of times a second is nothing, and for a thread sampled once is unknowable.
+ * A platform thread whose {@code jdk.ThreadStart} is in the file keeps its first sample:
+ * its lifetime began inside the recording, so the weight is all in the window, and
+ * dropping it lost most of what short-lived pool threads allocated.
  *
  * <p>A virtual thread loses its first sample too, and the report says how many and how
  * heavy they were ({@link AllocationReport.Dropped}). The JVM counts allocation per
@@ -59,10 +63,15 @@ import jdk.jfr.consumer.RecordedEvent;
  *
  * <p>Independently of either, {@code jdk.ThreadAllocationStatistics} (written at every
  * chunk boundary by the JDK's own settings) carries each thread's exact allocation
- * counter. For a thread seen at least twice, the difference between its last and first
- * counter is what it allocated in between; the report shows it next to the estimate, so
- * a reader knows how far the sampling is from the truth for the threads that matter.
- * A thread that started and ended between two counter events is never counted.
+ * counter. The difference between its last counter and its first is what the thread
+ * allocated in between, and a thread that started in the file had a counter of zero at its
+ * {@code jdk.ThreadStart}; the report shows that next to the estimate, so a reader knows how
+ * far the sampling is from the truth for the threads that matter. The estimate it is set
+ * against is the samples inside that same stretch, which is why every thread's sample times
+ * are kept (two longs a sample): set against the whole file, a pool thread started after the
+ * first chunk had its early allocation in the estimate and not in the counter, which read as
+ * an estimate 28 % high on a file whose samples were right. A thread that started and ended
+ * between two counter events is never counted.
  *
  * <p>The aggregation runs on primitive-valued maps and the counters on a flat list
  * (G-1.3, G-1.8); the {@code java.util} maps the report exposes are built once at the end.
@@ -74,13 +83,22 @@ public final class AllocationCollector implements JfrReader.Sink {
     public static final String OUTSIDE_TLAB = EventKinds.nameOf(EventKinds.OBJECT_ALLOCATION_OUTSIDE_TLAB);
     public static final String THREAD_STATISTICS = EventKinds.nameOf(EventKinds.THREAD_ALLOCATION_STATISTICS);
 
-    private static final Set<String> TYPES = Set.of(SAMPLE, IN_TLAB, OUTSIDE_TLAB, THREAD_STATISTICS);
+    public static final String THREAD_START = EventKinds.nameOf(EventKinds.THREAD_START);
 
-    /** Per thread, three longs at a stride of four: the smallest and largest counter seen, and how often. */
-    private static final int COUNTER_STRIDE = 4;
+    private static final Set<String> TYPES = Set.of(SAMPLE, IN_TLAB, OUTSIDE_TLAB, THREAD_STATISTICS, THREAD_START);
+
+    /**
+     * Per thread, at a stride of six: the smallest and largest counter seen, how often, when
+     * the first and the last were read, and when the thread started ({@code Nulls.LONG_NULL}
+     * when that is not in the file).
+     */
+    private static final int COUNTER_STRIDE = 6;
     private static final int COUNTER_MIN = 0;
     private static final int COUNTER_MAX = 1;
     private static final int COUNTER_SEEN = 2;
+    private static final int COUNTER_FIRST_TIME = 3;
+    private static final int COUNTER_LAST_TIME = 4;
+    private static final int COUNTER_STARTED = 5;
 
     private final Accumulator sampled = new Accumulator(true);
     /** TLAB events each stand for one buffer, so the first one carries no history. */
@@ -113,6 +131,7 @@ public final class AllocationCollector implements JfrReader.Sink {
             case EventKinds.OBJECT_ALLOCATION_OUTSIDE_TLAB ->
                     tlab.add(e, Events.longOr(e, Fields.ALLOCATION_SIZE, 0, interner), interner);
             case EventKinds.THREAD_ALLOCATION_STATISTICS -> counter(e);
+            case EventKinds.THREAD_START -> started(e);
             default -> {
             }
         }
@@ -128,8 +147,8 @@ public final class AllocationCollector implements JfrReader.Sink {
     }
 
     /**
-     * Events arrive in file order, which is chunk order, and the counter only grows, so the
-     * smallest and largest values seen are the first and last: no timestamps needed.
+     * The counter only grows, so the smallest value seen is the first reading and the largest
+     * the last, and their times say which stretch the difference covers.
      */
     private void counter(@Transient final RecordedEvent e) {
         final ThreadRef thread = Events.thread(e, Fields.THREAD, interner);
@@ -140,52 +159,110 @@ public final class AllocationCollector implements JfrReader.Sink {
         if (allocated < 0) {
             return;
         }
-        final int index = counterSlot.keyIndex(thread);
-        int base;
-        if (index < 0) {
-            base = (int) counterSlot.valueAtQuick(index);
-        } else {
-            base = counters.size();
-            counters.add(Long.MAX_VALUE);
-            counters.add(Long.MIN_VALUE);
-            counters.add(0);
-            counters.add(0);
-            counterSlot.putAt(index, thread, base);
+        counter(thread, Events.startNanos(e), allocated);
+    }
+
+    /** A counter reading whose fields are already read, for tests that build them by hand. */
+    void counter(final ThreadRef thread, final long time, final long allocated) {
+        final int base = counterSlot(thread);
+        // A thread that stopped allocating reads the same value again: the stretch still runs
+        // from the earliest reading of the smallest value to the latest of the largest.
+        final long min = counters.getQuick(base + COUNTER_MIN);
+        if (allocated < min || allocated == min && time < counters.getQuick(base + COUNTER_FIRST_TIME)) {
+            counters.setQuick(base + COUNTER_MIN, allocated);
+            counters.setQuick(base + COUNTER_FIRST_TIME, time);
         }
-        counters.setQuick(base + COUNTER_MIN, Math.min(counters.getQuick(base + COUNTER_MIN), allocated));
-        counters.setQuick(base + COUNTER_MAX, Math.max(counters.getQuick(base + COUNTER_MAX), allocated));
+        final long max = counters.getQuick(base + COUNTER_MAX);
+        if (allocated > max || allocated == max && time > counters.getQuick(base + COUNTER_LAST_TIME)) {
+            counters.setQuick(base + COUNTER_MAX, allocated);
+            counters.setQuick(base + COUNTER_LAST_TIME, time);
+        }
         counters.setQuick(base + COUNTER_SEEN, counters.getQuick(base + COUNTER_SEEN) + 1);
+    }
+
+    /** A thread that started in the file: its counter was zero then. */
+    private void started(@Transient final RecordedEvent e) {
+        final ThreadRef thread = interner.thread(e);
+        if (thread != null && !thread.isVirtual()) {
+            started(thread, Events.startNanos(e));
+        }
+    }
+
+    /** A {@code jdk.ThreadStart} whose fields are already read, for tests that build them by hand. */
+    void started(final ThreadRef thread, final long time) {
+        counters.setQuick(counterSlot(thread) + COUNTER_STARTED, time);
+    }
+
+    private int counterSlot(final ThreadRef thread) {
+        final int index = counterSlot.keyIndex(thread);
+        if (index < 0) {
+            return (int) counterSlot.valueAtQuick(index);
+        }
+        final int base = counters.size();
+        counters.add(Long.MAX_VALUE);
+        counters.add(Long.MIN_VALUE);
+        counters.add(0);
+        counters.add(Nulls.LONG_NULL);
+        counters.add(Nulls.LONG_NULL);
+        counters.add(Nulls.LONG_NULL);
+        counterSlot.putAt(index, thread, base);
+        return base;
     }
 
     @Override
     public void finish(final RecordingInfo info) {
-        sampled.dropFirsts();
         // A recording with sampled events is answered from them even if every thread had only one.
         final Accumulator chosen = sampled.events > 0 ? sampled : tlab;
         final String source = sampled.events > 0 ? SAMPLE : IN_TLAB + " + " + OUTSIDE_TLAB;
-        report = new AllocationReport(info, source, chosen.total, chosen.samples, chosen.events, countedByThread(),
-                toMap(chosen.byThread), toMap(chosen.byClass), toMap(chosen.bySite), toMaps(chosen.classByThread),
+        final Map<String, Long> counted = new HashMap<>();
+        final Map<String, Long> estimated = new HashMap<>();
+        counted(chosen, counted, estimated);
+        sampled.dropFirsts(this::startedInFile);
+        final Map<String, Long> byThread = toMap(chosen.byThread);
+        if (chosen.firsts == null) {
+            // The TLAB events' times are not read: their estimate is the whole file's.
+            for (final String name : counted.keySet()) {
+                estimated.put(name, byThread.getOrDefault(name, 0L));
+            }
+        }
+        report = new AllocationReport(info, source, chosen.total, chosen.samples, chosen.events, counted,
+                byThread, toMap(chosen.byClass), toMap(chosen.bySite), toMaps(chosen.classByThread),
                 toMaps(chosen.siteByThread), new AllocationReport.Support(toMap(chosen.countByThread),
                 toMap(chosen.countByClass), toMap(chosen.countBySite)),
-                new AllocationReport.Dropped(chosen.virtualFirsts, chosen.virtualFirstBytes));
+                new AllocationReport.Dropped(chosen.virtualFirsts, chosen.virtualFirstBytes), estimated);
     }
 
     /**
-     * Per thread name, what the JVM's counter grew by between its first and last event;
-     * threads seen once are left out. */
-    private Map<String, Long> countedByThread() {
-        final Map<String, Long> counted = new HashMap<>();
+     * Per thread name, what the JVM's counter grew by between its first reading, or the
+     * thread's start, and its last reading, into {@code counted}; and what the samples the
+     * estimate keeps say about that same stretch, into {@code estimated}. Called before
+     * {@link Accumulator#dropFirsts}, which forgets the sample times.
+     */
+    private void counted(final Accumulator chosen, final Map<String, Long> counted, final Map<String, Long> estimated) {
         for (int s = 0, n = counterSlot.slots(); s < n; s++) {
             if (!counterSlot.hasKeyAtSlot(s)) {
                 continue;
             }
+            final ThreadRef thread = counterSlot.keyAtSlot(s);
             final int base = (int) counterSlot.valueAtSlot(s);
-            if (counters.getQuick(base + COUNTER_SEEN) >= 2) {
-                counted.merge(counterSlot.keyAtSlot(s).name(),
-                        counters.getQuick(base + COUNTER_MAX) - counters.getQuick(base + COUNTER_MIN), Long::sum);
+            final long seen = counters.getQuick(base + COUNTER_SEEN);
+            final long started = counters.getQuick(base + COUNTER_STARTED);
+            if (seen == 0 || seen == 1 && started == Nulls.LONG_NULL) {
+                continue;
             }
+            final boolean fromStart = started != Nulls.LONG_NULL;
+            final long first = fromStart ? 0 : counters.getQuick(base + COUNTER_MIN);
+            counted.merge(thread.name(), counters.getQuick(base + COUNTER_MAX) - first, Long::sum);
+            estimated.merge(thread.name(), chosen.within(thread, fromStart,
+                    fromStart ? started : counters.getQuick(base + COUNTER_FIRST_TIME),
+                    counters.getQuick(base + COUNTER_LAST_TIME)), Long::sum);
         }
-        return counted;
+    }
+
+    /** Whether the thread started in the file, which makes its first sample honest. */
+    private boolean startedInFile(final ThreadRef thread) {
+        final int index = counterSlot.keyIndex(thread);
+        return index < 0 && counters.getQuick((int) counterSlot.valueAtQuick(index) + COUNTER_STARTED) != Nulls.LONG_NULL;
     }
 
     /** Available after {@link JfrReader#read}. */
@@ -237,7 +314,10 @@ public final class AllocationCollector implements JfrReader.Sink {
         final ObjLongHashMap<Stack> countBySite = new ObjLongHashMap<>(4096);
         final ObjObjHashMap<String, ObjLongHashMap<String>> classByThread = new ObjObjHashMap<>(64);
         final ObjObjHashMap<String, ObjLongHashMap<Stack>> siteByThread = new ObjObjHashMap<>(64);
-        /** Per thread, the earliest sample seen (delivery is file order, not time order). */
+        /**
+         * Per thread, the earliest sample seen (delivery is file order, not time order), and when
+         * the samples after it began and ended.
+         */
         private final ObjObjHashMap<ThreadRef, First> firsts;
 
         /** One thread's earliest sample, re-pointed when an earlier one turns up (G-3.1). */
@@ -247,6 +327,8 @@ public final class AllocationCollector implements JfrReader.Sink {
             String threadName;
             String cls;
             Stack site;
+            /** Every sample of the thread, time and weight, for the estimate over its counter's stretch. */
+            final LongList samples = new LongList(16);
 
             First of(final long time, final long bytes, final String threadName, final String cls, final Stack site) {
                 this.time = time;
@@ -281,14 +363,17 @@ public final class AllocationCollector implements JfrReader.Sink {
             add(bytes, threadName, className, site);
             if (firsts != null && thread != null) {
                 final int index = firsts.keyIndex(thread);
+                final First f;
                 if (index >= 0) {
-                    firsts.putAt(index, thread, new First().of(time, bytes, threadName, className, site));
+                    f = firsts.putAt(index, thread, new First().of(time, bytes, threadName, className, site));
                 } else {
-                    final First known = firsts.valueAtQuick(index);
-                    if (time < known.time) {
-                        known.of(time, bytes, threadName, className, site);
+                    f = firsts.valueAtQuick(index);
+                    if (time < f.time) {
+                        f.of(time, bytes, threadName, className, site);
                     }
                 }
+                f.samples.add(time);
+                f.samples.add(bytes);
             }
         }
 
@@ -311,13 +396,40 @@ public final class AllocationCollector implements JfrReader.Sink {
             return index < 0 ? maps.valueAtQuick(index) : maps.putAt(index, thread, new ObjLongHashMap<>(64));
         }
 
-        /** Takes every thread's first sample back out of the totals, counting the virtual ones. */
-        void dropFirsts() {
+        /**
+         * The weight of the thread's samples the estimate keeps that fall in {@code [from, to]}:
+         * all of them for a thread that started in the file, all but its earliest otherwise.
+         */
+        long within(final ThreadRef thread, final boolean startedInFile, final long from, final long to) {
+            final First f = firsts == null ? null : firsts.get(thread);
+            if (f == null) {
+                return 0;
+            }
+            long sum = 0;
+            boolean dropped = startedInFile;
+            for (int i = 0, n = f.samples.size(); i < n; i += 2) {
+                final long time = f.samples.getQuick(i);
+                if (!dropped && time == f.time) {
+                    dropped = true;
+                    continue;
+                }
+                if (time >= from && time <= to) {
+                    sum += f.samples.getQuick(i + 1);
+                }
+            }
+            return sum;
+        }
+
+        /**
+         * Takes every thread's first sample back out of the totals, counting the virtual ones,
+         * except a platform thread's that {@code startedInFile}: its history is all in the window.
+         */
+        void dropFirsts(final Predicate<ThreadRef> startedInFile) {
             if (firsts == null) {
                 return;
             }
             for (int s = 0, n = firsts.slots(); s < n; s++) {
-                if (!firsts.hasKeyAtSlot(s)) {
+                if (!firsts.hasKeyAtSlot(s) || startedInFile.test(firsts.keyAtSlot(s))) {
                     continue;
                 }
                 final First f = firsts.valueAtSlot(s);

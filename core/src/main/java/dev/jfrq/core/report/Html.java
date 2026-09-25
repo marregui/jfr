@@ -93,7 +93,7 @@ public final class Html {
                 "Worst");
         for (final StallReport.ThreadSummary t : shown) {
             p.row(t.thread().name(), t.samples(), Durations.formatOrDash(t.javaCadenceNanos()),
-                    Durations.formatOrDash(t.nativeCadenceNanos()), t.unseenBelow(), t.stalls(),
+                    Durations.formatOrDash(t.nativeCadenceNanos()), t.unseenBelow(report.info().span().duration()), t.stalls(),
                     Durations.format(t.stalledNanos()), Durations.format(t.worstNanos()));
         }
         p.tableEnd();
@@ -347,11 +347,11 @@ public final class Html {
         p.kv("Source", report.source());
         p.kv("Estimated allocation", Bytes.format(report.totalBytes()) + " over "
                 + Durations.format(report.info().duration()) + " = " + Bytes.rate(report.rate())
-                + " from " + report.samples() + " samples");
+                + " from " + report.samples() + " samples" + report.droppedNote());
         if (report.hasCounters()) {
             p.kv("JVM counters", Bytes.format(report.countedBytes()) + " on " + report.countedByThread().size()
-                    + (report.countedByThread().size() == 1 ? " thread" : " threads")
-                    + " seen at both ends of the file; the estimate for those is "
+                    + (report.countedByThread().size() == 1 ? " thread that has" : " threads that have")
+                    + " one; the estimate for those, over the same stretches, is "
                     + Bytes.format(report.estimatedOnCountedThreads()) + (report.isEstimateErrorMaterial()
                     ? String.format(Locale.ROOT, " (%+.0f%%)", report.estimateError() * 100) : "")
                     + (report.totalBytes() > 0
@@ -483,11 +483,11 @@ public final class Html {
             p.kv("Errors", HealthReport.counts(t.errors()));
         }
         if (t.samples() > 0) {
-            p.tableStart("Class", "Events", "Share", "Per second", "Example message");
+            p.tableStart("Class", "Events", "Share", "Per second", HealthReport.WHEN, "Example message");
             for (final HealthReport.ClassRow c : t.byClass().subList(0, Math.min(top, t.byClass().size()))) {
                 p.row(ClassNames.pretty(c.className()), c.samples(), pct(c.share()),
                         Double.isNaN(rate) ? "" : String.format(Locale.ROOT, "~%.1f", c.share() * rate),
-                        c.message() == null ? "" : c.message());
+                        HealthReport.when(c, r.info().startNanos()), c.message() == null ? "" : c.message());
             }
             p.tableEnd();
             p.para("By site: " + HealthReport.SITE_RULE);
@@ -534,9 +534,10 @@ public final class Html {
         final List<RecordingSummary.Family> families = RecordingSummary.threadFamilies(info, census);
         if (!families.isEmpty()) {
             p.h2("Threads (the names --thread matches)");
-            p.tableStart(RecordingSummary.familyHeaders(census).toArray(new String[0]));
+            p.tableStart(RecordingSummary.familyHeaders(census, families).toArray(new String[0]));
+            final boolean virtual = RecordingSummary.hasVirtual(families);
             for (final RecordingSummary.Family f : families) {
-                p.row(RecordingSummary.familyCells(f, census));
+                p.row(RecordingSummary.familyCells(f, census, virtual));
             }
             p.tableEnd();
         }

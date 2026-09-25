@@ -57,7 +57,7 @@ with `--json` after `--` gets standard output to itself: the dump's own lines (`
 | `settingsKnown` | whether the file carries its settings (`jdk.ActiveSetting`) |
 | `thresholded`, `throttled` | the event types whose threshold suppresses something, and the throttled ones |
 | `eventTypes[]` | `type`, `count`, `enabled`, `thresholdNanos`, `period` (as recorded, e.g. `"10 ms"`, `"everyChunk"`), `periodNanos`, `throttle` |
-| `threadFamilies[]` | `family` (`pool-N-thread-N`), `glob` (a `--thread` value that matches every thread of the family; a family of one gets its name escaped, which matches only it, while a wildcard can also reach another family's thread: `Netty-worker-*` matches `Netty-worker-main`), `threads`, `seen`, `aliveAtStart`, `started`, `ended`, `aliveAtEnd`, `example` |
+| `threadFamilies[]` | `family` (`pool-N-thread-N`), `glob` (a `--thread` value that matches every thread of the family; a family of one gets its name escaped, which matches only it, while a wildcard can also reach another family's thread: `Netty-worker-*` matches `Netty-worker-main`), `threads`, `seen`, `virtual` (how many are virtual threads: no census covers them, so their life counts are `null`), `aliveAtStart`, `started`, `ended`, `aliveAtEnd`, `example` |
 
 ## `stalls`
 
@@ -71,7 +71,7 @@ with `--json` after `--` gets standard output to itself: the dump's own lines (`
 | `warnings[]` | the `WARNING` lines |
 | `byVerdict[]` | `verdict`, `stalls`, `stalledNanos`, `worstNanos`, largest total first |
 | `threadsWithStalls`, `threadsWithoutStalls` | the counts behind `threads` |
-| `threads[]` | the threads that stalled, most stalled first: `thread`, `threadId`, `virtual`, `samples`, `javaCadenceNanos`, `nativeCadenceNanos`, `sight`, `unseenBelowNanos`, `stalls`, `stalledNanos`, `worstNanos` |
+| `threads[]` | the threads that stalled, most stalled first: `thread`, `threadId`, `virtual`, `samples`, `javaCadenceNanos`, `nativeCadenceNanos`, `sight`, `unseenBelowNanos` (the shortest unexplained stall the samples can show; one longer than the recording means none, which the text prints as a dash), `stalls`, `stalledNanos`, `worstNanos` |
 | `stallsFound`, `stalls[]` | the explained stalls, longest first: `thread`, `start`, `offsetNanos`, `durationNanos`, `verdict`, `evidence`, `detail`, `samples`, `stack` |
 | `unexplainedFound`, `unexplained[]` | the unexplained gaps, the same shape |
 | `pausesFound`, `pauses[]` | JVM-wide pauses at least the gap long: `start`, `offsetNanos`, `durationNanos`, `kind` (`GC`, `SAFEPOINT`), `detail` |
@@ -99,16 +99,16 @@ with `--json` after `--` gets standard output to itself: the dump's own lines (`
 | `gc` | `null` counts when `jdk.GarbageCollection` (or, for `oldCycles`, `jdk.OldGarbageCollection`) was not recorded; `collections`, `byCollector` and `byCause` (objects, most first; a G1 concurrent cycle, `G1Old`, is in `byCollector` but not in `byCause`), `oldCycles`, `pauseNanos`, `pauseShare`, `longestPauseNanos`, `gcTimeRatio`, `pauseTargetNanos`, `maxHeapBytes` |
 | `trends[]` | `series` (`Heap after GC`, `Resident set`, `Live threads`, `JVM CPU`, `Machine CPU`; one the recording has no events for is left out), `unit`, `points`, `start`, `end`, `min`, `max`, `mean`, `floorFirstThird`, `floorLastThird` (the lowest value in each; `null` under three points) |
 | `threadsStarted`, `threadsPeak` | threads started in the window, and the most alive at once since the JVM started |
-| `throwables` | `created` (exact, between the first and last `jdk.ExceptionStatistics`), `createdNanos` (that stretch), `perSecond`, `events` (`jdk.JavaExceptionThrow`; `null`, as are `classesFound` and `sitesFound`, when it was off), `throttle`, `errors` (`jdk.JavaErrorThrow` per class), `classesFound`, `byClass[]` (`class`, `events`, `share`, `perSecond`, `message`: one example), `sitesFound`, `bySite[]` (`site`, `class`, `events`, `share`, `stack`: from below the throwable's own construction) |
+| `throwables` | `created` (exact, between the first and last `jdk.ExceptionStatistics`), `createdNanos` (that stretch), `perSecond`, `events` (`jdk.JavaExceptionThrow`; `null`, as are `classesFound` and `sitesFound`, when it was off), `throttle`, `errors` (`jdk.JavaErrorThrow` per class), `classesFound`, `byClass[]` (`class`, `events`, `share`, `perSecond` (over the whole window), `first`, `firstOffsetNanos`, `medianOffsetNanos`, `last`, `lastOffsetNanos` (when the class's first, median and last were created: a start-up burst has its median near its first, a steady rate near the middle of the window), `message`: one example), `sitesFound`, `bySite[]` (`site`, `class`, `events`, `share`, `stack`: from below the throwable's own construction) |
 
 ## `alloc`
 
 | Field | |
 |---|---|
 | `warnings[]` | what to know before trusting the estimate |
-| `source`, `samples`, `events` | the event the estimate rests on, and how much of it |
+| `source`, `samples`, `events` | the event the estimate rests on, and how much of it: `samples` are the events kept, without the first sample of each thread already running when the recording began |
 | `estimatedBytes`, `bytesPerSecond` | the estimate |
-| `counted` | whether the JVM's own per-thread counters were in the file; when they were: `countedBytes`, `countedThreads`, `estimatedOnCountedThreads`, `estimateError` |
+| `counted` | whether the JVM's own per-thread counters were in the file; when they were: `countedBytes`, `countedThreads`, `estimatedOnCountedThreads`, `estimateError`, over the threads with a counter; `estimatedOnCountedThreads` is their estimate over the stretch each counter covers, from its first reading (or the thread's start) to its last, so the two compare like for like. A `threads[]` row's `countedBytes` is `null` unless that stretch holds 95 % of the row's `bytes` |
 | `threadsFound`, `classesFound`, `packagesFound`, `sitesFound` | how many rows each list had before `--top` (the last two with `--sites`) |
 | `threads[]` | `thread`, `bytes`, `countedBytes`, `bytesPerSecond`, `share`, `samples`, `topClasses[]` (`class`, `bytes`) |
 | `classes[]` | `class` (the JVM name, `[B` for `byte[]`), `bytes`, `bytesPerSecond`, `share`, `samples` |

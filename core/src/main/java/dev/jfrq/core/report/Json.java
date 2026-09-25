@@ -129,6 +129,11 @@ public final class Json {
             w.name("events").value(c.samples());
             w.name("share").value(c.share());
             w.name("perSecond").value(c.share() * t.rate());
+            w.name("first").value(iso(c.firstNanos()));
+            w.name("firstOffsetNanos").value(c.firstNanos() - r.info().startNanos());
+            w.name("medianOffsetNanos").value(c.medianNanos() - r.info().startNanos());
+            w.name("last").value(iso(c.lastNanos()));
+            w.name("lastOffsetNanos").value(c.lastNanos() - r.info().startNanos());
             w.name("message").value(c.message());
             w.end();
         }
@@ -186,6 +191,7 @@ public final class Json {
             w.name("glob").value(f.count() > 1 ? RecordingSummary.glob(f.example()) : RecordingSummary.literal(f.example()));
             w.name("threads").value(f.count());
             w.name("seen").value(f.seen());
+            w.name("virtual").value(f.virtual());
             w.name("aliveAtStart").value(intOrNull(f.aliveAtStart()));
             w.name("started").value(intOrNull(f.started()));
             w.name("ended").value(intOrNull(f.ended()));

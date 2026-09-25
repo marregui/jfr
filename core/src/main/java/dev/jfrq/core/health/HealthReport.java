@@ -13,6 +13,7 @@ import dev.jfrq.core.coll.Nulls;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.util.Bytes;
+import dev.jfrq.core.util.Durations;
 
 /**
  * What {@code health} found: what the JVM reported about itself as trouble, the garbage
@@ -60,6 +61,21 @@ public record HealthReport(RecordingInfo info, List<Finding> findings, Gc gc, Li
         }
         return sb.toString();
     }
+
+    /**
+     * When a class's throwables were created, as both renderers print it under {@link #WHEN}:
+     * {@code +5.111s, +5.972s, +605.594s} for the first, the median and the last, one offset when
+     * there was one. The per-second rate is over the whole window, so this is what tells a
+     * start-up burst from a steady trickle.
+     */
+    public static String when(final ClassRow c, final long startNanos) {
+        final String first = Durations.offset(c.firstNanos() - startNanos);
+        return c.firstNanos() == c.lastNanos() ? first : first + ", " + Durations.offset(c.medianNanos() - startNanos)
+                + ", " + Durations.offset(c.lastNanos() - startNanos);
+    }
+
+    /** The column {@link #when} fills. */
+    public static final String WHEN = "First, median, last";
 
     /** What both renderers say when no throwable is in the file. */
     public static final String NO_THROWS = "no jdk.JavaExceptionThrow events: none was created, or the event was off "
@@ -233,8 +249,13 @@ public record HealthReport(RecordingInfo info, List<Finding> findings, Gc gc, Li
      * @param share     of all the events
      * @param message   the message of the first event of the class, as an example; {@code null} when that
      *                  one had none
+     * @param firstNanos  when the first of them was created, epoch nanoseconds
+     * @param medianNanos when half of them had been: a start-up burst has it near the first, a
+     *                    steady rate near the middle of the window, whatever straggler comes last
+     * @param lastNanos   when the last was
      */
-    public record ClassRow(String className, long samples, double share, String message) {
+    public record ClassRow(String className, long samples, double share, String message, long firstNanos,
+                           long medianNanos, long lastNanos) {
     }
 
     /**

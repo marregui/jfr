@@ -85,12 +85,15 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
                     Sight.CLEAR, 0);
         }
 
-        /** The PER THREAD cell both renderers print: blank when nothing is hidden, a dash when nothing is seen. */
-        public String unseenBelow() {
+        /**
+         * The PER THREAD cell both renderers print: blank when nothing is hidden, a dash when nothing
+         * is seen, which a bound past the recording's length also means.
+         */
+        public String unseenBelow(final long spanNanos) {
             if (sight == Sight.CLEAR) {
                 return "";
             }
-            return unseenBelowNanos > 0 ? Durations.format(unseenBelowNanos) : "—";
+            return unseenBelowNanos > 0 && unseenBelowNanos <= spanNanos ? Durations.format(unseenBelowNanos) : "—";
         }
     }
 

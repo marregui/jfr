@@ -3,7 +3,9 @@
 
 package dev.jfrq.cli;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -95,14 +97,15 @@ final class Text {
             return "";
         }
         final StringBuilder sb = new StringBuilder("\nTHREADS (the names --thread matches)\n");
-        final List<String> headers = RecordingSummary.familyHeaders(census);
+        final List<String> headers = RecordingSummary.familyHeaders(census, families);
+        final boolean virtual = RecordingSummary.hasVirtual(families);
         final int[] numeric = new int[headers.size() - 2];
         for (int i = 0; i < numeric.length; i++) {
             numeric[i] = i + 1;
         }
         final TextTable table = new TextTable(headers.toArray(new String[0])).numeric(numeric);
         for (final RecordingSummary.Family f : families) {
-            table.row(RecordingSummary.familyCells(f, census));
+            table.row(RecordingSummary.familyCells(f, census, virtual));
         }
         sb.append(table.render("  "));
         return sb.toString();
@@ -185,11 +188,12 @@ final class Text {
             return sb.toString();
         }
         sb.append("\n  BY CLASS\n");
-        final TextTable classes = new TextTable("Class", "Events", "Share", "Per second", "Example message")
-                .numeric(1, 2, 3);
+        final TextTable classes = new TextTable("Class", "Events", "Share", "Per second", HealthReport.WHEN,
+                "Example message").numeric(1, 2, 3);
         for (final HealthReport.ClassRow c : t.byClass().subList(0, Math.min(top, t.byClass().size()))) {
             classes.row(ClassNames.pretty(c.className()), c.samples(), pct(c.share()),
                     Double.isNaN(rate) ? "" : String.format(Locale.ROOT, "~%.1f", c.share() * rate),
+                    HealthReport.when(c, r.info().startNanos()),
                     c.message() == null ? "" : c.message().replace('\n', ' '));
         }
         sb.append(classes.render("    "));
@@ -209,13 +213,14 @@ final class Text {
         for (final String w : r.warnings()) {
             sb.append("WARNING    ").append(w).append('\n');
         }
-        sb.append(String.format(Locale.ROOT, "%-10s %s (%d samples)\n", "Source", r.source(), r.samples()));
+        sb.append(String.format(Locale.ROOT, "%-10s %s (%d samples%s)\n", "Source", r.source(), r.samples(),
+                r.droppedNote()));
         sb.append(String.format(Locale.ROOT, "%-10s %s over %s = %s\n", "Estimate", Bytes.format(r.totalBytes()),
                 Durations.format(r.info().duration()), Bytes.rate(r.rate())));
         if (r.hasCounters()) {
-            sb.append(String.format(Locale.ROOT, "%-10s %s by the JVM's own counters on the %d %s seen at both ends "
-                    + "of the file; the estimate for those is %s%s%s\n", "Counted", Bytes.format(r.countedBytes()),
-                    r.countedByThread().size(), r.countedByThread().size() == 1 ? "thread" : "threads",
+            sb.append(String.format(Locale.ROOT, "%-10s %s by the JVM's own counters on the %d %s one; the "
+                    + "estimate for those, over the same stretches, is %s%s%s\n", "Counted", Bytes.format(r.countedBytes()),
+                    r.countedByThread().size(), r.countedByThread().size() == 1 ? "thread that has" : "threads that have",
                     Bytes.format(r.estimatedOnCountedThreads()), errorNote(r), coverageNote(r)));
         }
         if (r.samples() == 0) {
@@ -301,14 +306,23 @@ final class Text {
         return "  Packages " + sb + "  (--app PREFIX ranks by the innermost frame in one of them instead)\n";
     }
 
+    /** A recording by its file name, or by its path as given when the other side has the same name. */
+    private static Object label(final RecordingInfo info, final boolean path) {
+        return path ? info.file() : info.file().getFileName();
+    }
+
     static String allocDiff(final AllocationDiff d, final int top, final boolean sites, final SiteKey key) {
         final StringBuilder sb = new StringBuilder();
-        sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s\n", "Baseline", d.baseline().info().file().getFileName(),
+        // Two files of one name, from two runs' directories, are told apart by their paths.
+        final Path baseline = d.baseline().info().file();
+        final Path current = d.current().info().file();
+        final boolean sameName = baseline.getFileName().equals(current.getFileName()) && !baseline.equals(current);
+        sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s\n", "Baseline", label(d.baseline().info(), sameName),
                 Durations.format(d.baseline().info().duration()), Bytes.rate(d.baseline().rate())));
         for (final String w : d.baseline().info().warnings()) {
             sb.append("WARNING    baseline: ").append(w).append('\n');
         }
-        sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s\n", "Current", d.current().info().file().getFileName(),
+        sb.append(String.format(Locale.ROOT, "%-10s %s  %s  %s\n", "Current", label(d.current().info(), sameName),
                 Durations.format(d.current().info().duration()), Bytes.rate(d.current().rate())));
         for (final String w : d.current().info().warnings()) {
             sb.append("WARNING    current: ").append(w).append('\n');
@@ -586,7 +600,7 @@ final class Text {
             final double span = Math.max(1, r.info().span().duration());
             for (final StallReport.ThreadSummary t : shown) {
                 summary.row(t.thread().name(), t.samples(), Durations.formatOrDash(t.javaCadenceNanos()),
-                        Durations.formatOrDash(t.nativeCadenceNanos()), t.unseenBelow(), t.stalls(),
+                        Durations.formatOrDash(t.nativeCadenceNanos()), t.unseenBelow(r.info().span().duration()), t.stalls(),
                         Durations.format(t.stalledNanos()), pct(t.stalledNanos() / span),
                         Durations.format(t.worstNanos()));
             }
@@ -691,11 +705,21 @@ final class Text {
     /**
      * Thread names, capped: a lock on a hundred-thread server listed every distinct waiter
      * on one line, 3,630 characters of it, and the count is the information a reader wants.
+     * Threads of one pool are one entry, {@code ForkJoinPool.commonPool-worker-N* (11 threads)},
+     * named as {@code info} names the family: four of its workers by name made a 251-character
+     * row and still said "+7 more".
      */
     static String names(final Set<ThreadRef> threads) {
-        final List<String> names = new ArrayList<>(threads.size());
+        final Map<String, List<String>> families = new LinkedHashMap<>();
         for (final ThreadRef t : threads) {
-            names.add(t.name());
+            families.computeIfAbsent(RecordingSummary.family(t.name()), _ -> new ArrayList<>()).add(t.name());
+        }
+        final List<String> names = new ArrayList<>(families.size());
+        for (final Map.Entry<String, List<String>> f : families.entrySet()) {
+            final List<String> members = f.getValue();
+            names.add(members.size() == 1 ? members.getFirst()
+                    : (f.getKey().equals(members.getFirst()) ? f.getKey() : f.getKey() + "*")
+                            + " (" + members.size() + " threads)");
         }
         return capped(names);
     }

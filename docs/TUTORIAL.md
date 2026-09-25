@@ -322,9 +322,9 @@ $ netty-demo --scenario clean --duration 15s --out demo-clean.jfr
 
 $ jfrq alloc demo-alloc.jfr --top 4
 Recording  demo-alloc.jfr  15.1 s  starting 2026-09-24T10:53:21.774585Z
-Source     jdk.ObjectAllocationSample (14636 samples)
+Source     jdk.ObjectAllocationSample (14636 samples; the first sample of each of 5 threads already running when the recording began is left out, as its weight reaches back before it)
 Estimate   422 GB over 15.1 s = 28.0 GB/s
-Counted    424 GB by the JVM's own counters on the 15 threads seen at both ends of the file; the estimate for those is 422 GB (-0%), 100.0% of the estimate above
+Counted    424 GB by the JVM's own counters on the 15 threads that have one; the estimate for those, over the same stretches, is 422 GB (-0%), 100.0% of the estimate above
 
 BY THREAD
   Thread              Bytes  Counted       Rate  Share  Samples  Top classes

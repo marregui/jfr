@@ -101,7 +101,7 @@ class ThreadCensusTest {
         assertNull(noLives.result().started());
         assertEquals("platform threads: 1 alive at start, 2 alive at end", RecordingSummary.lives(noLives.result()));
         assertEquals(List.of("Family", "Threads", "Seen", "At start", "At end", "Example"),
-                RecordingSummary.familyHeaders(noLives.result()));
+                RecordingSummary.familyHeaders(noLives.result(), List.of()));
 
         // One census only, near the end: it is the end's, and every start and end in the file counts.
         final ThreadCensus late = new ThreadCensus();

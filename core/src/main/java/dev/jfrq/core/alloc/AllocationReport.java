@@ -29,8 +29,8 @@ import dev.jfrq.core.util.Bytes;
  * @param samples    number of allocation events in the estimate
  * @param events     number of allocation events seen, including each thread's discarded first sample
  * @param countedByThread per thread name, what the JVM's own counter ({@code jdk.ThreadAllocationStatistics})
- *                   grew by between the first and last time the thread was seen; only threads
- *                   seen at least twice, so a thread that lived between two counter events is absent
+ *                   grew by between its first reading, or the thread's start, and its last; a
+ *                   thread that lived between two counter events is absent
  * @param byThread   estimated bytes per thread name
  * @param byClass    estimated bytes per allocated class (JVM name)
  * @param bySite     estimated bytes per allocation stack
@@ -39,6 +39,9 @@ import dev.jfrq.core.util.Bytes;
  * @param support    how many samples stand behind each row: a rate built on a handful of
  *                   them is noise, and a percentage printed next to it reads as a finding
  * @param virtualFirsts the first samples of virtual threads left out of the estimate; see {@link #warnings()}
+ * @param estimatedWhileCounted per name in {@code countedByThread}, the estimate over the same stretch as
+ *                   the counter, so the two compare like for like; {@code null} for the whole-file
+ *                   estimate of those names, which is what a report built by hand has
  */
 public record AllocationReport(
         RecordingInfo info,
@@ -53,7 +56,35 @@ public record AllocationReport(
         Map<String, Map<String, Long>> classByThread,
         Map<String, Map<Stack, Long>> siteByThread,
         Support support,
-        Dropped virtualFirsts) {
+        Dropped virtualFirsts,
+        Map<String, Long> estimatedWhileCounted) {
+
+    /**
+     * A thread's row shows its counter only when the stretch the counter covers holds this
+     * much of the row's estimate: set beside the whole-file estimate, the counter of a pool
+     * thread started after the first reading showed 0 against 212 MB.
+     */
+    static final double ROW_COVERED = 0.95;
+
+    public AllocationReport {
+        if (estimatedWhileCounted == null) {
+            final Map<String, Long> whole = new HashMap<>(countedByThread.size() * 2);
+            for (final String thread : countedByThread.keySet()) {
+                whole.put(thread, byThread.getOrDefault(thread, 0L));
+            }
+            estimatedWhileCounted = whole;
+        }
+    }
+
+    /** A report whose estimate over the counters' stretches is the whole file's, as one built by hand. */
+    public AllocationReport(final RecordingInfo info, final String source, final long totalBytes, final long samples,
+            final long events, final Map<String, Long> countedByThread, final Map<String, Long> byThread,
+            final Map<String, Long> byClass, final Map<Stack, Long> bySite,
+            final Map<String, Map<String, Long>> classByThread, final Map<String, Map<Stack, Long>> siteByThread,
+            final Support support, final Dropped virtualFirsts) {
+        this(info, source, totalBytes, samples, events, countedByThread, byThread, byClass, bySite, classByThread,
+                siteByThread, support, virtualFirsts, null);
+    }
 
     /** A report with no virtual-thread samples, or from events that have no history to drop. */
     public AllocationReport(final RecordingInfo info, final String source, final long totalBytes, final long samples,
@@ -62,7 +93,7 @@ public record AllocationReport(
             final Map<String, Map<String, Long>> classByThread, final Map<String, Map<Stack, Long>> siteByThread,
             final Support support) {
         this(info, source, totalBytes, samples, events, countedByThread, byThread, byClass, bySite, classByThread,
-                siteByThread, support, Dropped.NONE);
+                siteByThread, support, Dropped.NONE, null);
     }
 
     /**
@@ -133,6 +164,20 @@ public record AllocationReport(
                 + Bytes.format(virtualFirsts.bytes());
     }
 
+    /**
+     * {@code ; the first sample of each of 103 threads already running when the recording began
+     * is left out, …}, or empty: why {@link #samples()} is short of {@link #events()} for platform
+     * threads. The virtual threads' first samples have a warning of their own.
+     */
+    public String droppedNote() {
+        final long platform = events - samples - virtualFirsts.samples();
+        if (platform <= 0) {
+            return "";
+        }
+        return "; the first sample of " + (platform == 1 ? "1 thread" : "each of " + platform + " threads")
+                + " already running when the recording began is left out, as its weight reaches back before it";
+    }
+
     /** The virtual-thread warning around what was left out, said once however many recordings it covers. */
     static String virtualWarning(final String counts) {
         return "allocation on virtual threads is under-counted, and can still be over-counted: " + counts
@@ -164,11 +209,14 @@ public record AllocationReport(
         return total;
     }
 
-    /** The estimate restricted to the threads that have a counter, so the two compare like for like. */
+    /**
+     * The estimate restricted to the threads that have a counter, and to the stretch each
+     * counter covers, so the two compare like for like.
+     */
     public long estimatedOnCountedThreads() {
         long total = 0;
-        for (final String thread : countedByThread.keySet()) {
-            total += byThread.getOrDefault(thread, 0L);
+        for (final long b : estimatedWhileCounted.values()) {
+            total += b;
         }
         return total;
     }
@@ -207,9 +255,15 @@ public record AllocationReport(
         return countedBytes() > 0 && estimatedOnCountedThreads() >= totalBytes / 100;
     }
 
-    /** The JVM's counter for a thread, when it was seen at least twice. */
+    /**
+     * The JVM's counter for a thread's row, when the stretch it covers holds nearly all the
+     * row's estimate ({@link #ROW_COVERED}); otherwise the two would not be about the same bytes.
+     */
     public Optional<Long> counted(final String thread) {
-        return Optional.ofNullable(countedByThread.get(thread));
+        final Long counted = countedByThread.get(thread);
+        final long whole = byThread.getOrDefault(thread, 0L);
+        return counted == null || estimatedWhileCounted.getOrDefault(thread, 0L) < ROW_COVERED * whole
+                ? Optional.empty() : Optional.of(counted);
     }
 
     public double rate(final long bytes) {

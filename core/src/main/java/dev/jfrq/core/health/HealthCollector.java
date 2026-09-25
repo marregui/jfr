@@ -88,8 +88,8 @@ public final class HealthCollector implements JfrReader.Sink {
     private final Points throwablesCreated = new Points();
     private long peakThreads = Nulls.LONG_NULL;
 
-    private final ObjLongHashMap<String> byClass = new ObjLongHashMap<>(64);
-    private final ObjObjHashMap<String, String> messages = new ObjObjHashMap<>(64);
+    /** Per throwable class, when each was created, and an example message. */
+    private final ObjObjHashMap<String, Thrown> byClass = new ObjObjHashMap<>(64);
     /** Site rows by site and class, with the first stack seen at each. */
     private final ObjObjHashMap<String, Site> bySite = new ObjObjHashMap<>(64);
     /** A stack's site row, resolved once per distinct stack: the construction frames name the class. */
@@ -218,16 +218,35 @@ public final class HealthCollector implements JfrReader.Sink {
         samples++;
         final String raw = Events.className(e, Fields.THROWN_CLASS, interner);
         final String cls = raw == null ? "?" : raw;
+        final long time = Events.startNanos(e);
         if (cls.equals(OUT_OF_MEMORY)) {
-            when(Finding.Kind.OUT_OF_MEMORY, Events.startNanos(e));
+            when(Finding.Kind.OUT_OF_MEMORY, time);
         }
-        if (byClass.increment(cls, 1) == 1) {
+        final int index = byClass.keyIndex(cls);
+        if (index < 0) {
+            byClass.valueAtQuick(index).times.add(time);
+        } else {
             final String message = Events.stringOr(e, Fields.MESSAGE, null, interner);
-            if (message != null) {
-                messages.put(cls, message.length() > MESSAGE_CHARS ? message.substring(0, MESSAGE_CHARS) + "…" : message);
-            }
+            byClass.putAt(index, cls, new Thrown(time, message == null || message.length() <= MESSAGE_CHARS ? message
+                    : message.substring(0, MESSAGE_CHARS) + "…"));
         }
         site(stack, cls).samples++;
+    }
+
+    /**
+     * One throwable class so far. A burst at start-up and a steady trickle differ only in the
+     * times: the first and last alone do not tell them apart when one straggler comes late.
+     */
+    private static final class Thrown {
+        /** Creation times, in file order until {@link #classRows} sorts them. */
+        final LongList times = new LongList(16);
+        /** The first event's message, as an example; {@code null} when it had none. */
+        final String message;
+
+        Thrown(final long time, final String message) {
+            times.add(time);
+            this.message = message;
+        }
     }
 
     /** The first characters of a message kept as its class's example. */
@@ -344,9 +363,10 @@ public final class HealthCollector implements JfrReader.Sink {
     /** The conditions the JVM reports about itself, in {@link Finding.Kind} order. */
     private List<Finding> findings(final RecordingInfo info, final Gc gc, final Throwables throwables) {
         final List<Finding> out = new ArrayList<>();
-        final long oom = byClass.get(OUT_OF_MEMORY);
+        final Thrown thrownOom = byClass.get(OUT_OF_MEMORY);
+        final long oom = thrownOom == null ? 0 : thrownOom.times.size();
         if (oom > 0) {
-            final String message = messages.get(OUT_OF_MEMORY);
+            final String message = thrownOom.message;
             add(out, info, Finding.Kind.OUT_OF_MEMORY, oom, oom + " OutOfMemoryError created", (message == null ? ""
                     : "\"" + message + "\" ") + "(JFR records one only when Java code constructs it, as for direct "
                     + "buffer memory; the JVM's own, for the heap or metaspace, never)");
@@ -438,9 +458,12 @@ public final class HealthCollector implements JfrReader.Sink {
         final List<ClassRow> rows = new ArrayList<>(byClass.size());
         for (int s = 0, n = byClass.slots(); s < n; s++) {
             if (byClass.hasKeyAtSlot(s)) {
-                final String cls = byClass.keyAtSlot(s);
-                final long count = byClass.valueAtSlot(s);
-                rows.add(new ClassRow(cls, count, samples == 0 ? 0 : (double) count / samples, messages.get(cls)));
+                final Thrown t = byClass.valueAtSlot(s);
+                final LongList times = t.times;
+                times.sort();
+                final int count = times.size();
+                rows.add(new ClassRow(byClass.keyAtSlot(s), count, samples == 0 ? 0 : (double) count / samples,
+                        t.message, times.getQuick(0), times.getQuick(count / 2), times.getQuick(count - 1)));
             }
         }
         rows.sort(Comparator.comparingLong(ClassRow::samples).reversed().thenComparing(ClassRow::className));

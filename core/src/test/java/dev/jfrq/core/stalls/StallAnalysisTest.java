@@ -402,7 +402,7 @@ class StallAnalysisTest {
         final StallReport.ThreadSummary t = r.threads().getFirst();
         assertEquals(StallReport.Sight.NATIVE_SAMPLER, t.sight());
         assertEquals(300 * MS, t.unseenBelowNanos());
-        assertEquals("300 ms", t.unseenBelow());
+        assertEquals("300 ms", t.unseenBelow(r.info().span().duration()));
         assertTrue(r.unseen().getFirst().startsWith("on 1 of 1 threads, a stall no event explains is seen only from "
                 + "300 ms: each is sampled in native code every ~100 ms"), r.unseen().toString());
     }
@@ -769,6 +769,36 @@ class StallAnalysisTest {
         final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
                 List.of(lived(samples, List.of(earlier), 0, 10_000)), List.of());
         assertTrue(r.stalls().stream().noneMatch(st -> st.verdict() == Verdict.UNEXPLAINED), r.stalls().toString());
+    }
+
+    @Test
+    void aWorkerIdleOnAQueueTheCollectorMovedIsNotUnexplained() {
+        // Field case: a pool worker parked on its own queue for all but 2 s of a four-minute
+        // silence, but the collector moved the queue twice, so the parks name three addresses
+        // and none covers half the silence alone. Grouped by instance it read as a 3m52s
+        // UNEXPLAINED stall, the worst in the report; by stack it is the worker at rest.
+        final List<Block> parks = List.of(
+                blockWith(100, 2_900, BlockKind.PARK, "on q@1", NO_WORK),
+                blockWith(2_950, 5_900, BlockKind.PARK, "on q@2", NO_WORK),
+                blockWith(5_950, 8_900, BlockKind.PARK, "on q@3", NO_WORK));
+        final List<Sample> samples = idle(9_000, 9_100, 50);
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(samples, parks, 0, 9_100)), List.of());
+        assertTrue(r.stalls().stream().noneMatch(st -> st.verdict() == Verdict.UNEXPLAINED), r.stalls().toString());
+
+        // Short waits for a result from one place, on instances that keep moving, each below the
+        // gap: together they are the silence's explanation, named by the lock's class.
+        final List<Block> waits = new ArrayList<>();
+        for (int i = 0; i < 178; i++) {
+            waits.add(blockWith(i * 50L, i * 50L + 40, BlockKind.PARK, "on q@" + (i % 3), AWAITING_RESULT));
+        }
+        final StallReport w = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(samples, waits, 0, 9_100)), List.of());
+        assertEquals(1, w.stalls().size(), w.stalls().toString());
+        final Stall silence = w.stalls().getFirst();
+        assertEquals(Verdict.PARKED, silence.verdict());
+        assertEquals(Stall.Evidence.SILENCE, silence.evidence());
+        assertTrue(silence.detail().startsWith("178 × parked on q;"), silence.detail());
     }
 
     @Test

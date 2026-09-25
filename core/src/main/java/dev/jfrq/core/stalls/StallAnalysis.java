@@ -1181,19 +1181,29 @@ public final class StallAnalysis {
     private record Explanation(Verdict verdict, String detail, Stack stack, Interval extent, long stopped) {
     }
 
-    /** Coverage of one (kind, detail) group of blocks over a candidate interval; reused across candidates. */
+    /**
+     * Coverage of one group of blocks over a candidate interval: the lock waits from one stack,
+     * or the I/O (and the lock waits without a stack) of one kind and detail. Reused across
+     * candidates.
+     */
     private static final class Group {
         BlockKind kind;
         String detail;
+        /** Grouped by stack, so {@link #detail} names only the first lock seen there. */
+        boolean byStack;
+        /** A stack group whose blocks named more than one lock instance. */
+        boolean instances;
         long overlap;
         long count;
         long bytes;
         /** The longest block in the group: its stack stands for the group. */
         Block representative;
 
-        Group of(final BlockKind kind, final String detail) {
+        Group of(final BlockKind kind, final String detail, final boolean byStack) {
             this.kind = kind;
             this.detail = detail;
+            this.byStack = byStack;
+            this.instances = false;
             this.overlap = 0;
             this.count = 0;
             this.bytes = 0;
@@ -1219,6 +1229,8 @@ public final class StallAnalysis {
         private final ObjList<Group> groups = new ObjList<>();
         private final ObjList<Group> pool = new ObjList<>();
         private final ObjObjHashMap<String, Group>[] groupByDetail;
+        /** Lock waits by stack: identity, since the interner makes one {@code Stack} per distinct stack. */
+        private final IdentityObjObjHashMap<Stack, Group> groupByStack = new IdentityObjObjHashMap<>(16);
 
         @SuppressWarnings({"unchecked", "rawtypes"}) // an array of a generic type has no other spelling
         Windows(final ObjList<Pause> pauses) {
@@ -1279,9 +1291,15 @@ public final class StallAnalysis {
         }
 
         /**
-         * Blocks are grouped by kind and detail, which for I/O is the peer or the path and
-         * not the byte count, so that many short reads from one peer add up to one answer.
-         * Coverage together is the union of the blocks, so a block inside another counts once.
+         * I/O blocks are grouped by kind and detail, which is the peer or the path and not the
+         * byte count, so that many short reads from one peer add up to one answer. Lock waits
+         * are grouped by stack, not by the lock instance their detail names: the instance is
+         * an address, and the collector moves an object it parks on, so a worker idle on one
+         * queue for four minutes named three addresses, none of them covering half, and read
+         * as unexplained. A stack is one place in the code waiting for one kind of thing,
+         * which is the answer a silence needs. Lock waits without a stack fall back to the
+         * detail. Coverage together is the union of the blocks, so a block inside another
+         * counts once.
          */
         private Explanation explainByBlocks(final Interval interval, final long minCover, final boolean together) {
             clearGroups();
@@ -1305,7 +1323,7 @@ public final class StallAnalysis {
                 }
                 coveredTo = Math.max(coveredTo, end);
                 count++;
-                final Group g = group(b.kind(), b.detail());
+                final Group g = group(b);
                 g.overlap += overlap;
                 g.count++;
                 g.bytes += b.bytes();
@@ -1322,7 +1340,8 @@ public final class StallAnalysis {
             }
             if (best != null && (together ? union : best.overlap) >= minCover) {
                 final Block rep = best.representative;
-                final String detail = best.count > 1 ? best.count + " × " + describe(rep, best.bytes) : describe(rep);
+                final String one = best.instances ? describe(rep, withoutInstance(rep.detail())) : describe(rep, best.bytes);
+                final String detail = best.count > 1 ? best.count + " × " + one : one;
                 // Named only when the largest group needed them: then they are part of the answer.
                 final long others = best.overlap < minCover ? count - best.count : 0;
                 return new Explanation(verdictOf(rep.kind()), others == 0 ? detail
@@ -1332,17 +1351,31 @@ public final class StallAnalysis {
             return null;
         }
 
-        private Group group(final BlockKind kind, final String detail) {
+        private Group group(final Block b) {
+            final BlockKind kind = b.kind();
             // A block without a detail groups under the literal "null", as the old string key did.
-            final String key = detail == null ? "null" : detail;
+            final String key = b.detail() == null ? "null" : b.detail();
+            if (!kind.isIo() && kind != BlockKind.SLEEP && b.stack().depth() > 0) {
+                final int index = groupByStack.keyIndex(b.stack());
+                if (index < 0) {
+                    final Group g = groupByStack.valueAtQuick(index);
+                    g.instances |= !g.detail.equals(key);
+                    return g;
+                }
+                return groupByStack.putAt(index, b.stack(), next(kind, key, true));
+            }
             final ObjObjHashMap<String, Group> byDetail = groupByDetail[kind.ordinal()];
             final int index = byDetail.keyIndex(key);
             if (index < 0) {
                 return byDetail.valueAtQuick(index);
             }
+            return byDetail.putAt(index, key, next(kind, key, false));
+        }
+
+        private Group next(final BlockKind kind, final String key, final boolean byStack) {
             final Group g = groups.size() < pool.size() ? pool.getQuick(groups.size()) : allocate();
-            groups.add(g.of(kind, key));
-            return byDetail.putAt(index, key, g);
+            groups.add(g.of(kind, key, byStack));
+            return g;
         }
 
         private Group allocate() {
@@ -1352,10 +1385,19 @@ public final class StallAnalysis {
         }
 
         private void clearGroups() {
+            boolean byStack = false;
             for (int i = 0, n = groups.size(); i < n; i++) {
                 final Group g = groups.getQuick(i);
-                groupByDetail[g.kind.ordinal()].remove(g.detail);
+                if (g.byStack) {
+                    byStack = true;
+                } else {
+                    groupByDetail[g.kind.ordinal()].remove(g.detail);
+                }
                 g.representative = null;
+            }
+            // The identity table has no delete; it holds only this lookup's stacks, so it stays small.
+            if (byStack) {
+                groupByStack.clear();
             }
             groups.clear();
         }
@@ -1511,11 +1553,29 @@ public final class StallAnalysis {
         return describe(b, b.bytes());
     }
 
+    /**
+     * A lock's detail without its instance: {@code on java.util.concurrent.SynchronousQueue$Transferer}
+     * for {@code on java.util.concurrent.SynchronousQueue$Transferer@441d01070}.
+     */
+    static String withoutInstance(final String detail) {
+        final int at = detail.lastIndexOf('@');
+        return at < 0 ? detail : detail.substring(0, at);
+    }
+
     /** {@link #describe(Block)} with the byte count of a whole group of I/O blocks. */
     static String describe(final Block b, final long bytes) {
+        return describe(b, b.detail(), bytes);
+    }
+
+    /** {@link #describe(Block)} naming the lock by {@code detail}: its class, for a group of several instances. */
+    static String describe(final Block b, final String detail) {
+        return describe(b, detail, b.bytes());
+    }
+
+    private static String describe(final Block b, final String detail, final long bytes) {
         final StringBuilder sb = new StringBuilder(b.kind().label());
-        if (b.detail() != null && !b.detail().isEmpty()) {
-            sb.append(' ').append(b.detail());
+        if (detail != null && !detail.isEmpty()) {
+            sb.append(' ').append(detail);
         }
         if (b.kind().isIo() && bytes > 0) {
             sb.append(" (").append(Bytes.format(bytes)).append(')');

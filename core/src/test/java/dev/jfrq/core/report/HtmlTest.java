@@ -283,8 +283,8 @@ class HtmlTest {
                 new AllocationReport.Support(Map.of("worker", 7L), Map.of("[B", 7L), Map.of(STACK, 7L)));
         final String html = Html.alloc(a, 10, true, SiteKey.culpritMethod());
         assertTrue(html.contains("By thread"));
-        assertTrue(html.contains("<dt>JVM counters</dt><dd>950 B on 1 thread seen at both ends of the file; "
-                + "the estimate for those is 1.00 KB (+5%), 100.0% of the estimate above</dd>"), html);
+        assertTrue(html.contains("<dt>JVM counters</dt><dd>950 B on 1 thread that has one; the estimate for those, over the "
+                + "same stretches, is 1.00 KB (+5%), 100.0% of the estimate above</dd>"), html);
         assertTrue(html.contains("<td class=\"n\">950 B</td>"), html);
         assertTrue(html.contains("By class"));
         assertTrue(html.contains("By site"));

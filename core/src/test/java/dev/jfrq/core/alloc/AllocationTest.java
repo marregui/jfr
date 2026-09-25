@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -123,6 +124,54 @@ class AllocationTest {
         assertEquals(1, r.warnings().size());
         assertTrue(r.warnings().getFirst().contains("2 first samples of virtual threads, 5.00 MB, not counted"),
                 r.warnings().getFirst());
+    }
+
+    @Test
+    void theCounterIsSetAgainstTheSamplesOfItsOwnStretch() {
+        // Field case: counters are read at chunk ends. A pool thread that started after the first
+        // chunk and allocated before its first reading had those bytes in the estimate and not in
+        // its counter; set against the whole file that read as an estimate 28 % high.
+        final ThreadRef steady = new ThreadRef(1, "steady");
+        final ThreadRef late = new ThreadRef(2, "late");
+        final ThreadRef gone = new ThreadRef(3, "gone");
+        final AllocationCollector c = new AllocationCollector();
+        // Running all along, read at both ends: its first sample dropped, one before the first
+        // reading kept in the estimate but outside the counter's stretch.
+        c.sample(steady, 0, 50, "[B", SITE_A);
+        c.sample(steady, S / 2, 70, "[B", SITE_A);
+        c.counter(steady, S, 1_000);
+        c.sample(steady, 2 * S, 3_000, "[B", SITE_A);
+        c.counter(steady, 10 * S, 4_000);
+        // Started at 1 s, first read at 5 s: its counter was zero at its start, and its first
+        // sample, all of it in the window, is kept.
+        c.started(late, S);
+        c.sample(late, 2 * S, 200, "[B", SITE_A);
+        c.sample(late, 3 * S, 100, "[B", SITE_A);
+        c.counter(late, 5 * S, 300);
+        c.counter(late, 10 * S, 300);
+        // Read twice, then allocated a lot past its last reading.
+        c.counter(gone, 0, 0);
+        c.sample(gone, S, 100, "[B", SITE_B);
+        c.sample(gone, 3 * S, 100, "[B", SITE_B);
+        c.counter(gone, 4 * S, 100);
+        c.sample(gone, 6 * S, 900, "[B", SITE_B);
+        c.finish(info("a.jfr", 10));
+        final AllocationReport r = c.report();
+
+        assertEquals(Map.of("steady", 3_000L, "late", 300L, "gone", 100L), r.countedByThread());
+        assertEquals(Map.of("steady", 3_000L, "late", 300L, "gone", 100L), r.estimatedWhileCounted());
+        assertEquals(3_400, r.estimatedOnCountedThreads());
+        assertEquals(0.0, r.estimateError());
+        assertEquals(Map.of("steady", 3_070L, "late", 300L, "gone", 1_000L), r.byThread());
+        // A row shows its counter only when the counter's stretch holds nearly all of the row.
+        assertEquals(Optional.of(3_000L), r.counted("steady"));
+        assertEquals(Optional.of(300L), r.counted("late"));
+        assertEquals(Optional.empty(), r.counted("gone"));
+        // Two first samples left out, and the line says why the count is short of the events.
+        assertEquals(6, r.samples());
+        assertEquals(8, r.events());
+        assertEquals("; the first sample of each of 2 threads already running when the recording began is left out, "
+                + "as its weight reaches back before it", r.droppedNote());
     }
 
     @Test

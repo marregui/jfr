@@ -69,7 +69,7 @@ class TextTest {
                 Map.of("worker", 1070L, "short-lived", 500L), Map.of(), Map.of(), Map.of(), Map.of(),
                 AllocationReport.Support.NONE);
         final String text = Text.alloc(r, 15, false, SiteKey.culpritMethod());
-        assertTrue(text.contains("the estimate for those is 1.07 KB (+7%), 68.2% of the estimate above"), text);
+        assertTrue(text.contains("on the 1 thread that has one; the estimate for those, over the same stretches, is 1.07 KB (+7%), 68.2% of the estimate above"), text);
     }
 
     @Test
@@ -80,9 +80,39 @@ class TextTest {
                     REGISTRY, HOLDER, Stack.EMPTY));
         }
         final String text = Text.locks(new ContentionReport(window(), many), 15, false);
-        // The lock's Waiters cell names four and counts the rest; the threads still have
-        // their own rows in THREADS BY TIME BLOCKED, which --top governs.
-        assertTrue(text.contains("worker-0, worker-1, worker-2, worker-3 (+16 more)"), text);
+        // One pool's workers are one entry, named as info names the family; the threads still
+        // have their own rows in THREADS BY TIME BLOCKED, which --top governs.
+        assertTrue(text.contains("  worker-N* (20 threads)  "), text);
+        // Threads of different families are named, four of them, and the rest counted.
+        final List<Wait> mixed = new ArrayList<>();
+        final String[] names = {"alpha", "beta", "gamma", "delta", "epsilon", "zeta"};
+        for (int i = 0; i < names.length; i++) {
+            mixed.add(new Wait(new Interval((1_000 + i) * MS, (1_010 + i) * MS), new ThreadRef(i, names[i]),
+                    REGISTRY, HOLDER, Stack.EMPTY));
+        }
+        final String capped = Text.locks(new ContentionReport(window(), mixed), 15, false);
+        assertTrue(capped.contains(" (+2 more)"), capped);
+    }
+
+    @Test
+    void aDiffOfTwoFilesOfOneNameNamesThemByPath() {
+        final AllocationReport r1 = new AllocationReport(new RecordingInfo(Path.of("r1", "exit.jfr"),
+                new Interval(0, 1_000 * MS), 1, Map.of(), Map.of(), Set.of(), List.of()),
+                "jdk.ObjectAllocationSample", 1000, 1, 1, Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(),
+                AllocationReport.Support.NONE);
+        final AllocationReport r2 = new AllocationReport(new RecordingInfo(Path.of("r2", "exit.jfr"),
+                new Interval(0, 1_000 * MS), 1, Map.of(), Map.of(), Set.of(), List.of()),
+                "jdk.ObjectAllocationSample", 1000, 1, 1, Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(),
+                AllocationReport.Support.NONE);
+        final String diff = Text.allocDiff(new AllocationDiff(r1, r2), 15, false, SiteKey.culpritMethod());
+        assertTrue(diff.startsWith("Baseline   " + Path.of("r1", "exit.jfr") + "  "), diff);
+        assertTrue(diff.contains("\nCurrent    " + Path.of("r2", "exit.jfr") + "  "), diff);
+        // Different names need no path.
+        final String named = Text.allocDiff(new AllocationDiff(r1, new AllocationReport(new RecordingInfo(
+                Path.of("r2", "other.jfr"), new Interval(0, 1_000 * MS), 1, Map.of(), Map.of(), Set.of(), List.of()),
+                "jdk.ObjectAllocationSample", 1000, 1, 1, Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(),
+                AllocationReport.Support.NONE)), 15, false, SiteKey.culpritMethod());
+        assertTrue(named.startsWith("Baseline   exit.jfr  "), named);
     }
 
     @Test

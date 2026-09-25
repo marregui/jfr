@@ -34,14 +34,15 @@ public final class RecordingSummary {
      * @param name         the family, {@code pool-N-thread-N}
      * @param count        how many distinct threads are in it, seen in events or in the census
      * @param seen         how many of them appear as the thread of some event
+     * @param virtual      how many of them are virtual threads, which no census covers
      * @param aliveAtStart how many were alive when the recording began
      * @param started      how many starts there were inside it (a thread can start more than once)
      * @param ended        how many ends
      * @param aliveAtEnd   how many were alive when it ended
      * @param example      the first of them in name order
      */
-    public record Family(String name, int count, int seen, int aliveAtStart, int started, int ended, int aliveAtEnd,
-                         String example) {
+    public record Family(String name, int count, int seen, int virtual, int aliveAtStart, int started, int ended,
+                         int aliveAtEnd, String example) {
     }
 
     /**
@@ -141,10 +142,12 @@ public final class RecordingSummary {
             final List<ThreadRef> threads = e.getValue();
             threads.sort(Comparator.comparing(ThreadRef::name));
             boolean outside = false;
+            int virtual = 0;
             for (final ThreadRef t : threads) {
                 outside |= t.isVirtual() || census.covered() != null && !census.covered().contains(t);
+                virtual += t.isVirtual() ? 1 : 0;
             }
-            out.add(new Family(e.getKey(), threads.size(), count(threads, info.threads()),
+            out.add(new Family(e.getKey(), threads.size(), count(threads, info.threads()), virtual,
                     outside ? Nulls.INT_NULL : count(threads, census.aliveAtStart()),
                     outside ? Nulls.INT_NULL : events(threads, census.started()),
                     outside ? Nulls.INT_NULL : events(threads, census.ended()),
@@ -187,10 +190,14 @@ public final class RecordingSummary {
 
     /**
      * The columns of the families table, both renderers': the life counts the recording can
-     * say, and none it cannot.
+     * say, and none it cannot; how many are virtual when any family has one, since their life
+     * counts are dashes for that reason and a dash alone reads like a VM thread's.
      */
-    public static List<String> familyHeaders(final ThreadCensus.Result census) {
+    public static List<String> familyHeaders(final ThreadCensus.Result census, final List<Family> families) {
         final List<String> headers = new ArrayList<>(List.of("Family", "Threads", "Seen"));
+        if (hasVirtual(families)) {
+            headers.add("Virtual");
+        }
         if (census.aliveAtStart() != null) {
             headers.add("At start");
         }
@@ -210,11 +217,14 @@ public final class RecordingSummary {
      * since {@code event-loop-N} is not a name {@code --thread} can match; a larger one by its
      * pattern with a {@code *}, and its first thread as the example.
      */
-    public static Object[] familyCells(final Family f, final ThreadCensus.Result census) {
-        final List<Object> cells = new ArrayList<>(8);
+    public static Object[] familyCells(final Family f, final ThreadCensus.Result census, final boolean virtualColumn) {
+        final List<Object> cells = new ArrayList<>(9);
         cells.add(f.count() > 1 ? f.name() + "*" : f.example());
         cells.add(f.count());
         cells.add(f.seen());
+        if (virtualColumn) {
+            cells.add(f.virtual() == 0 ? "" : f.virtual());
+        }
         if (census.aliveAtStart() != null) {
             cells.add(cell(f.aliveAtStart()));
         }
@@ -227,6 +237,16 @@ public final class RecordingSummary {
         }
         cells.add(f.count() > 1 ? f.example() : "");
         return cells.toArray();
+    }
+
+    /** Whether any family has a virtual thread: the table then has a column for them. */
+    public static boolean hasVirtual(final List<Family> families) {
+        for (final Family f : families) {
+            if (f.virtual() > 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** An unknown count prints as a dash, as an unknown cadence does. */
