@@ -73,18 +73,22 @@ analysis falls back to `jdk.ObjectAllocationInNewTLAB` (weight: the TLAB size) a
 `jdk.ObjectAllocationOutsideTLAB` (weight: the allocation size), which is how JDK 11-15
 recordings and explicitly configured profiles report allocation.
 
-**The first sample of every thread already running is discarded.** A sample's weight is
+**The first sample of every thread not born in the file is discarded.** A sample's weight is
 the bytes the thread allocated since it was *last sampled*, and for a thread that was never
 sampled, or not since a recording hours earlier, that is its lifetime allocation. Left in, a
 main thread that allocated 150 MB of `MemberName` at start-up and nothing since is reported
 as allocating 150 MB during the recording; the tutorial's first draft showed exactly that.
 Dropping the sample loses at most the bytes between the previous sample and this one,
 nothing for a thread sampled hundreds of times a second and unknowable for one sampled
-once. A platform thread whose `jdk.ThreadStart` is in the file keeps its first sample: its
-lifetime began inside the recording, so all of that weight is in the window, and dropping
-it lost most of what short-lived pool threads allocated. The `Source` line says how many
-first samples were left out, so the sample count and the event count reconcile. The TLAB
-events carry no such history and are used as they are.
+once. A platform thread born in the file keeps its first sample: its lifetime began inside
+the recording, so all of that weight is in the window, and dropping it lost most of what
+short-lived pool threads allocated. Born means a `jdk.ThreadStart` no later than the thread's
+first counter reading and its first sample, because a `jdk.ThreadStart` in the file is not
+proof: the JVM that starts a recording with `-XX:StartFlightRecording` writes one for `main`
+up to seconds after main has been sampled and counted, and taken at its word main's 21 MB of
+start-up allocation became the recording's. The `Source` line says how many first samples
+were left out, which is why the sample count is short of the events (the JSON has both). The
+TLAB events carry no such history and are used as they are.
 
 **Virtual threads lose theirs too, and the report says how much that was.** The JVM
 counts allocation per carrier, not per virtual thread, so the weight of a sample taken on
@@ -118,7 +122,10 @@ a thread's last counter and its first is what it allocated in between, and a thr
 the estimate, overall and per thread, so the reader knows how far the sampling is from the
 truth for the threads that matter. The two only compare over the same stretch, so the
 estimate set against a counter is the thread's samples between those two points, which is
-why the collector keeps every sample's time and weight (two longs a sample). Set against
+why the collector keeps every platform thread's samples with their times (the samples are
+throttled, some 17 MB an hour at 300 a second; the unthrottled TLAB events, which run to
+millions a minute, are kept per 100 ms a thread allocated in, so each end of their stretch is
+off by at most 50 ms of allocation; virtual threads, which have no counter, keep none). Set against
 the whole file instead, a pool thread that started after the first chunk had its early
 allocation in the estimate and not in its counter: a 26-minute node recording in six
 chunks read as an estimate 28 % high whose samples were right, and is 2 % low measured
@@ -447,15 +454,18 @@ safepoint. The silence is attributed to whichever group of blocking events, then
 pauses, then safepoints covers at least half of it; otherwise it is `UNEXPLAINED`. A
 group is one kind of I/O on one peer or path, whatever the byte counts: twelve
 20 ms reads from one backend explain a 300 ms silence together, as
-`12 × blocking socket read from backend:9000 (1.27 KB)`. Lock waits group by stack, not by
-lock instance: an instance is an address, and the collector moves the object a thread parks
-on. A pool worker idle on its own queue for 3m52s of a 26-minute node recording parked 122
-times on three addresses of one `SynchronousQueue`, none of them half the silence, and was
-reported as the recording's worst stall, `UNEXPLAINED`, while its parks covered 230.6 s of
-232.9. A stack is one place in the code waiting for one kind of thing, which is what the
-silence needs; when its waits named several instances the detail names the class
-(`178 × parked on java.util.concurrent.SynchronousQueue$Transferer`). A lock wait without
-a stack falls back to the instance. Pauses group the same way, and
+`12 × blocking socket read from backend:9000 (1.27 KB)`; lock waits group by instance, so one
+lock taken from several places is one answer. What that leaves unexplained is tried again
+with lock waits grouped by stack, because an instance is an address and the collector moves
+the object a thread parks on: a pool worker idle on its own queue for 3m52s of a 26-minute
+node recording parked 122 times on three addresses of one `SynchronousQueue`, none of them
+half the silence, and was reported as the recording's worst stall, `UNEXPLAINED`, while its
+parks covered 230.6 s of 232.9; by stack they are the worker at rest. Neither key alone
+does: by stack only, one monitor taken from two lines of a method split into halves that
+covered nothing; by lock class, an idle park on a `ConditionObject` stood for three busy
+waits on another and dropped a real stall. A stack group whose waits named several
+instances names the class (`178 × parked on dev.app.Queue`), and for monitors every thread
+that held one of them. Pauses group the same way, and
 a silence they explain is cut to them, from the start of the first to the end of the
 last: between pauses the thread may have been running, and a stall longer than what
 stopped it overstates it. When that stretch is shorter than a gap while the pauses still

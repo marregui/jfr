@@ -581,6 +581,8 @@ public final class Json {
 
     private static void recordingFields(final Writer w, final RecordingInfo info) {
         w.name("file").value(info.file().getFileName().toString());
+        // Two runs' recordings often share a name; a --baseline document tells them apart by this.
+        w.name("path").value(info.file().toString());
         w.name("start").value(iso(info.startNanos()));
         w.name("end").value(iso(info.endNanos()));
         w.name("durationNanos").value(info.span().duration());

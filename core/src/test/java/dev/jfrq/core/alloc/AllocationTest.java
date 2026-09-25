@@ -170,8 +170,48 @@ class AllocationTest {
         // Two first samples left out, and the line says why the count is short of the events.
         assertEquals(6, r.samples());
         assertEquals(8, r.events());
-        assertEquals("; the first sample of each of 2 threads already running when the recording began is left out, "
-                + "as its weight reaches back before it", r.droppedNote());
+        assertEquals("; the first sample of each of 2 threads not seen starting in the recording is left out, "
+                + "as its weight can reach back before it", r.droppedNote());
+    }
+
+    @Test
+    void aThreadStartAfterTheThreadWasSeenIsNotItsBirth() {
+        // Field case: the JVM that starts a recording writes main's ThreadStart 5.13 s in, after
+        // main's first counter reading and first sample. Taken at its word, main's start-up
+        // allocation stayed in the estimate and its counter ran from zero.
+        final ThreadRef main = new ThreadRef(1, "main");
+        final AllocationCollector c = new AllocationCollector();
+        c.counter(main, 0, 20_000_000);
+        c.sample(main, 0, 20_000_000, "[B", SITE_A);
+        c.sample(main, 2 * S, 400, "[B", SITE_A);
+        c.started(main, 5 * S);
+        c.counter(main, 10 * S, 20_000_400);
+        c.finish(info("a.jfr", 10));
+        final AllocationReport r = c.report();
+        assertEquals(Map.of("main", 400L), r.byThread());
+        assertEquals(Map.of("main", 400L), r.countedByThread());
+        assertEquals(Map.of("main", 400L), r.estimatedWhileCounted());
+        assertTrue(r.droppedNote().contains("the first sample of 1 thread not seen starting"), r.droppedNote());
+    }
+
+    @Test
+    void theTlabEventsAreSetAgainstTheirCounterOverItsOwnStretchToo() {
+        // Born at 1 s, read once at 5 s, then allocating on to 8 s: the counter speaks for the
+        // first 500 bytes only, and the row's 1.4 KB is not what it counted.
+        final ThreadRef worker = new ThreadRef(1, "worker");
+        final AllocationCollector c = new AllocationCollector();
+        c.started(worker, S);
+        c.tlab(worker, 2 * S, 500, "[B", SITE_A);
+        c.counter(worker, 5 * S, 500);
+        c.tlab(worker, 8 * S, 900, "[B", SITE_A);
+        c.finish(info("a.jfr", 10));
+        final AllocationReport r = c.report();
+        assertEquals(AllocationCollector.IN_TLAB + " + " + AllocationCollector.OUTSIDE_TLAB, r.source());
+        assertEquals(Map.of("worker", 1_400L), r.byThread());
+        assertEquals(Map.of("worker", 500L), r.countedByThread());
+        assertEquals(Map.of("worker", 500L), r.estimatedWhileCounted());
+        assertEquals(Optional.empty(), r.counted("worker"));
+        assertEquals("", r.droppedNote());
     }
 
     @Test

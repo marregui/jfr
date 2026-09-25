@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -78,6 +79,25 @@ class RecordingSummaryTest {
                 RecordingSummary.familyCells(families.getFirst(), census, false));
         assertArrayEquals(new Object[] {"pool-1-thread-1", 1, 1, 1, 0, 0, 1, ""},
                 RecordingSummary.familyCells(families.get(1), census, false));
+    }
+
+    @Test
+    void threadNamesAreFoldedByPoolOnlyWhenTheyDoNotFit() {
+        final List<ThreadRef> two = List.of(new ThreadRef(1, "event-loop-3-1"), new ThreadRef(2, "event-loop-3-2"));
+        assertEquals("event-loop-3-1, event-loop-3-2", RecordingSummary.threadNames(two, 4));
+        final List<ThreadRef> many = new ArrayList<>();
+        for (int i = 0; i < 11; i++) {
+            many.add(new ThreadRef(i, "ForkJoinPool.commonPool-worker-" + i));
+        }
+        many.add(new ThreadRef(20, "main"));
+        many.add(new ThreadRef(21, "main"));
+        assertEquals("ForkJoinPool.commonPool-worker-N* (11 threads), main (2 threads)",
+                RecordingSummary.threadNames(many, 4));
+        final List<ThreadRef> distinct = new ArrayList<>();
+        for (final String n : List.of("alpha", "beta", "gamma", "delta", "epsilon", "zeta")) {
+            distinct.add(new ThreadRef(distinct.size(), n));
+        }
+        assertEquals("alpha, beta, gamma, delta (+2 more)", RecordingSummary.threadNames(distinct, 4));
     }
 
     @Test

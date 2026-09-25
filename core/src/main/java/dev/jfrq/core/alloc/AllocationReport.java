@@ -165,8 +165,8 @@ public record AllocationReport(
     }
 
     /**
-     * {@code ; the first sample of each of 103 threads already running when the recording began
-     * is left out, …}, or empty: why {@link #samples()} is short of {@link #events()} for platform
+     * {@code ; the first sample of each of 103 threads not seen starting in the
+     * recording is left out, …}, or empty: why {@link #samples()} is short of {@link #events()} for platform
      * threads. The virtual threads' first samples have a warning of their own.
      */
     public String droppedNote() {
@@ -175,7 +175,7 @@ public record AllocationReport(
             return "";
         }
         return "; the first sample of " + (platform == 1 ? "1 thread" : "each of " + platform + " threads")
-                + " already running when the recording began is left out, as its weight reaches back before it";
+                + " not seen starting in the recording is left out, as its weight can reach back before it";
     }
 
     /** The virtual-thread warning around what was left out, said once however many recordings it covers. */

@@ -12,7 +12,10 @@ with `--json` after `--` gets standard output to itself: the dump's own lines (`
 
 - **Schema.** Every document starts with `tool` (`"jfrq"`), `version` (the tool's),
   `schema` (an integer, now `1`) and `command`. A field may be added without changing
-  `schema`; renaming or removing one, or changing what it means, changes `schema`.
+  `schema`; renaming or removing one, or changing what it means, changes `schema`. A fix
+  that makes a field measure what this document already said it does is not a change of
+  meaning: `alloc`'s counter comparison became the estimate over each counter's own stretch,
+  as the `counted` row describes, where it had been the whole file's.
 - **Units are in the names.** `…Nanos` is a duration or offset in nanoseconds, `bytes` and
   `…Bytes` are bytes, `bytesPerSecond…` is a rate, `share` is a fraction of 1, `ratio` is a
   relative change (`0.5` is +50 %).
@@ -42,7 +45,7 @@ with `--json` after `--` gets standard output to itself: the dump's own lines (`
 
 | Field | |
 |---|---|
-| `recording.file` | the file name |
+| `recording.file`, `recording.path` | the file name, and the path as given, which tells a baseline and a current recording of one name apart |
 | `recording.start`, `recording.end` | the data span, from the chunk headers |
 | `recording.durationNanos` | its length |
 | `recording.chunks` | how many chunks |
@@ -106,7 +109,7 @@ with `--json` after `--` gets standard output to itself: the dump's own lines (`
 | Field | |
 |---|---|
 | `warnings[]` | what to know before trusting the estimate |
-| `source`, `samples`, `events` | the event the estimate rests on, and how much of it: `samples` are the events kept, without the first sample of each thread already running when the recording began |
+| `source`, `samples`, `events` | the event the estimate rests on, and how much of it: `samples` are the events kept, without the first sample of each thread not seen starting in the recording |
 | `estimatedBytes`, `bytesPerSecond` | the estimate |
 | `counted` | whether the JVM's own per-thread counters were in the file; when they were: `countedBytes`, `countedThreads`, `estimatedOnCountedThreads`, `estimateError`, over the threads with a counter; `estimatedOnCountedThreads` is their estimate over the stretch each counter covers, from its first reading (or the thread's start) to its last, so the two compare like for like. A `threads[]` row's `countedBytes` is `null` unless that stretch holds 95 % of the row's `bytes` |
 | `threadsFound`, `classesFound`, `packagesFound`, `sitesFound` | how many rows each list had before `--top` (the last two with `--sites`) |

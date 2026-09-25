@@ -321,43 +321,47 @@ $ netty-demo --scenario alloc --duration 15s --out demo-alloc.jfr
 $ netty-demo --scenario clean --duration 15s --out demo-clean.jfr
 
 $ jfrq alloc demo-alloc.jfr --top 4
-Recording  demo-alloc.jfr  15.1 s  starting 2026-09-24T10:53:21.774585Z
-Source     jdk.ObjectAllocationSample (14636 samples; the first sample of each of 5 threads already running when the recording began is left out, as its weight reaches back before it)
-Estimate   422 GB over 15.1 s = 28.0 GB/s
-Counted    424 GB by the JVM's own counters on the 15 threads that have one; the estimate for those, over the same stretches, is 422 GB (-0%), 100.0% of the estimate above
+Recording  demo-alloc.jfr  15.1 s  starting 2026-09-25T12:31:29.862587Z
+Source     jdk.ObjectAllocationSample (14891 samples; the first sample of each of 4 threads not seen starting in the recording is left out, as its weight can reach back before it)
+Estimate   506 GB over 15.1 s = 33.5 GB/s
+Counted    505 GB by the JVM's own counters on the 17 threads that have one; the estimate for those, over the same stretches, is 506 GB (+0%), 100.0% of the estimate above
 
 BY THREAD
   Thread              Bytes  Counted       Rate  Share  Samples  Top classes
-  bulk-allocator-1   211 GB   212 GB  14.0 GB/s  50.0%     6891  byte[] 100%, Object[] 0%, Long 0%
-  bulk-allocator-2   211 GB   212 GB  14.0 GB/s  50.0%     7142  byte[] 100%, Long 0%, Object[] 0%
-  event-loop-3-2    9.48 MB            628 KB/s   0.0%      223  byte[] 52%, DirectByteBuffer 21%, String 8%
-  event-loop-3-1    9.48 MB            628 KB/s   0.0%      241  byte[] 36%, DirectByteBuffer 19%, HashMap$Node 12%
+  bulk-allocator-2   253 GB   253 GB  16.8 GB/s  50.0%     7127  byte[] 100%, Long 0%, Object[] 0%
+  bulk-allocator-1   253 GB   253 GB  16.8 GB/s  50.0%     7190  byte[] 100%, Long 0%, Object[] 0%
+  event-loop-3-1    10.8 MB  10.8 MB   718 KB/s   0.0%      210  byte[] 31%, String 25%, DirectByteBuffer 14%
+  event-loop-3-2    9.75 MB  9.81 MB   647 KB/s   0.0%      219  byte[] 52%, UnpooledSlicedByteBuf 13%, DirectByteBuffer 10%
 
 BY CLASS
-  Class                        Bytes       Rate  Share  Samples
-  byte[]                      422 GB  28.0 GB/s  99.9%    14296
-  java.lang.Long              126 MB  8.33 MB/s   0.0%       13
-  java.lang.Object[]         83.4 MB  5.52 MB/s   0.0%       12
-  java.nio.DirectByteBuffer  3.77 MB   250 KB/s   0.0%       68
+  Class                 Bytes       Rate  Share  Samples
+  byte[]               505 GB  33.5 GB/s  99.9%    14564
+  java.lang.Long       328 MB  21.7 MB/s   0.1%       18
+  java.lang.Object[]  46.3 MB  3.07 MB/s   0.0%       19
+  java.lang.String    3.44 MB   228 KB/s   0.0%       36
 ```
 
 The estimate sums the `weight` of each `jdk.ObjectAllocationSample`, never the sample
 count; each sample stands for the bytes allocated since the previous one on that thread,
 so the totals are statistically sound even at 1000 samples per second. The `Counted`
 line and column are the JVM's own per-thread allocation counters, which JFR writes at
-every chunk boundary: exact for every thread alive at both ends of the file, and the
-number to trust when the two disagree. Here they agree to the percent, on threads that
+every chunk boundary: exact between a thread's first reading (or its start, when that is
+in the file) and its last, and the number to trust when the two disagree. The estimate set
+against them is the samples of that same stretch, and a row shows its counter only when
+that stretch holds nearly all of the row. Here they agree to the percent, on threads that
 carry all of the estimate: the line says what share of the estimate the comparison covers,
-because a pool whose threads start and end inside the recording has no counters, and a
-percentage measured on the rest says nothing about them. `Samples` is how many samples each
-row rests on: `Long` at 126 MB is thirteen of them, a size worth knowing and a share not
+because a thread that starts and ends between two readings has no counter, and a
+percentage measured on the rest says nothing about it. `Samples` is how many samples each
+row rests on: `Long` at 328 MB is eighteen of them, a size worth knowing and a share not
 worth quoting. Add `--sites` for the allocating stacks, one row per allocating method (the
 innermost frame outside the JDK) with every path through it summed, or `--app PREFIX` to
 rank them by your own code instead.
 
-One sample per thread is not in the estimate: the first. Its weight is the bytes
-allocated since the thread was *last* sampled, and for a thread that was never sampled
-before that is its lifetime. An earlier version of this tutorial showed `main` at
+One sample per thread not seen starting in the recording is not in the estimate: the
+first. Its weight is the bytes allocated since the thread was *last* sampled, and for
+a thread that was never sampled before that is its lifetime; the `Source` line says how
+many were left out. A thread that started during the recording keeps it, since all of its
+lifetime is in the window. An earlier version of this tutorial showed `main` at
 150 MB and 9.94 MB/s, all `MemberName`: start-up work from before the recording began,
 reported as if it had happened during it. The counters would have said 67 KB. Virtual
 threads lose their first sample too, and there it costs more: the JVM counts allocation
@@ -370,33 +374,33 @@ The comparison is the feature you actually use when tuning:
 
 ```
 $ jfrq alloc demo-alloc.jfr --baseline demo-clean.jfr --top 4
-Baseline   demo-clean.jfr  15.1 s  816 KB/s
-Current    demo-alloc.jfr  15.1 s  28.0 GB/s
-Change     +28.0 GB/s (×34276)
+Baseline   demo-clean.jfr  15.1 s  1.35 MB/s
+Current    demo-alloc.jfr  15.1 s  33.5 GB/s
+Change     +33.5 GB/s (×24816)
 Rates are bytes/second so recordings of different length compare. The sample counts are the evidence behind each
 change: a few hundred percent on a handful of samples is noise, not a finding.
 
 BY THREAD
-  Thread                Before      After      Change         Samples
-  bulk-allocator-1       0 B/s  14.0 GB/s  +14.0 GB/s  new    0 -> 6891
-  bulk-allocator-2       0 B/s  14.0 GB/s  +14.0 GB/s  new    0 -> 7142
-  event-loop-3-1         0 B/s   628 KB/s   +628 KB/s  new    0 -> 241
-  JFR Periodic Tasks  172 KB/s      0 B/s   -172 KB/s  -100%  4 -> 0
+  Thread              Before      After      Change        Samples
+  bulk-allocator-2     0 B/s  16.8 GB/s  +16.8 GB/s  new   0 -> 7127
+  bulk-allocator-1     0 B/s  16.8 GB/s  +16.8 GB/s  new   0 -> 7190
+  event-loop-3-1    485 KB/s   718 KB/s   +233 KB/s  +48%  7 -> 210
+  event-loop-3-2    485 KB/s   647 KB/s   +162 KB/s  +33%  2 -> 219
 
 BY CLASS
-  Class                        Before      After      Change           Samples
-  byte[]                     236 KB/s  28.0 GB/s  +28.0 GB/s  ×118603  3 -> 14296
-  java.lang.Long                0 B/s  8.33 MB/s  +8.33 MB/s  new      0 -> 13
-  java.lang.Object[]            0 B/s  5.52 MB/s  +5.52 MB/s  new      0 -> 12
-  java.nio.DirectByteBuffer     0 B/s   250 KB/s   +250 KB/s  new      0 -> 68
+  Class                  Before      After      Change          Samples
+  byte[]               696 KB/s  33.5 GB/s  +33.5 GB/s  ×48168  9 -> 14564
+  java.lang.Long          0 B/s  21.7 MB/s  +21.7 MB/s  new     0 -> 18
+  java.lang.Object[]  10.1 KB/s  3.07 MB/s  +3.06 MB/s  ×305    1 -> 19
+  java.lang.String    98.5 KB/s   228 KB/s   +129 KB/s  +131%   2 -> 36
 ```
 
 Threads match by name, classes by name, and with `--sites` sites by the same fold the
 single report ranks them by, so one method reached down many paths is one row of the diff.
 Everything is a rate, so a one-minute recording compares with a ten-minute one. The
-`Samples` column is the evidence on each side: the clean baseline holds 13 samples in all,
-so `event-loop-3-1` is `new` only because the baseline never sampled it, and `JFR Periodic
-Tasks` at -100 % rests on four; either rate before is a guess, not a measurement.
+`Samples` column is the evidence on each side: the clean baseline holds 21 samples in all,
+so `event-loop-3-2` at +33 % rests on two of them before, and `java.lang.Object[]` at ×305
+on one; either rate before is a guess, not a measurement.
 
 Where does allocation show up on the loop? As GC pauses, which stop every thread:
 
@@ -404,11 +408,9 @@ Where does allocation show up on the loop? As GC pauses, which stop every thread
 $ jfrq stalls demo-alloc.jfr --thread 'event-loop-*' --gap 10ms
 ...
 JVM-WIDE PAUSES >= gap (stop every thread)
-  +0.015s   22.1 ms  GC pause: GC Pause (gcId 1)
-  +0.042s   15.9 ms  GC pause: GC Pause (gcId 2)
-  +0.153s   15.9 ms  GC pause: GC Pause (gcId 7)
-  +0.581s   19.4 ms  GC pause: GC Pause (gcId 11)
-  +1.166s   10.2 ms  GC pause: GC Pause (gcId 12)
+  +0.003s   12.2 ms  GC pause: GC Pause (gcId 1)
+  +0.326s   33.6 ms  GC pause: GC Pause (gcId 10)
+  +0.557s   15.1 ms  GC pause: GC Pause (gcId 11)
 ```
 
 On this machine G1 keeps young pauses under 50 ms, so at the default gap there is

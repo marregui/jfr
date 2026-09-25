@@ -92,6 +92,16 @@ class TextTest {
         }
         final String capped = Text.locks(new ContentionReport(window(), mixed), 15, false);
         assertTrue(capped.contains(" (+2 more)"), capped);
+        // The HTML report folds and caps the same way.
+        assertTrue(Html.locks(new ContentionReport(window(), many), 15, false).contains("worker-N* (20 threads)"));
+        // Names that fit are all printed, pool or not.
+        final List<Wait> two = List.of(
+                new Wait(new Interval(1_000 * MS, 1_010 * MS), new ThreadRef(1, "event-loop-3-1"), REGISTRY, HOLDER, Stack.EMPTY),
+                new Wait(new Interval(1_001 * MS, 1_011 * MS), new ThreadRef(2, "event-loop-3-2"), REGISTRY, HOLDER, Stack.EMPTY));
+        final String named = Text.locks(new ContentionReport(window(), two), 15, false);
+        assertTrue(named.contains("event-loop-3-1, event-loop-3-2") || named.contains("event-loop-3-2, event-loop-3-1"),
+                named);
+        assertFalse(named.contains("event-loop-N-N*"), named);
     }
 
     @Test

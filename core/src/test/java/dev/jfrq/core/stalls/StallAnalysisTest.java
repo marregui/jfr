@@ -801,6 +801,82 @@ class StallAnalysisTest {
         assertTrue(silence.detail().startsWith("178 × parked on q;"), silence.detail());
     }
 
+    /** A synchronized method at one of two lines, reached from the same handler. */
+    static Stack storePut(final int line) {
+        return stack(new Frame("dev.app.Store", "put", line, "JIT compiled"),
+                new Frame("dev.app.Handler", "handle", 40, "JIT compiled"),
+                new Frame("java.lang.Thread", "run", 1474, "Interpreted"));
+    }
+
+    @Test
+    void oneLockTakenFromTwoPlacesStillExplainsTheSilence() {
+        // Grouped by stack, 178 short waits on one monitor from two lines split in halves, neither
+        // covering half the silence, and the silence read as UNEXPLAINED beside 178 blocking events.
+        final List<Block> waits = new ArrayList<>();
+        for (int i = 0; i < 178; i++) {
+            waits.add(new Block(new Interval(i * 50L * MS, (i * 50L + 40) * MS), BlockKind.MONITOR, "dev.app.Store@1",
+                    storePut(i % 2 == 0 ? 10 : 20), HOLDER));
+        }
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(idle(9_000, 9_100, 50), waits, 0, 9_100)), List.of());
+        assertEquals(1, r.stalls().size(), r.stalls().toString());
+        assertEquals(Verdict.BLOCKED_MONITOR, r.stalls().getFirst().verdict());
+        assertTrue(r.stalls().getFirst().detail().startsWith("178 × blocked on monitor dev.app.Store@1 held by housekeeper"),
+                r.stalls().getFirst().detail());
+    }
+
+    @Test
+    void anIdleParkOnALockOfTheSameClassDoesNotStandForBusyWaits() {
+        // Field case (round 1): three short waits for browse results on one ConditionObject, and
+        // a pool's idle park on another ConditionObject overlapping the end. Grouped by class,
+        // the idle park was the longest block, so it stood for all of them, and a real stall
+        // was dropped as the worker at rest.
+        final List<Block> blocks = new ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            blocks.add(blockWith(i * 40L, i * 40L + 30, BlockKind.PARK, "on q@1", AWAITING_RESULT));
+        }
+        blocks.add(blockWith(220, 2_000, BlockKind.PARK, "on q@2", NO_WORK));
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(idle(300, 400, 50), blocks, 0, 400)), List.of());
+        assertTrue(r.stalls().stream().anyMatch(st -> st.verdict() == Verdict.PARKED
+                && st.detail().startsWith("6 × parked on q@1")), r.stalls().toString());
+    }
+
+    @Test
+    void aGroupOnOneLockKeepsItsHoldersChain() {
+        // One monitor, its longest wait held by housekeeper after event-loop-2 handed it on: the
+        // detail reads as it did before groups of several instances named every holder.
+        final List<Block> waits = new ArrayList<>();
+        for (int i = 0; i < 178; i++) {
+            waits.add(new Block(new Interval(i * 50L * MS, (i * 50L + (i == 5 ? 45 : 40)) * MS), BlockKind.MONITOR,
+                    "dev.app.Store@1", storePut(10), i % 2 == 0 ? HOLDER : OTHER, i == 5 ? List.of(OTHER) : List.of(),
+                    0, false));
+        }
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(idle(9_000, 9_100, 50), waits, 0, 9_100)), List.of());
+        assertEquals(1, r.stalls().size(), r.stalls().toString());
+        final String detail = r.stalls().getFirst().detail();
+        assertTrue(detail.startsWith("178 × " + StallAnalysis.describe(waits.get(5))), detail);
+        assertTrue(detail.contains("event-loop-2"), detail);
+    }
+
+    @Test
+    void aGroupOfMonitorWaitsNamesEveryHolder() {
+        // One place in the code, three instances of a lock, held by two threads: the detail names
+        // the class and both. One Stack object, as the interner makes it for equal stacks.
+        final Stack put = storePut(10);
+        final List<Block> waits = new ArrayList<>();
+        for (int i = 0; i < 178; i++) {
+            waits.add(new Block(new Interval(i * 50L * MS, (i * 50L + 40) * MS), BlockKind.MONITOR, "dev.app.Conn@" + (i % 3),
+                    put, i % 3 == 0 ? HOLDER : OTHER));
+        }
+        final StallReport r = new StallAnalysis(50 * MS).analyse(sampledInfo(),
+                List.of(lived(idle(9_000, 9_100, 50), waits, 0, 9_100)), List.of());
+        assertEquals(1, r.stalls().size(), r.stalls().toString());
+        assertTrue(r.stalls().getFirst().detail().startsWith("178 × blocked on monitor dev.app.Conn held by housekeeper, "
+                + "event-loop-2;"), r.stalls().getFirst().detail());
+    }
+
     @Test
     void aThreadsBirthAndDeathAreNotStalls() {
         // Started at 3 s and ended at 6 s: nothing before or after its life is a silence.

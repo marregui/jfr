@@ -628,18 +628,9 @@ public final class Html {
         }
     }
 
-    /** Thread names, capped the same way as the text report: the count carries the information. */
+    /** Thread names, capped and folded the same way as the text report ({@link RecordingSummary#threadNames}). */
     private static String names(final Set<ThreadRef> threads) {
-        final StringBuilder sb = new StringBuilder();
-        int shown = 0;
-        for (final ThreadRef t : threads) {
-            if (shown == NAMES_SHOWN) {
-                sb.append(" (+").append(threads.size() - shown).append(" more)");
-                break;
-            }
-            sb.append(shown++ > 0 ? ", " : "").append(t.name());
-        }
-        return sb.toString();
+        return RecordingSummary.threadNames(threads, NAMES_SHOWN);
     }
 
     /** The {@link #MAX_BOXES_PER_ROW} longest boxes of a row, back in time order. */

@@ -21,6 +21,7 @@ import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
+import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.stalls.Stall.Evidence;
 import dev.jfrq.core.stalls.Stall.Verdict;
 import dev.jfrq.core.stalls.StallReport.Sight;
@@ -1182,14 +1183,15 @@ public final class StallAnalysis {
     }
 
     /**
-     * Coverage of one group of blocks over a candidate interval: the lock waits from one stack,
-     * or the I/O (and the lock waits without a stack) of one kind and detail. Reused across
-     * candidates.
+     * Coverage of one group of blocks over a candidate interval: the blocks of one kind and
+     * detail (one peer, path or lock instance), or in the second pass the lock waits from one
+     * stack. Reused across candidates.
      */
     private static final class Group {
         BlockKind kind;
-        String detail;
-        /** Grouped by stack, so {@link #detail} names only the first lock seen there. */
+        /** The detail the group is keyed by, or for a stack group the first block's. */
+        String key;
+        /** Keyed by stack rather than by {@link #key}. */
         boolean byStack;
         /** A stack group whose blocks named more than one lock instance. */
         boolean instances;
@@ -1198,17 +1200,32 @@ public final class StallAnalysis {
         long bytes;
         /** The longest block in the group: its stack stands for the group. */
         Block representative;
+        /** For monitors, every thread that held one of the group's locks, in first-seen order. */
+        final ObjList<ThreadRef> owners = new ObjList<>();
 
-        Group of(final BlockKind kind, final String detail, final boolean byStack) {
+        Group of(final BlockKind kind, final String key, final boolean byStack) {
             this.kind = kind;
-            this.detail = detail;
+            this.key = key;
             this.byStack = byStack;
             this.instances = false;
             this.overlap = 0;
             this.count = 0;
             this.bytes = 0;
             this.representative = null;
+            this.owners.clear();
             return this;
+        }
+
+        void owner(final ThreadRef owner) {
+            if (owner == null) {
+                return;
+            }
+            for (int i = 0, n = owners.size(); i < n; i++) {
+                if (owners.getQuick(i).equals(owner)) {
+                    return;
+                }
+            }
+            owners.add(owner);
         }
     }
 
@@ -1229,7 +1246,7 @@ public final class StallAnalysis {
         private final ObjList<Group> groups = new ObjList<>();
         private final ObjList<Group> pool = new ObjList<>();
         private final ObjObjHashMap<String, Group>[] groupByDetail;
-        /** Lock waits by stack: identity, since the interner makes one {@code Stack} per distinct stack. */
+        /** Lock waits by stack, in the second pass: identity, as the interner makes one {@code Stack} per stack. */
         private final IdentityObjObjHashMap<Stack, Group> groupByStack = new IdentityObjObjHashMap<>(16);
 
         @SuppressWarnings({"unchecked", "rawtypes"}) // an array of a generic type has no other spelling
@@ -1291,17 +1308,24 @@ public final class StallAnalysis {
         }
 
         /**
-         * I/O blocks are grouped by kind and detail, which is the peer or the path and not the
-         * byte count, so that many short reads from one peer add up to one answer. Lock waits
-         * are grouped by stack, not by the lock instance their detail names: the instance is
-         * an address, and the collector moves an object it parks on, so a worker idle on one
-         * queue for four minutes named three addresses, none of them covering half, and read
-         * as unexplained. A stack is one place in the code waiting for one kind of thing,
-         * which is the answer a silence needs. Lock waits without a stack fall back to the
-         * detail. Coverage together is the union of the blocks, so a block inside another
-         * counts once.
+         * Blocks are grouped by kind and detail, which for I/O is the peer or the path and not
+         * the byte count, so that many short reads from one peer add up to one answer, and for a
+         * lock wait is the instance, so that one lock taken from several places is one answer.
+         * What that leaves unexplained is tried again with lock waits grouped by stack: an
+         * instance is an address, and the collector moves an object a thread parks on, so a
+         * worker idle on one queue for four minutes named three addresses, none of them covering
+         * half, and read as unexplained. By stack alone the first pass would split one lock
+         * taken from two lines; by class alone, an idle park would stand for a busy wait on a
+         * lock of the same class. Coverage together is the union of the blocks, so a block
+         * inside another counts once.
          */
         private Explanation explainByBlocks(final Interval interval, final long minCover, final boolean together) {
+            final Explanation byInstance = explainByBlocks(interval, minCover, together, false);
+            return byInstance != null ? byInstance : explainByBlocks(interval, minCover, together, true);
+        }
+
+        private Explanation explainByBlocks(final Interval interval, final long minCover, final boolean together,
+                                            final boolean byStack) {
             clearGroups();
             long union = 0;
             long coveredTo = interval.start();
@@ -1323,7 +1347,10 @@ public final class StallAnalysis {
                 }
                 coveredTo = Math.max(coveredTo, end);
                 count++;
-                final Group g = group(b);
+                final Group g = group(b, byStack);
+                if (b.kind() == BlockKind.MONITOR) {
+                    g.owner(b.owner());
+                }
                 g.overlap += overlap;
                 g.count++;
                 g.bytes += b.bytes();
@@ -1340,7 +1367,10 @@ public final class StallAnalysis {
             }
             if (best != null && (together ? union : best.overlap) >= minCover) {
                 final Block rep = best.representative;
-                final String one = best.instances ? describe(rep, withoutInstance(rep.detail())) : describe(rep, best.bytes);
+                // A group of one lock reads as it always has, the holder's chain included; one that
+                // spans several instances names their class and every thread that held one.
+                final String one = best.instances ? describe(rep, withoutInstance(rep.detail()), best.owners.toList())
+                        : describe(rep, best.bytes);
                 final String detail = best.count > 1 ? best.count + " × " + one : one;
                 // Named only when the largest group needed them: then they are part of the answer.
                 final long others = best.overlap < minCover ? count - best.count : 0;
@@ -1351,25 +1381,26 @@ public final class StallAnalysis {
             return null;
         }
 
-        private Group group(final Block b) {
+        private Group group(final Block b, final boolean byStack) {
             final BlockKind kind = b.kind();
             // A block without a detail groups under the literal "null", as the old string key did.
-            final String key = b.detail() == null ? "null" : b.detail();
-            if (!kind.isIo() && kind != BlockKind.SLEEP && b.stack().depth() > 0) {
+            final String detail = b.detail() == null ? "null" : b.detail();
+            if (byStack && (kind == BlockKind.MONITOR || kind == BlockKind.PARK || kind == BlockKind.OBJECT_WAIT)
+                    && b.stack().depth() > 0) {
                 final int index = groupByStack.keyIndex(b.stack());
                 if (index < 0) {
                     final Group g = groupByStack.valueAtQuick(index);
-                    g.instances |= !g.detail.equals(key);
+                    g.instances |= !g.key.equals(detail);
                     return g;
                 }
-                return groupByStack.putAt(index, b.stack(), next(kind, key, true));
+                return groupByStack.putAt(index, b.stack(), next(kind, detail, true));
             }
-            final ObjObjHashMap<String, Group> byDetail = groupByDetail[kind.ordinal()];
-            final int index = byDetail.keyIndex(key);
+            final ObjObjHashMap<String, Group> byKey = groupByDetail[kind.ordinal()];
+            final int index = byKey.keyIndex(detail);
             if (index < 0) {
-                return byDetail.valueAtQuick(index);
+                return byKey.valueAtQuick(index);
             }
-            return byDetail.putAt(index, key, next(kind, key, false));
+            return byKey.putAt(index, detail, next(kind, detail, false));
         }
 
         private Group next(final BlockKind kind, final String key, final boolean byStack) {
@@ -1391,11 +1422,11 @@ public final class StallAnalysis {
                 if (g.byStack) {
                     byStack = true;
                 } else {
-                    groupByDetail[g.kind.ordinal()].remove(g.detail);
+                    groupByDetail[g.kind.ordinal()].remove(g.key);
                 }
                 g.representative = null;
             }
-            // The identity table has no delete; it holds only this lookup's stacks, so it stays small.
+            // The identity table has no delete; it holds only this lookup's stacks.
             if (byStack) {
                 groupByStack.clear();
             }
@@ -1567,10 +1598,26 @@ public final class StallAnalysis {
         return describe(b, b.detail(), bytes);
     }
 
-    /** {@link #describe(Block)} naming the lock by {@code detail}: its class, for a group of several instances. */
-    static String describe(final Block b, final String detail) {
-        return describe(b, detail, b.bytes());
+    /**
+     * {@link #describe(Block)} for a group of lock waits: the lock named by {@code detail}, its
+     * class when the group spans several instances, and for monitors every thread that held one.
+     */
+    static String describe(final Block b, final String detail, final List<ThreadRef> owners) {
+        if (b.kind() != BlockKind.MONITOR || owners.size() < 2) {
+            return describe(b, detail, b.bytes());
+        }
+        final StringBuilder sb = new StringBuilder(b.kind().label()).append(' ').append(detail).append(" held by ");
+        for (int i = 0, n = Math.min(owners.size(), OWNERS_SHOWN); i < n; i++) {
+            sb.append(i > 0 ? ", " : "").append(owners.get(i).name());
+        }
+        if (owners.size() > OWNERS_SHOWN) {
+            sb.append(" (+").append(owners.size() - OWNERS_SHOWN).append(" more)");
+        }
+        return sb.toString();
     }
+
+    /** Holders a grouped monitor wait names before it counts the rest. */
+    private static final int OWNERS_SHOWN = 3;
 
     private static String describe(final Block b, final String detail, final long bytes) {
         final StringBuilder sb = new StringBuilder(b.kind().label());

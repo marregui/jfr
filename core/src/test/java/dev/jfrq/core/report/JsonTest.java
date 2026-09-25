@@ -116,6 +116,7 @@ class JsonTest {
         assertEquals("stalls", doc.get("command"));
         final Map<String, Object> recording = map(doc, "recording");
         assertEquals("rec.jfr", recording.get("file"));
+        assertEquals(Path.of("dir", "rec.jfr").toString(), recording.get("path"));
         assertEquals("1970-01-01T00:00:01Z", recording.get("start"));
         assertEquals(2_000 * MS, recording.get("durationNanos"));
         assertEquals(List.of("a file warning"), recording.get("warnings"));

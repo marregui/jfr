@@ -5,7 +5,6 @@ package dev.jfrq.cli;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -704,40 +703,15 @@ final class Text {
 
     /**
      * Thread names, capped: a lock on a hundred-thread server listed every distinct waiter
-     * on one line, 3,630 characters of it, and the count is the information a reader wants.
-     * Threads of one pool are one entry, {@code ForkJoinPool.commonPool-worker-N* (11 threads)},
-     * named as {@code info} names the family: four of its workers by name made a 251-character
-     * row and still said "+7 more".
+     * on one line, 3,630 characters of it, and the count is the information a reader wants
+     * ({@link RecordingSummary#threadNames}).
      */
     static String names(final Set<ThreadRef> threads) {
-        final Map<String, List<String>> families = new LinkedHashMap<>();
-        for (final ThreadRef t : threads) {
-            families.computeIfAbsent(RecordingSummary.family(t.name()), _ -> new ArrayList<>()).add(t.name());
-        }
-        final List<String> names = new ArrayList<>(families.size());
-        for (final Map.Entry<String, List<String>> f : families.entrySet()) {
-            final List<String> members = f.getValue();
-            names.add(members.size() == 1 ? members.getFirst()
-                    : (f.getKey().equals(members.getFirst()) ? f.getKey() : f.getKey() + "*")
-                            + " (" + members.size() + " threads)");
-        }
-        return capped(names);
+        return RecordingSummary.threadNames(threads, NAMES_SHOWN);
     }
 
     /** The head of a list under the same cap every other name list uses. */
     static <T> List<T> shown(final List<T> all) {
         return all.size() > NAMES_SHOWN ? all.subList(0, NAMES_SHOWN) : all;
-    }
-
-    private static String capped(final List<String> names) {
-        final StringBuilder sb = new StringBuilder();
-        for (int i = 0, n = names.size(); i < n; i++) {
-            if (i == NAMES_SHOWN) {
-                sb.append(" (+").append(n - i).append(" more)");
-                break;
-            }
-            sb.append(i > 0 ? ", " : "").append(names.get(i));
-        }
-        return sb.toString();
     }
 }

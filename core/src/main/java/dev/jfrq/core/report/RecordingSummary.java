@@ -4,8 +4,10 @@
 package dev.jfrq.core.report;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -271,6 +273,43 @@ public final class RecordingSummary {
         if (count != Nulls.LONG_NULL) {
             sb.append(sb.isEmpty() ? "" : ", ").append(count).append(' ').append(label);
         }
+    }
+
+    /**
+     * Thread names for a table cell or a line, as every renderer prints them: all of them when
+     * they are at most {@code shown}; otherwise the threads of one pool are one entry,
+     * {@code ForkJoinPool.commonPool-worker-N* (11 threads)}, named as the families table names
+     * it, and the entries past {@code shown} are counted. Four workers of one pool by name made a
+     * 251-character row that still said "+7 more"; two event loops folded into a pattern lost
+     * the names for nothing.
+     */
+    public static String threadNames(final Collection<ThreadRef> threads, final int shown) {
+        final List<String> entries = new ArrayList<>(threads.size());
+        if (threads.size() <= shown) {
+            for (final ThreadRef t : threads) {
+                entries.add(t.name());
+            }
+        } else {
+            final Map<String, List<String>> families = new LinkedHashMap<>();
+            for (final ThreadRef t : threads) {
+                families.computeIfAbsent(family(t.name()), _ -> new ArrayList<>()).add(t.name());
+            }
+            for (final Map.Entry<String, List<String>> f : families.entrySet()) {
+                final List<String> members = f.getValue();
+                entries.add(members.size() == 1 ? members.getFirst()
+                        : (f.getKey().equals(members.getFirst()) ? f.getKey() : f.getKey() + "*")
+                                + " (" + members.size() + " threads)");
+            }
+        }
+        final StringBuilder sb = new StringBuilder();
+        for (int i = 0, n = entries.size(); i < n; i++) {
+            if (i == shown) {
+                sb.append(" (+").append(n - i).append(" more)");
+                break;
+            }
+            sb.append(i > 0 ? ", " : "").append(entries.get(i));
+        }
+        return sb.toString();
     }
 
     /**
