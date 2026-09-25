@@ -44,6 +44,23 @@ public record HealthReport(RecordingInfo info, List<Finding> findings, Gc gc, Li
     public static final String NO_TRENDS = "no jdk.GCHeapSummary, jdk.ResidentSetSize, jdk.JavaThreadStatistics or "
             + "jdk.CPULoad events in the recording";
 
+    /** What both renderers say when there is no finding. */
+    public static final String NO_FINDINGS = "no OutOfMemoryError Java code created, no failed evacuation or full "
+            + "collection, GC time and pauses within the JVM's goals, and no collection forced by a humongous "
+            + "allocation, metaspace or System.gc()";
+
+    /** What a throwable's site is, in the words both renderers print above the sites. */
+    public static final String SITE_RULE = "the first frame outside the JDK below the throwable's own construction";
+
+    /** {@code G1New 37, G1Old 17}: a count per name, in the map's order. */
+    public static String counts(final Map<String, Long> counts) {
+        final StringBuilder sb = new StringBuilder();
+        for (final Map.Entry<String, Long> e : counts.entrySet()) {
+            sb.append(sb.isEmpty() ? "" : ", ").append(e.getKey()).append(' ').append(e.getValue());
+        }
+        return sb.toString();
+    }
+
     /** What both renderers say when no throwable is in the file. */
     public static final String NO_THROWS = "no jdk.JavaExceptionThrow events: none was created, or the event was off "
             + "(both JDK 25 settings files enable it)";
@@ -92,7 +109,7 @@ public record HealthReport(RecordingInfo info, List<Finding> findings, Gc gc, Li
      * @param causes           per cause ({@code G1 Evacuation Pause}), most first; a G1 concurrent cycle
      *                         ({@code G1Old}) is left out, as it carries the cause of the pause that started it
      * @param oldCycles        old-generation collections ({@code jdk.OldGarbageCollection}): for G1 the
-     *                         concurrent marking cycles, which are routine
+     *                         concurrent marking cycles, which are routine, and every full collection
      * @param pauseNanos       the stop-the-world time, summed over every collection
      * @param longestPauseNanos the longest single pause
      * @param gcTimeRatio      the JVM's {@code GCTimeRatio}: it aims to spend at most
@@ -163,6 +180,18 @@ public record HealthReport(RecordingInfo info, List<Finding> findings, Gc gc, Li
      * @param peak    the most threads alive at once since the JVM started; {@code Nulls.LONG_NULL} unknown
      */
     public record Threads(long started, long peak) {
+
+        /**
+         * {@code 54 threads started in the window; at most 113 alive at once since the JVM
+         * started}, as both renderers print it; empty when the starts are unknown.
+         */
+        public String sentence() {
+            if (started == Nulls.LONG_NULL) {
+                return "";
+            }
+            return started + (started == 1 ? " thread" : " threads") + " started in the window"
+                    + (peak == Nulls.LONG_NULL ? "" : "; at most " + peak + " alive at once since the JVM started");
+        }
     }
 
     /**
@@ -202,7 +231,8 @@ public record HealthReport(RecordingInfo info, List<Finding> findings, Gc gc, Li
      * @param className the JVM name of the throwable's class
      * @param samples   the events of that class
      * @param share     of all the events
-     * @param message   the first message seen, as an example; {@code null} when none had one
+     * @param message   the message of the first event of the class, as an example; {@code null} when that
+     *                  one had none
      */
     public record ClassRow(String className, long samples, double share, String message) {
     }

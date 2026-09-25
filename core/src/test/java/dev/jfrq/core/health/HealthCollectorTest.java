@@ -328,9 +328,16 @@ class HealthCollectorTest {
             final Finding expected = report.findings().get(i);
             assertEquals(expected.kind().name(), f.get("kind"));
             assertEquals(expected.count(), f.get("count"));
-            assertEquals(expected.firstNanos() - report.info().startNanos(), f.get("firstOffsetNanos"));
-            assertEquals(expected.lastNanos() - report.info().startNanos(), f.get("lastOffsetNanos"));
-            assertTrue(((String) f.get("first")).endsWith("Z"), f.toString());
+            if (expected.firstNanos() == Nulls.LONG_NULL) {
+                // A finding about the whole window (GC time over the goal, on a slow machine) has no time.
+                assertNull(f.get("first"), f.toString());
+                assertNull(f.get("firstOffsetNanos"), f.toString());
+                assertNull(f.get("lastOffsetNanos"), f.toString());
+            } else {
+                assertEquals(expected.firstNanos() - report.info().startNanos(), f.get("firstOffsetNanos"));
+                assertEquals(expected.lastNanos() - report.info().startNanos(), f.get("lastOffsetNanos"));
+                assertTrue(((String) f.get("first")).endsWith("Z"), f.toString());
+            }
         }
         final Map<String, Object> gc = map(doc, "gc");
         assertEquals(report.gc().count(), gc.get("collections"));
@@ -359,7 +366,9 @@ class HealthCollectorTest {
         assertEquals("", empty.gc().causesNote());
         final Map<String, Object> doc = JsonParser.object(Json.health(empty, 5, "test"));
         final Map<String, Object> gc = map(doc, "gc");
-        assertEquals(0L, gc.get("collections"));
+        assertNull(gc.get("collections"));
+        assertNull(gc.get("pauseNanos"));
+        assertNull(gc.get("oldCycles"));
         assertNull(gc.get("gcTimeRatio"));
         assertNull(gc.get("maxHeapBytes"));
         assertNull(doc.get("threadsStarted"));
@@ -367,7 +376,8 @@ class HealthCollectorTest {
         assertNull(t.get("created"));
         assertNull(t.get("createdNanos"));
         assertNull(t.get("perSecond"));
-        assertEquals(0L, t.get("events"));
+        assertNull(t.get("events"));
+        assertNull(t.get("classesFound"));
         final String html = Html.health(empty, 5);
         assertTrue(html.contains(HealthReport.NO_TRENDS), html);
         assertTrue(html.contains("jdk.ExceptionStatistics was not recorded twice"), html);

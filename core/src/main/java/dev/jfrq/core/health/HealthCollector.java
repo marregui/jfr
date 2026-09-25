@@ -34,6 +34,7 @@ import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Interner;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.util.Durations;
+import dev.jfrq.core.util.Sorts;
 import jdk.jfr.consumer.RecordedEvent;
 
 /**
@@ -43,8 +44,8 @@ import jdk.jfr.consumer.RecordedEvent;
  *
  * <p>Every source but the throwables arrives about once a second or once a collection, so
  * the per-event work is an append to a flat list. The throwables can arrive by the
- * thousand; each is one probe for its class and one for its site, the site's name resolved
- * once per distinct stack (G-2.2).
+ * thousand; each is one probe for its class and one for its stack, whose site row is
+ * resolved once per distinct stack (G-2.2).
  */
 public final class HealthCollector implements JfrReader.Sink {
 
@@ -91,8 +92,8 @@ public final class HealthCollector implements JfrReader.Sink {
     private final ObjObjHashMap<String, String> messages = new ObjObjHashMap<>(64);
     /** Site rows by site and class, with the first stack seen at each. */
     private final ObjObjHashMap<String, Site> bySite = new ObjObjHashMap<>(64);
-    /** A stack's site, resolved once per distinct stack. */
-    private final ObjObjHashMap<Stack, Where> sites = new ObjObjHashMap<>(256);
+    /** A stack's site row, resolved once per distinct stack: the construction frames name the class. */
+    private final ObjObjHashMap<Stack, Site> sites = new ObjObjHashMap<>(256);
     private final ObjLongHashMap<String> errors = new ObjLongHashMap<>(8);
     /** When each {@code jdk.JavaErrorThrow} happened: each is one throwable the running total counted twice. */
     private final LongList errorTimes = new LongList(8);
@@ -220,21 +221,13 @@ public final class HealthCollector implements JfrReader.Sink {
         if (cls.equals(OUT_OF_MEMORY)) {
             when(Finding.Kind.OUT_OF_MEMORY, Events.startNanos(e));
         }
-        final int c = byClass.keyIndex(cls);
-        if (c < 0) {
-            byClass.increment(cls, 1);
-        } else {
-            byClass.putAt(c, cls, 1);
+        if (byClass.increment(cls, 1) == 1) {
             final String message = Events.stringOr(e, Fields.MESSAGE, null, interner);
             if (message != null) {
                 messages.put(cls, message.length() > MESSAGE_CHARS ? message.substring(0, MESSAGE_CHARS) + "…" : message);
             }
         }
-        final Where where = where(stack, cls);
-        final String key = where.name + "\u0000" + cls;
-        final int s = bySite.keyIndex(key);
-        final Site site = s < 0 ? bySite.valueAtQuick(s) : bySite.putAt(s, key, new Site(where.name, cls, where.stack));
-        site.samples++;
+        site(stack, cls).samples++;
     }
 
     /** The first characters of a message kept as its class's example. */
@@ -249,7 +242,7 @@ public final class HealthCollector implements JfrReader.Sink {
      * starts there too, so it shows the code that made the throwable, not how a throwable is
      * built. Resolved once per distinct stack: the construction frames name the class.
      */
-    private Where where(final Stack stack, final String cls) {
+    private Site site(final Stack stack, final String cls) {
         final int index = sites.keyIndex(stack);
         if (index < 0) {
             return sites.valueAtQuick(index);
@@ -276,14 +269,13 @@ public final class HealthCollector implements JfrReader.Sink {
         if (site < 0 && from < depth) {
             site = from;
         }
-        final Where where = site < 0 ? new Where("<no stack>", stack)
-                : new Where(stack.frameQuick(site).stableName(),
-                        new Stack(stack.frames().subList(from, depth), stack.isTruncated()));
-        return sites.putAt(index, stack, where);
-    }
-
-    /** A site's name and the stack from where the throwable's construction ends. */
-    private record Where(String name, Stack stack) {
+        final String name = site < 0 ? "<no stack>" : stack.frameQuick(site).stableName();
+        // Stacks that differ above the site, or in their line numbers, are one row.
+        final String key = name + "\u0000" + cls;
+        final int row = bySite.keyIndex(key);
+        final Site found = row < 0 ? bySite.valueAtQuick(row) : bySite.putAt(row, key, new Site(name, cls,
+                site < 0 ? stack : new Stack(stack.frames().subList(from, depth), stack.isTruncated())));
+        return sites.putAt(index, stack, found);
     }
 
     /** One site of one class. */
@@ -517,11 +509,7 @@ public final class HealthCollector implements JfrReader.Sink {
                 return sorted.getQuick(0);
             }
             final int n = times.size();
-            final Integer[] order = new Integer[n];
-            for (int i = 0; i < n; i++) {
-                order[i] = i;
-            }
-            Arrays.sort(order, Comparator.comparingLong(times::getQuick));
+            final int[] order = Sorts.order(times);
             final double[] out = new double[n];
             for (int i = 0; i < n; i++) {
                 out[i] = Double.longBitsToDouble(values.getQuick(order[i]));

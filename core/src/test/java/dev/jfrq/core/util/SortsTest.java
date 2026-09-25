@@ -4,9 +4,12 @@
 package dev.jfrq.core.util;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Random;
 
+import dev.jfrq.core.coll.LongList;
 import org.junit.jupiter.api.Test;
 
 class SortsTest {
@@ -27,5 +30,30 @@ class SortsTest {
     void maxLength() {
         assertEquals(0, Sorts.maxDuration(List.of(), Long::longValue));
         assertEquals(30, Sorts.maxDuration(List.of(10L, 30L, 20L), Long::longValue));
+    }
+
+    @Test
+    void orderIsAscendingAndKeepsEqualKeysInIndexOrder() {
+        final Random random = new Random(7);
+        for (int n = 0; n < 70; n++) {
+            final LongList keys = new LongList(Math.max(1, n));
+            for (int i = 0; i < n; i++) {
+                keys.add(random.nextInt(5) - 2L);
+            }
+            final int[] order = Sorts.order(keys);
+            assertEquals(n, order.length);
+            final boolean[] seen = new boolean[n];
+            for (int k = 0; k < n; k++) {
+                seen[order[k]] = true;
+                if (k > 0) {
+                    final long before = keys.getQuick(order[k - 1]);
+                    final long at = keys.getQuick(order[k]);
+                    assertTrue(before < at || before == at && order[k - 1] < order[k], "n=" + n + " k=" + k);
+                }
+            }
+            for (int i = 0; i < n; i++) {
+                assertTrue(seen[i], "n=" + n + " missing " + i);
+            }
+        }
     }
 }

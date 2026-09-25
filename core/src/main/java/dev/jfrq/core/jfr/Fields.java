@@ -57,8 +57,7 @@ public final class Fields {
     public static final int TIMED_OUT = TIME + 1;
     public static final int TIMEOUT = TIMED_OUT + 1;
     public static final int TLAB_SIZE = TIMEOUT + 1;
-    public static final int TYPE = TLAB_SIZE + 1;
-    public static final int UNTIL = TYPE + 1;
+    public static final int UNTIL = TLAB_SIZE + 1;
     public static final int WEIGHT = UNTIL + 1;
     public static final int WHEN = WEIGHT + 1;
     public static final int COUNT = WHEN + 1;
@@ -108,7 +107,6 @@ public final class Fields {
         NAMES[TIMED_OUT] = "timedOut";
         NAMES[TIMEOUT] = "timeout";
         NAMES[TLAB_SIZE] = "tlabSize";
-        NAMES[TYPE] = "type";
         NAMES[UNTIL] = "until";
         NAMES[WEIGHT] = "weight";
         NAMES[WHEN] = "when";

@@ -924,8 +924,8 @@ both files.
   warning, with nothing to judge it by.
 - A thread that waits for a result with a timeout, from one place, times out at least twice
   and spends more than half its life in those timed-out waits looks exactly like a timer
-  loop, and its waits are set aside as scheduled idle (section 4.5). The warning names every
-  thread the rule set aside; `--idle none` reports them as stalls.
+  loop, and its waits are set aside as scheduled idle (section 4.5). The warning names the five
+  threads with the most time set aside and counts the rest; `--idle none` reports them as stalls.
 - Lock addresses move with the objects; a lock that was compacted mid-recording appears
   twice under the same class, and a perch split that way can fall under the half-window
   line and be listed as contention (section 3).

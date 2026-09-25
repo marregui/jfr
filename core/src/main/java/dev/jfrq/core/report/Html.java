@@ -84,13 +84,14 @@ public final class Html {
 
         p.h2("Threads, most stalled first");
         final List<StallReport.ThreadSummary> stalled = report.stalledThreads();
-        final int clean = report.threads().size() - stalled.size();
-        if (clean > 0) {
-            p.kv("Not listed", clean + (clean == 1 ? " thread" : " threads") + " with no stall");
+        final List<StallReport.ThreadSummary> shown = stalled.size() > top ? stalled.subList(0, top) : stalled;
+        final String rest = StallReport.notListed(stalled.size() - shown.size(), report.threads().size() - stalled.size());
+        if (!rest.isEmpty()) {
+            p.kv("Not listed", rest);
         }
         p.tableStart("Thread", "Samples", "Java cadence", "Native cadence", "Unseen below", "Stalls", "Stalled",
                 "Worst");
-        for (final StallReport.ThreadSummary t : stalled) {
+        for (final StallReport.ThreadSummary t : shown) {
             p.row(t.thread().name(), t.samples(), Durations.formatOrDash(t.javaCadenceNanos()),
                     Durations.formatOrDash(t.nativeCadenceNanos()), t.unseenBelow(), t.stalls(),
                     Durations.format(t.stalledNanos()), Durations.format(t.worstNanos()));
@@ -426,9 +427,7 @@ public final class Html {
         final Page p = new Page("jfrq health", r.info());
         p.h2("Findings (from the JVM's own events, the most serious first)");
         if (r.findings().isEmpty()) {
-            p.kv("None", "no OutOfMemoryError Java code created, no failed evacuation or full collection, GC time and "
-                    + "pauses within the JVM's goals, and no collection forced by a humongous allocation, metaspace or "
-                    + "System.gc()");
+            p.kv("None", HealthReport.NO_FINDINGS);
         } else {
             p.tableStart("Finding", "Count", "What it means");
             for (final HealthReport.Finding f : r.findings()) {
@@ -441,7 +440,7 @@ public final class Html {
         if (gc.count() == 0) {
             p.kv("Collections", "no jdk.GarbageCollection events in the recording");
         } else {
-            p.kv("Collections", gc.count() + " (" + counts(gc.collections()) + "); " + gc.oldCycles()
+            p.kv("Collections", gc.count() + " (" + HealthReport.counts(gc.collections()) + "); " + gc.oldCycles()
                     + " old-generation cycles");
             p.kv("Paused", Durations.format(gc.pauseNanos()) + " in " + Durations.format(r.info().span().duration())
                     + String.format(Locale.ROOT, ", %.2f%% of the time", 100.0 * gc.pauseNanos()
@@ -453,7 +452,7 @@ public final class Html {
             if (gc.maxHeapBytes() != Nulls.LONG_NULL) {
                 p.kv("Heap max", Bytes.format(gc.maxHeapBytes()));
             }
-            p.kv("Causes", counts(gc.causes()) + gc.causesNote());
+            p.kv("Causes", HealthReport.counts(gc.causes()) + gc.causesNote());
         }
         p.h2("Trends (floor: the lowest value in the first and in the last third of the window)");
         if (r.trends().isEmpty()) {
@@ -466,8 +465,9 @@ public final class Html {
             }
             p.tableEnd();
         }
-        if (r.threads().started() != Nulls.LONG_NULL) {
-            p.kv("Threads started", Long.toString(r.threads().started()));
+        final String threads = r.threads().sentence();
+        if (!threads.isEmpty()) {
+            p.kv("Threads", threads);
         }
         final HealthReport.Throwables t = r.throwables();
         p.h2("Throwables created (counted in the constructor: a rethrow does not count again)");
@@ -480,7 +480,7 @@ public final class Html {
                 : " (throttled at " + t.throttle()
                 + ": every one below that rate, a sample above it; the shares below are of the events)"));
         if (!t.errors().isEmpty()) {
-            p.kv("Errors", counts(t.errors()));
+            p.kv("Errors", HealthReport.counts(t.errors()));
         }
         if (t.samples() > 0) {
             p.tableStart("Class", "Events", "Share", "Per second", "Example message");
@@ -490,6 +490,7 @@ public final class Html {
                         c.message() == null ? "" : c.message());
             }
             p.tableEnd();
+            p.para("By site: " + HealthReport.SITE_RULE);
             p.tableStart("Site", "Class", "Events", "Share");
             for (final HealthReport.SiteRow s : t.bySite().subList(0, Math.min(top, t.bySite().size()))) {
                 p.row(s.site(), ClassNames.pretty(s.className()), s.samples(), pct(s.share()));
@@ -501,14 +502,6 @@ public final class Html {
     }
 
     /** {@code G1New 37, G1Old 17}, in the order the map has them. */
-    private static String counts(final Map<String, Long> counts) {
-        final StringBuilder sb = new StringBuilder();
-        for (final Map.Entry<String, Long> e : counts.entrySet()) {
-            sb.append(sb.isEmpty() ? "" : ", ").append(e.getKey()).append(' ').append(e.getValue());
-        }
-        return sb.toString();
-    }
-
     public static String info(final RecordingInfo info, final ThreadCensus.Result census) {
         final Page p = new Page("jfrq info", info);
         final String lives = RecordingSummary.lives(census);

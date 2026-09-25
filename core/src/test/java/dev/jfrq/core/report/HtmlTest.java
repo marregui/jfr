@@ -68,6 +68,20 @@ class HtmlTest {
     }
 
     @Test
+    void theThreadTableTakesTheSameTopAsTheText() {
+        final List<StallReport.ThreadSummary> threads = new ArrayList<>();
+        for (int i = 1; i <= 4; i++) {
+            threads.add(new StallReport.ThreadSummary(new ThreadRef(i, "loop-" + i), 10, 10 * MS, 20 * MS, i < 4 ? 1 : 0,
+                    i < 4 ? i * 100 * MS : 0, i < 4 ? i * 100 * MS : 0));
+        }
+        final String html = Html.stalls(new StallReport(info(), 50 * MS, threads, List.of(), List.of(), List.of()), 1);
+        final String table = html.substring(html.indexOf("Threads, most stalled first"), html.indexOf("By verdict"));
+        assertTrue(table.contains("loop-3"), table);
+        assertFalse(table.contains("loop-2") || table.contains("loop-1"), table);
+        assertTrue(table.contains("2 more that stalled, 1 thread with no stall"), table);
+    }
+
+    @Test
     void stallsTableIsCappedAndTheTimelineKeepsTheLongestBoxes() {
         final List<Stall> many = new ArrayList<>();
         for (int i = 0; i < Html.MIN_LISTED + 1; i++) {

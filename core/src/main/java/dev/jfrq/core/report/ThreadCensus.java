@@ -3,11 +3,8 @@
 
 package dev.jfrq.core.report;
 
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -23,6 +20,7 @@ import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.jfr.Transient;
 import dev.jfrq.core.model.Interner;
 import dev.jfrq.core.model.ThreadRef;
+import dev.jfrq.core.util.Sorts;
 import jdk.jfr.consumer.RecordedEvent;
 
 /**
@@ -191,7 +189,8 @@ public final class ThreadCensus implements JfrReader.Sink {
             }
         }
         Set<ThreadRef> covered = null;
-        if (rowTimes.notEmpty()) {
+        // Without a census, the lives alone say which threads they cover: a GC worker has none.
+        if (rowTimes.notEmpty() || lifetimes) {
             covered = new HashSet<>();
             for (int i = 0, n = rowThreads.size(); i < n; i++) {
                 covered.add(rowThreads.getQuick(i));
@@ -207,17 +206,14 @@ public final class ThreadCensus implements JfrReader.Sink {
         // In time order, since delivery is file order: whether a start is a new life depends on
         // what came before it. A thread that starts at a census instant is already in it; one
         // that ends there still is.
-        final List<Integer> order = new ArrayList<>(lifeTimes.size());
-        for (int i = 0, n = lifeTimes.size(); i < n; i++) {
-            if (lifeTimes.getQuick(i) > from && lifeTimes.getQuick(i) <= to) {
-                order.add(i);
-            }
-        }
-        order.sort(Comparator.comparingLong(lifeTimes::getQuick));
+        final int[] order = Sorts.order(lifeTimes);
         final Set<ThreadRef> alive = atStart == null ? new HashSet<>() : new HashSet<>(atStart);
         final ObjLongHashMap<ThreadRef> started = new ObjLongHashMap<>(64);
         final ObjLongHashMap<ThreadRef> ended = new ObjLongHashMap<>(64);
         for (final int i : order) {
+            if (lifeTimes.getQuick(i) <= from || lifeTimes.getQuick(i) > to) {
+                continue;
+            }
             final ThreadRef thread = lifeThreads.getQuick(i);
             if (lifeEnds.getQuick(i) != 0) {
                 ended.increment(thread, 1);

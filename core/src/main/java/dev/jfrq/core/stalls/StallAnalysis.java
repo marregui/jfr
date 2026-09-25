@@ -1486,7 +1486,7 @@ public final class StallAnalysis {
                 top.stack, Evidence.SAMPLES, n);
     }
 
-    /** The culprit frame's {@code type.method}, or {@code <no stack>}; the name is built once per frame. */
+    /** The culprit frame's {@link Frame#stableName()}, or {@code <no stack>}; the name is built once per frame. */
     private String culpritName(final Stack stack) {
         final Frame culprit = stack.culpritOrNull();
         if (culprit == null) {
@@ -1494,7 +1494,7 @@ public final class StallAnalysis {
         }
         final int index = culpritNames.keyIndex(culprit);
         return index < 0 ? culpritNames.valueAtQuick(index)
-                : culpritNames.putAt(index, culprit, culprit.qualifiedName());
+                : culpritNames.putAt(index, culprit, culprit.stableName());
     }
 
     static Verdict verdictOf(final BlockKind kind) {

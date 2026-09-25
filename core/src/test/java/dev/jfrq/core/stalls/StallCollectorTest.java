@@ -158,12 +158,17 @@ class StallCollectorTest {
      * {@code parked} counts the parks {@code t} has begun.
      */
     private static void wake(final Thread t, final AtomicInteger parked, final int times) {
+        wake(t, parked, times, () -> LockSupport.unpark(t));
+    }
+
+    /** Wakes {@code t} with {@code how} each of {@code times} times it is waiting, 250 ms into the wait. */
+    private static void wake(final Thread t, final AtomicInteger parked, final int times, final Runnable how) {
         for (int i = 0; i < times; i++) {
             while (parked.get() <= i || t.getState() != Thread.State.TIMED_WAITING) {
                 Thread.onSpinWait();
             }
             JfrFixtures.sleep(250);
-            LockSupport.unpark(t);
+            how.run();
         }
     }
 
@@ -238,23 +243,75 @@ class StallCollectorTest {
                     JfrFixtures.sleep(150);
                 }
             }, "sleep-timer");
+            final Thread deadliner = new Thread(() -> {
+                for (int i = 0; i < 6; i++) {
+                    final long deadline = System.currentTimeMillis() + 150;
+                    while (System.currentTimeMillis() < deadline) {
+                        LockSupport.parkUntil(deadline);
+                    }
+                }
+            }, "until-timer");
             waiter.start();
             parker.start();
             sleeper.start();
+            deadliner.start();
             waiter.join();
             parker.join();
             sleeper.join();
+            deadliner.join();
         });
         final StallReport r = stalls(file, "*-timer");
         assertTrue(r.stalls().isEmpty(), r.stalls().toString());
-        assertTrue(r.warnings().stream().anyMatch(w -> w.startsWith("18 waits totalling ")
-                && w.contains("park-timer") && w.contains("sleep-timer") && w.contains("wait-timer")),
-                r.warnings().toString());
+        assertTrue(r.warnings().stream().anyMatch(w -> w.startsWith("24 waits totalling ")
+                && w.contains("park-timer") && w.contains("sleep-timer") && w.contains("wait-timer")
+                && w.contains("until-timer")), r.warnings().toString());
 
         final StallCollector none = new StallCollector(Glob.of("*-timer"), IdleMatcher.none(), IdleMatcher.none(), GAP);
         JfrReader.read(file, none);
         assertEquals(6, count(none.report(), Verdict.OBJECT_WAIT), none.report().stalls().toString());
-        assertEquals(6, count(none.report(), Verdict.PARKED), none.report().stalls().toString());
+        assertEquals(12, count(none.report(), Verdict.PARKED), none.report().stalls().toString());
         assertEquals(6, count(none.report(), Verdict.SLEEP), none.report().stalls().toString());
+    }
+
+    @Test
+    void aSleepOrADeadlineCutShortIsAStallNotATimer() throws Exception {
+        // The same waits as a timer loop's, from one place and repeated, but each ends well before
+        // the time it asked for: the thread was woken, so the rule has nothing to set aside.
+        // The threads' lives are recorded, so that their waits are most of them, as a timer's are.
+        final Path file = JfrFixtures.record(dir, "cut-short", r -> {
+            r.enable("jdk.ThreadPark").withThreshold(Duration.ofMillis(10)).withStackTrace();
+            r.enable("jdk.ThreadSleep").withThreshold(Duration.ofMillis(10)).withStackTrace();
+            r.enable("jdk.ThreadStart");
+            r.enable("jdk.ThreadEnd");
+        }, () -> {
+            final AtomicInteger slept = new AtomicInteger();
+            final Thread sleeper = new Thread(() -> {
+                for (int i = 0; i < 3; i++) {
+                    slept.incrementAndGet();
+                    try {
+                        Thread.sleep(WOKEN_BEFORE_NANOS / 1_000_000L);
+                    } catch (final InterruptedException e) {
+                        // woken, as the test means it to be
+                    }
+                }
+            }, "cut-sleeper");
+            final AtomicInteger parked = new AtomicInteger();
+            final Thread deadliner = new Thread(() -> {
+                for (int i = 0; i < 3; i++) {
+                    parked.incrementAndGet();
+                    LockSupport.parkUntil(System.currentTimeMillis() + WOKEN_BEFORE_NANOS / 1_000_000L);
+                }
+            }, "cut-deadliner");
+            sleeper.start();
+            deadliner.start();
+            wake(sleeper, slept, 3, sleeper::interrupt);
+            wake(deadliner, parked, 3);
+            sleeper.join();
+            deadliner.join();
+        });
+        final StallReport r = stalls(file, "cut-*");
+        assertEquals(3, count(r, Verdict.SLEEP), r.stalls().toString());
+        assertEquals(3, count(r, Verdict.PARKED), r.stalls().toString());
+        assertTrue(r.warnings().stream().noneMatch(w -> w.contains("timer loops")), r.warnings().toString());
     }
 }

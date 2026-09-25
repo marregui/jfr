@@ -112,9 +112,7 @@ final class Text {
         final StringBuilder sb = new StringBuilder(header(r.info()));
         sb.append("\nFINDINGS (from the JVM's own events, the most serious first)\n");
         if (r.findings().isEmpty()) {
-            sb.append("  none: no OutOfMemoryError Java code created, no failed evacuation or full collection, GC time "
-                    + "and pauses within the JVM's goals, and no collection forced by a humongous allocation, metaspace "
-                    + "or System.gc()\n");
+            sb.append("  none: ").append(HealthReport.NO_FINDINGS).append('\n');
         }
         int n = 1;
         for (final HealthReport.Finding f : r.findings()) {
@@ -127,7 +125,7 @@ final class Text {
             sb.append("  no jdk.GarbageCollection events in the recording\n");
         } else {
             sb.append(String.format(Locale.ROOT, "  %-12s %d (%s); %d old-generation cycle%s\n", "Collections",
-                    gc.count(), counts(gc.collections()), gc.oldCycles(), gc.oldCycles() == 1 ? "" : "s"));
+                    gc.count(), HealthReport.counts(gc.collections()), gc.oldCycles(), gc.oldCycles() == 1 ? "" : "s"));
             sb.append(String.format(Locale.ROOT, "  %-12s %s in %s, %.2f%% of the time%s\n", "Paused",
                     Durations.format(gc.pauseNanos()), Durations.format(r.info().span().duration()),
                     100.0 * gc.pauseNanos() / Math.max(1, r.info().span().duration()),
@@ -140,7 +138,7 @@ final class Text {
             if (gc.maxHeapBytes() != Nulls.LONG_NULL) {
                 sb.append(String.format(Locale.ROOT, "  %-12s %s\n", "Heap max", Bytes.format(gc.maxHeapBytes())));
             }
-            sb.append(String.format(Locale.ROOT, "  %-12s %s\n", "Causes", counts(gc.causes()) + gc.causesNote()));
+            sb.append(String.format(Locale.ROOT, "  %-12s %s\n", "Causes", HealthReport.counts(gc.causes()) + gc.causesNote()));
         }
 
         sb.append("\nTRENDS (floor: the lowest value in the first and in the last third of the window; a floor that "
@@ -156,11 +154,9 @@ final class Text {
             }
             sb.append(trends.render("  "));
         }
-        final HealthReport.Threads threads = r.threads();
-        if (threads.started() != Nulls.LONG_NULL) {
-            sb.append(String.format(Locale.ROOT, "  %d thread%s started in the window%s\n", threads.started(),
-                    threads.started() == 1 ? "" : "s", threads.peak() == Nulls.LONG_NULL ? ""
-                            : "; at most " + threads.peak() + " alive at once since the JVM started"));
+        final String threads = r.threads().sentence();
+        if (!threads.isEmpty()) {
+            sb.append("  ").append(threads).append('\n');
         }
         sb.append(throwables(r, top));
         return sb.toString();
@@ -183,7 +179,7 @@ final class Text {
                             + ": every one below that rate, a sample above it; the shares below are of the events)"));
         }
         if (!t.errors().isEmpty()) {
-            sb.append(String.format(Locale.ROOT, "  %-8s %s (jdk.JavaErrorThrow)\n", "Errors", counts(t.errors())));
+            sb.append(String.format(Locale.ROOT, "  %-8s %s (jdk.JavaErrorThrow)\n", "Errors", HealthReport.counts(t.errors())));
         }
         if (t.samples() == 0) {
             return sb.toString();
@@ -197,7 +193,7 @@ final class Text {
                     c.message() == null ? "" : c.message().replace('\n', ' '));
         }
         sb.append(classes.render("    "));
-        sb.append("\n  BY SITE (the innermost frame outside the JDK)\n");
+        sb.append("\n  BY SITE (").append(HealthReport.SITE_RULE).append(")\n");
         int n = 1;
         for (final HealthReport.SiteRow s : t.bySite().subList(0, Math.min(top, t.bySite().size()))) {
             sb.append(String.format(Locale.ROOT, "  %2d  %6d  %6s  %s  %s\n", n++, s.samples(), pct(s.share()), s.site(),
@@ -208,14 +204,6 @@ final class Text {
     }
 
     /** {@code G1New 37, G1Old 17}, in the order the map has them. */
-    private static String counts(final Map<String, Long> counts) {
-        final StringBuilder sb = new StringBuilder();
-        for (final Map.Entry<String, Long> e : counts.entrySet()) {
-            sb.append(sb.isEmpty() ? "" : ", ").append(e.getKey()).append(' ').append(e.getValue());
-        }
-        return sb.toString();
-    }
-
     static String alloc(final AllocationReport r, final int top, final boolean sites, final SiteKey key) {
         final StringBuilder sb = new StringBuilder(header(r.info()));
         for (final String w : r.warnings()) {
@@ -604,26 +592,12 @@ final class Text {
             }
             sb.append(summary.render("  "));
         }
-        final String rest = rest(stalled.size() - shown.size(), r.threads().size() - stalled.size());
+        final String rest = StallReport.notListed(stalled.size() - shown.size(), r.threads().size() - stalled.size());
         if (!rest.isEmpty()) {
             sb.append("  ").append(rest).append('\n');
         }
         return sb.toString();
     }
-
-    /** {@code 12 more that stalled, 110 with no stall}, leaving out a zero. */
-    static String rest(final int moreStalled, final int clean) {
-        final StringBuilder sb = new StringBuilder();
-        if (moreStalled > 0) {
-            sb.append(moreStalled).append(" more that stalled");
-        }
-        if (clean > 0) {
-            sb.append(sb.isEmpty() ? "" : ", ").append(clean).append(clean == 1 ? " thread" : " threads")
-                    .append(" with no stall");
-        }
-        return sb.toString();
-    }
-
 
     private static String pauses(final StallReport r, final int top) {
         if (r.pauses().isEmpty()) {

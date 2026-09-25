@@ -4,6 +4,7 @@
 package dev.jfrq.core.stalls;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
@@ -119,50 +120,78 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
         final List<String> out = new ArrayList<>(3);
         sampler(Sight.NATIVE_SAMPLER, out);
         sampler(Sight.JAVA_SAMPLER, out);
-        final List<ThreadSummary> own = threads.stream().filter(t -> t.sight() == Sight.OWN_ABSENCE).toList();
+        final List<ThreadSummary> own = withSight(Sight.OWN_ABSENCE);
         if (!own.isEmpty()) {
-            final String range = range(own);
             out.add(String.format(Locale.ROOT, "on %d of %d threads, a stall no event or pause explains is %s: "
                     + "their silences are mostly the thread itself, parked or blocked where the sampler cannot see "
                     + "it, not the sampler's pace, so no sampling period changes that much; blocking events are "
-                    + "what show their stalls", own.size(), threads.size(),
-                    range.isEmpty() ? "not seen at all" : "seen only from " + range));
+                    + "what show their stalls", own.size(), threads.size(), seen(own)));
+        }
+        return out;
+    }
+
+    private List<ThreadSummary> withSight(final Sight sight) {
+        final List<ThreadSummary> out = new ArrayList<>();
+        for (final ThreadSummary t : threads) {
+            if (t.sight() == sight) {
+                out.add(t);
+            }
         }
         return out;
     }
 
     /**
-     * {@code 1.08 s}, or {@code 510 ms to 620 ms}, over the threads that have a routine absence;
-     * empty when none has. One value when both ends print the same.
+     * {@code seen only from 1.08 s}, or {@code from 510 ms to 620 ms}, over the threads that have
+     * a routine absence, one value when both ends print the same. A bound past the recording's
+     * length is no bound: those threads are counted as not seen at all.
      */
-    private static String range(final List<ThreadSummary> threads) {
-        final long[] unseen = threads.stream().mapToLong(ThreadSummary::unseenBelowNanos).filter(u -> u > 0).sorted()
-                .toArray();
-        if (unseen.length == 0) {
-            return "";
+    private String seen(final List<ThreadSummary> threads) {
+        final long span = info.span().duration();
+        final long[] unseen = new long[threads.size()];
+        int n = 0;
+        int never = 0;
+        for (final ThreadSummary t : threads) {
+            final long u = t.unseenBelowNanos();
+            if (u > span) {
+                never++;
+            } else if (u > 0) {
+                unseen[n++] = u;
+            }
         }
+        if (n == 0) {
+            return "not seen at all";
+        }
+        Arrays.sort(unseen, 0, n);
         final String lo = Durations.format(unseen[0]);
-        final String hi = Durations.format(unseen[unseen.length - 1]);
-        return lo.equals(hi) ? lo : lo + " to " + hi;
+        final String hi = Durations.format(unseen[n - 1]);
+        return "seen only from " + (lo.equals(hi) ? lo : lo + " to " + hi)
+                + (never == 0 ? "" : ", and not at all on " + never + " of them");
     }
 
     private void sampler(final Sight sight, final List<String> out) {
-        final List<ThreadSummary> limited = threads.stream().filter(t -> t.sight() == sight).toList();
+        final List<ThreadSummary> limited = withSight(sight);
         if (limited.isEmpty()) {
             return;
         }
         final boolean inNative = sight == Sight.NATIVE_SAMPLER;
-        final ThreadSummary worst = limited.stream().max(Comparator.comparingLong(ThreadSummary::unseenBelowNanos))
-                .orElseThrow();
-        final long[] cadences = limited.stream()
-                .mapToLong(t -> inNative ? t.nativeCadenceNanos() : t.javaCadenceNanos()).filter(c -> c > 0).sorted()
-                .toArray();
-        final long cadence = cadences.length == 0 ? 0 : cadences[cadences.length / 2];
+        ThreadSummary worst = limited.getFirst();
+        final long[] cadences = new long[limited.size()];
+        int sampled = 0;
+        for (final ThreadSummary t : limited) {
+            if (t.unseenBelowNanos() > worst.unseenBelowNanos()) {
+                worst = t;
+            }
+            final long c = inNative ? t.nativeCadenceNanos() : t.javaCadenceNanos();
+            if (c > 0) {
+                cadences[sampled++] = c;
+            }
+        }
+        Arrays.sort(cadences, 0, sampled);
+        final long cadence = sampled == 0 ? 0 : cadences[sampled / 2];
         final String type = inNative ? "jdk.NativeMethodSample" : "jdk.ExecutionSample";
         final long period = info.periodNanos(type);
         final StringBuilder sb = new StringBuilder(String.format(Locale.ROOT,
-                "on %d of %d threads, a stall no event explains is seen only from %s", limited.size(),
-                threads.size(), range(limited)));
+                "on %d of %d threads, a stall no event explains is %s", limited.size(), threads.size(), seen(limited)));
         if (cadence > 0) {
             sb.append(String.format(Locale.ROOT, ": each is sampled %s every ~%s", inNative ? "in native code" : "in Java",
                     Durations.format(cadence)));
@@ -197,8 +226,9 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
         final double own = absence - roundTrip;
         // own + roundTrip * p / period <= gap / 3, solved for p.
         final double wanted = (gapNanos / 3.0 - own) * period / Math.max(1, roundTrip);
-        final long suggested = Math.min(period - MIN_SAMPLER_PERIOD,
-                Math.max(MIN_SAMPLER_PERIOD, (long) wanted / MIN_SAMPLER_PERIOD * MIN_SAMPLER_PERIOD));
+        // Shorter than now by a whole millisecond where it can be, never under the sampler's floor.
+        final long suggested = Math.max(MIN_SAMPLER_PERIOD, Math.min(period - MIN_SAMPLER_PERIOD,
+                (long) wanted / MIN_SAMPLER_PERIOD * MIN_SAMPLER_PERIOD));
         final long reached = (long) (3 * (own + roundTrip * suggested / period));
         final String setting = type + "#period=" + suggested / MIN_SAMPLER_PERIOD + "ms";
         return reached <= gapNanos ? "Record with " + setting + " to see them from the gap"
@@ -213,6 +243,22 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
 
     public List<Stall> top(final int n) {
         return top(stalls, n);
+    }
+
+    /**
+     * The threads a per-thread table leaves out, as both renderers print it:
+     * {@code 12 more that stalled, 110 threads with no stall}, leaving out a zero.
+     */
+    public static String notListed(final int moreStalled, final int clean) {
+        final StringBuilder sb = new StringBuilder();
+        if (moreStalled > 0) {
+            sb.append(moreStalled).append(" more that stalled");
+        }
+        if (clean > 0) {
+            sb.append(sb.isEmpty() ? "" : ", ").append(clean).append(clean == 1 ? " thread" : " threads")
+                    .append(" with no stall");
+        }
+        return sb.toString();
     }
 
     /** The first {@code n} of a list already in the order it is to be read. */

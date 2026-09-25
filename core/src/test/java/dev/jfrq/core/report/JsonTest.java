@@ -176,20 +176,25 @@ class JsonTest {
     void everyFamilyGlobMatchesItsThreadsAndAThreadOfOneMatchesOnlyItself() {
         final List<ThreadRef> threads = List.of(new ThreadRef(1, "pool-3-thread-1"), new ThreadRef(2, "pool-12-thread-7"),
                 new ThreadRef(3, "Netty-worker-1"), new ThreadRef(4, "Netty-worker-2"), new ThreadRef(5, "G1 Main Marker"),
-                new ThreadRef(6, "odd[1]*,name"), new ThreadRef(7, "odd[2]*,name"), new ThreadRef(8, "main"));
+                new ThreadRef(6, "odd[1]*,name"), new ThreadRef(7, "odd[2]*,name"), new ThreadRef(8, "main"),
+                new ThreadRef(9, "Netty-worker-main"), new ThreadRef(10, " idle "));
         final RecordingInfo recording = new RecordingInfo(Path.of("a.jfr"), new Interval(0, 1), 1, Map.of(), Map.of(),
                 Set.copyOf(threads), List.of());
         final Map<String, Object> doc = JsonParser.object(Json.info(recording, ThreadCensus.Result.UNKNOWN, "9.9.9"));
         final List<Map<String, Object>> families = list(doc, "threadFamilies");
-        assertEquals(5, families.size(), families.toString());
+        assertEquals(7, families.size(), families.toString());
         for (final Map<String, Object> f : families) {
             final Glob glob = Glob.of((String) f.get("glob"));
             final String family = (String) f.get("family");
             final long members = threads.stream().filter(t -> RecordingSummary.family(t.name()).equals(family)).count();
             assertEquals(f.get("threads"), members, family);
             for (final ThreadRef t : threads) {
-                assertEquals(RecordingSummary.family(t.name()).equals(family), glob.test(t.name()),
-                        f.get("glob") + " on " + t.name());
+                final boolean member = RecordingSummary.family(t.name()).equals(family);
+                // Every member matches; a family of one is a literal and matches only itself. A
+                // wildcard can reach another family's thread (Netty-worker-* and Netty-worker-main).
+                if (member || f.get("threads").equals(1L)) {
+                    assertEquals(member, glob.test(t.name()), f.get("glob") + " on '" + t.name() + "'");
+                }
             }
             // Life counts the recording cannot give are null, not zero.
             assertNull(f.get("aliveAtEnd"));

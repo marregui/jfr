@@ -140,8 +140,10 @@ public final class RecordingSummary {
         for (final Map.Entry<String, List<ThreadRef>> e : families.entrySet()) {
             final List<ThreadRef> threads = e.getValue();
             threads.sort(Comparator.comparing(ThreadRef::name));
-            final boolean outside = threads.stream().anyMatch(t -> t.isVirtual()
-                    || census.covered() != null && !census.covered().contains(t));
+            boolean outside = false;
+            for (final ThreadRef t : threads) {
+                outside |= t.isVirtual() || census.covered() != null && !census.covered().contains(t);
+            }
             out.add(new Family(e.getKey(), threads.size(), count(threads, info.threads()),
                     outside ? Nulls.INT_NULL : count(threads, census.aliveAtStart()),
                     outside ? Nulls.INT_NULL : events(threads, census.started()),
@@ -270,15 +272,22 @@ public final class RecordingSummary {
         return fold(literal(name), '*');
     }
 
-    /** {@code name} as a glob that matches it and nothing else: its metacharacters and commas escaped. */
+    /**
+     * {@code name} as a glob that matches it and nothing else: its metacharacters and commas
+     * escaped, and whitespace at either end put in a class ({@code [ ]}), since a glob's parts
+     * are trimmed.
+     */
     public static String literal(final String name) {
         final StringBuilder sb = new StringBuilder(name.length() + 4);
         for (int i = 0, n = name.length(); i < n; i++) {
             final char c = name.charAt(i);
             if (c == '*' || c == '?' || c == '[' || c == ']' || c == '\\' || c == ',') {
-                sb.append('\\');
+                sb.append('\\').append(c);
+            } else if (Character.isWhitespace(c) && (i == 0 || i == n - 1)) {
+                sb.append('[').append(c).append(']');
+            } else {
+                sb.append(c);
             }
-            sb.append(c);
         }
         return sb.toString();
     }

@@ -60,7 +60,7 @@ JVM already report about itself that points at trouble ahead*.
 | `jfrq info` | What is in the file: span, threads, event counts, and the thresholds and periods that were active when it was made. |
 
 Common options: `--top N` (rows per table, default 15; every command but `info`),
-`--html FILE`, `--timing`, `--version`, `--help`.
+`--html FILE`, `--json`, `--timing`, `--version`, `--help`.
 
 Every command prints plain text for a terminal or a ticket, and writes a self-contained
 HTML report with `--html`. A 40 MB recording is answered in about a quarter of a second;
@@ -159,7 +159,7 @@ by shape — one thread, no holder, most of the recording parked there. `stalls`
 out a timer loop: a thread whose waits from one place ran out the timeout it chose, at least
 twice and for more than half its life (a `java.util.Timer`, a cleaner, a periodic poll); the
 recording says which waits timed out, so no list is needed. One wait that timed out is
-still a stall, and a warning names every thread set aside. `--idle none` turns all of this
+still a stall, and a warning names the five threads with the most time set aside and counts the rest. `--idle none` turns all of this
 off, and in `stalls` it also empties the list of idle frames, so no sample is idle: a
 loop sitting in its selector counts as working.
 

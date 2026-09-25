@@ -66,8 +66,10 @@ public final class Json {
         }
         w.end();
         final HealthReport.Gc gc = r.gc();
+        // A count of 0 is a count only when the event was recorded: otherwise the file cannot say.
+        final boolean collected = gc.count() > 0 || r.info().isEnabled("jdk.GarbageCollection");
         w.name("gc").object();
-        w.name("collections").value(gc.count());
+        w.name("collections").value(collected ? gc.count() : Nulls.LONG_NULL);
         w.name("byCollector").object();
         for (final Map.Entry<String, Long> e : gc.collections().entrySet()) {
             w.name(e.getKey()).value(e.getValue());
@@ -78,11 +80,12 @@ public final class Json {
             w.name(e.getKey()).value(e.getValue());
         }
         w.end();
-        w.name("oldCycles").value(gc.oldCycles());
-        w.name("pauseNanos").value(gc.pauseNanos());
-        w.name("pauseShare").value(r.info().span().duration() > 0
+        w.name("oldCycles").value(gc.oldCycles() > 0 || r.info().isEnabled("jdk.OldGarbageCollection")
+                ? gc.oldCycles() : Nulls.LONG_NULL);
+        w.name("pauseNanos").value(collected ? gc.pauseNanos() : Nulls.LONG_NULL);
+        w.name("pauseShare").value(collected && r.info().span().duration() > 0
                 ? (double) gc.pauseNanos() / r.info().span().duration() : Double.NaN);
-        w.name("longestPauseNanos").value(gc.longestPauseNanos());
+        w.name("longestPauseNanos").value(collected ? gc.longestPauseNanos() : Nulls.LONG_NULL);
         w.name("gcTimeRatio").value(intOrNull(gc.gcTimeRatio()));
         w.name("pauseTargetNanos").value(gc.pauseTargetNanos());
         w.name("maxHeapBytes").value(gc.maxHeapBytes());
@@ -110,14 +113,15 @@ public final class Json {
         w.name("created").value(t.created());
         w.name("createdNanos").value(t.created() == Nulls.LONG_NULL ? Nulls.LONG_NULL : t.createdNanos());
         w.name("perSecond").value(t.rate());
-        w.name("events").value(t.samples());
+        final boolean thrown = t.samples() > 0 || r.info().isEnabled("jdk.JavaExceptionThrow");
+        w.name("events").value(thrown ? t.samples() : Nulls.LONG_NULL);
         w.name("throttle").value(t.throttle());
         w.name("errors").object();
         for (final Map.Entry<String, Long> e : t.errors().entrySet()) {
             w.name(e.getKey()).value(e.getValue());
         }
         w.end();
-        w.name("classesFound").value(t.byClass().size());
+        w.name("classesFound").value(thrown ? t.byClass().size() : Nulls.LONG_NULL);
         w.name("byClass").array();
         for (final HealthReport.ClassRow c : top(t.byClass(), top)) {
             w.object();
@@ -129,7 +133,7 @@ public final class Json {
             w.end();
         }
         w.end();
-        w.name("sitesFound").value(t.bySite().size());
+        w.name("sitesFound").value(thrown ? t.bySite().size() : Nulls.LONG_NULL);
         w.name("bySite").array();
         for (final HealthReport.SiteRow s : top(t.bySite(), top)) {
             w.object();
@@ -297,14 +301,20 @@ public final class Json {
         w.name("waits").value(r.waits().size());
         w.name("clippedWaits").value(r.clippedCount());
         if (bySite) {
+            final List<ContentionReport.SiteStats> sites = r.lockSites(Integer.MAX_VALUE);
+            w.name("sitesFound").value(sites.size());
             w.name("sites").array();
-            for (final ContentionReport.SiteStats s : r.lockSites(top)) {
+            for (final ContentionReport.SiteStats s : top(sites, top)) {
                 w.object();
                 w.name("kind").value(s.kind().name());
                 w.name("totalNanos").value(s.totalNanos());
                 w.name("waits").value(s.count());
                 w.name("maxNanos").value(s.maxNanos());
-                w.name("locks").strings(s.locks().stream().map(Wait.LockKey::pretty).toList());
+                final List<String> locks = new ArrayList<>(s.locks().size());
+                for (final Wait.LockKey lock : s.locks()) {
+                    locks.add(lock.pretty());
+                }
+                w.name("locks").strings(locks);
                 w.name("waiters").strings(names(s.waiters()));
                 w.name("heldBy").strings(names(s.owners()));
                 w.name("stack");
@@ -313,15 +323,19 @@ public final class Json {
             }
             w.end();
         } else {
+            final List<ContentionReport.LockStats> locks = r.locks(Integer.MAX_VALUE);
+            w.name("locksFound").value(locks.size());
             w.name("locks").array();
-            for (final ContentionReport.LockStats l : r.locks(top)) {
+            for (final ContentionReport.LockStats l : top(locks, top)) {
                 lockStats(w, l);
             }
             w.end();
         }
+        final List<ContentionReport.ThreadStats> waiters = r.waiters(Integer.MAX_VALUE);
+        w.name("threadsFound").value(waiters.size());
         w.name("threads").array();
         final double span = Math.max(1, info.span().duration());
-        for (final ContentionReport.ThreadStats t : r.waiters(top)) {
+        for (final ContentionReport.ThreadStats t : top(waiters, top)) {
             w.object();
             thread(w, t.thread());
             w.name("totalNanos").value(t.totalNanos());
@@ -345,8 +359,10 @@ public final class Json {
         w.name("parks").value(r.workWaits().size());
         w.name("totalNanos").value(r.workWaitNanos());
         w.name("byShape").value(r.perchCount());
+        final List<ContentionReport.LockStats> queues = r.workWaitLocks(Integer.MAX_VALUE);
+        w.name("queuesFound").value(queues.size());
         w.name("queues").array();
-        for (final ContentionReport.LockStats l : r.workWaitLocks(top)) {
+        for (final ContentionReport.LockStats l : top(queues, top)) {
             lockStats(w, l);
         }
         w.end();
@@ -380,7 +396,7 @@ public final class Json {
         w.name("durationNanos").value(wait.duration());
         w.name("lock").value(wait.lock().pretty());
         w.name("heldBy").value(wait.owner() == null ? null : wait.owner().name());
-        w.name("handedOnThrough").strings(wait.via().stream().map(ThreadRef::name).toList());
+        w.name("handedOnThrough").strings(names(wait.via(), false));
         if (withStack) {
             stack(w, wait.stack());
         }
@@ -393,8 +409,10 @@ public final class Json {
                                final String version) {
         final Writer w = envelope("alloc", version, r.info());
         estimate(w, r);
+        final List<AllocationReport.Row<String>> threads = r.threads(Integer.MAX_VALUE);
+        w.name("threadsFound").value(threads.size());
         w.name("threads").array();
-        for (final AllocationReport.Row<String> row : r.threads(top)) {
+        for (final AllocationReport.Row<String> row : top(threads, top)) {
             w.object();
             w.name("thread").value(row.key());
             w.name("bytes").value(row.bytes());
@@ -413,8 +431,10 @@ public final class Json {
             w.end();
         }
         w.end();
+        final List<AllocationReport.Row<String>> classes = r.classes(Integer.MAX_VALUE);
+        w.name("classesFound").value(classes.size());
         w.name("classes").array();
-        for (final AllocationReport.Row<String> row : r.classes(top)) {
+        for (final AllocationReport.Row<String> row : top(classes, top)) {
             w.object();
             w.name("class").value(row.key());
             w.name("bytes").value(row.bytes());
@@ -426,16 +446,20 @@ public final class Json {
         w.end();
         if (sites) {
             w.name("siteKey").value(key.description());
+            final List<AllocationReport.Row<String>> roots = r.packageRoots(Integer.MAX_VALUE);
+            w.name("packagesFound").value(roots.size());
             w.name("packages").array();
-            for (final AllocationReport.Row<String> root : r.packageRoots(top)) {
+            for (final AllocationReport.Row<String> root : top(roots, top)) {
                 w.object();
                 w.name("package").value(root.key());
                 w.name("share").value(root.share());
                 w.end();
             }
             w.end();
+            final List<AllocationReport.SiteRow> rows = r.sites(key, Integer.MAX_VALUE);
+            w.name("sitesFound").value(rows.size());
             w.name("sites").array();
-            for (final AllocationReport.SiteRow row : r.sites(key, top)) {
+            for (final AllocationReport.SiteRow row : top(rows, top)) {
                 w.object();
                 w.name("site").value(row.label());
                 w.name("bytes").value(row.bytes());
@@ -482,8 +506,10 @@ public final class Json {
         w.name("change").object();
         delta(w, d.total());
         w.end();
+        final List<AllocationDiff.Delta<String>> threads = d.threads(Integer.MAX_VALUE);
+        w.name("threadsFound").value(threads.size());
         w.name("threads").array();
-        for (final AllocationDiff.Delta<String> x : d.threads(top)) {
+        for (final AllocationDiff.Delta<String> x : top(threads, top)) {
             w.object();
             w.name("thread").value(x.key());
             delta(w, x);
@@ -492,8 +518,10 @@ public final class Json {
             w.end();
         }
         w.end();
+        final List<AllocationDiff.Delta<String>> classes = d.classes(Integer.MAX_VALUE);
+        w.name("classesFound").value(classes.size());
         w.name("classes").array();
-        for (final AllocationDiff.Delta<String> x : d.classes(top)) {
+        for (final AllocationDiff.Delta<String> x : top(classes, top)) {
             w.object();
             w.name("class").value(x.key());
             delta(w, x);
@@ -504,8 +532,10 @@ public final class Json {
         w.end();
         if (sites) {
             w.name("siteKey").value(key.description());
+            final List<AllocationDiff.Delta<AllocationDiff.Site>> deltas = d.sites(key, Integer.MAX_VALUE);
+            w.name("sitesFound").value(deltas.size());
             w.name("sites").array();
-            for (final AllocationDiff.Delta<AllocationDiff.Site> x : d.sites(key, top)) {
+            for (final AllocationDiff.Delta<AllocationDiff.Site> x : top(deltas, top)) {
                 w.object();
                 w.name("site").value(x.key().label());
                 delta(w, x);
@@ -596,7 +626,19 @@ public final class Json {
     }
 
     private static List<String> names(final Collection<ThreadRef> threads) {
-        return threads.stream().map(ThreadRef::name).sorted().toList();
+        return names(threads, true);
+    }
+
+    /** The threads' names, in name order or, for a chain, in its own order. */
+    private static List<String> names(final Collection<ThreadRef> threads, final boolean sorted) {
+        final List<String> out = new ArrayList<>(threads.size());
+        for (final ThreadRef t : threads) {
+            out.add(t.name());
+        }
+        if (sorted) {
+            out.sort(null);
+        }
+        return out;
     }
 
     private static <T> List<T> top(final List<T> list, final int n) {

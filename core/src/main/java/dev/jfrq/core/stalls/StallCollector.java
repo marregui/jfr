@@ -261,7 +261,8 @@ public final class StallCollector implements JfrReader.Sink {
                     Events.booleanOr(e, Fields.TIMED_OUT, false, interner)));
             case EventKinds.THREAD_SLEEP -> {
                 final Interval interval = Events.interval(e);
-                final long time = Events.longOr(e, Fields.TIME, Nulls.LONG_NULL, interner);
+                // In the recording's own unit: nanoseconds on JDK 25, milliseconds on JDK 17.
+                final long time = Events.durationNanosOr(e, Fields.TIME, Nulls.LONG_NULL, interner);
                 t.blocks.add(new Block(interval, BlockKind.SLEEP, "", Events.stack(e, interner),
                         time != Nulls.LONG_NULL && interval.duration() >= time));
             }
@@ -290,6 +291,7 @@ public final class StallCollector implements JfrReader.Sink {
      * park carries neither.
      */
     private boolean parkTimedOut(@Transient final RecordedEvent e, final Interval interval) {
+        // Nanoseconds on every JDK, and Long.MIN_VALUE for an untimed park, which a Duration cannot hold.
         final long timeout = Events.longOr(e, Fields.TIMEOUT, Nulls.LONG_NULL, interner);
         if (timeout > 0) {
             return interval.duration() >= timeout;

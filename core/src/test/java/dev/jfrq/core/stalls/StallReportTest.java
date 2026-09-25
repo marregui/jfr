@@ -73,6 +73,27 @@ class StallReportTest {
     }
 
     @Test
+    void aBoundPastTheRecordingIsNoBound() {
+        // 10 s recorded: a thread blind below 12 s is not seen at all, not "seen from 12 s".
+        assertTrue(report(20, summary(1, Sight.NATIVE_SAMPLER, 1_750, 571, 571),
+                summary(2, Sight.NATIVE_SAMPLER, 12_000, 4_000, 4_000)).unseen().getFirst()
+                .startsWith("on 2 of 2 threads, a stall no event explains is seen only from 1.75 s, and not at all "
+                        + "on 1 of them"));
+        assertTrue(report(20, summary(1, Sight.OWN_ABSENCE, 12_000, 51, 0)).unseen().getFirst()
+                .contains("is not seen at all"));
+    }
+
+    @Test
+    void theRemedyNeverGoesUnderTheSamplersFloor() {
+        // 1.5 ms: one whole millisecond shorter would be 0.5 ms, below the 1 ms the sampler takes.
+        final RecordingInfo fine = new RecordingInfo(Path.of("a.jfr"), new Interval(0, 10_000 * MS), 1, Map.of(),
+                Map.of("jdk.NativeMethodSample", Map.of("enabled", "true", "period", "1500 us")), Set.of(), List.of());
+        final String line = new StallReport(fine, 50 * MS, List.of(summary(1, Sight.NATIVE_SAMPLER, 1_750, 571, 571)),
+                List.of(), List.of(), List.of()).unseen().getFirst();
+        assertTrue(line.contains("jdk.NativeMethodSample#period=1ms"), line);
+    }
+
+    @Test
     void aThreadsOwnAbsencesAreNotTheSamplers() {
         final StallReport r = report(20, summary(1, Sight.OWN_ABSENCE, 510, 51, 0),
                 summary(2, Sight.OWN_ABSENCE, 620, 51, 0), summary(3, Sight.OWN_ABSENCE, 0, 0, 0));

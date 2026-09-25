@@ -206,8 +206,10 @@ public final class Interner {
         if (index < 0) {
             return methodsByIdentity.valueAtQuick(index);
         }
-        final String type = className(m.getType());
-        final Method method = new Method(type == null ? UNKNOWN : type, m.getName());
+        // The raw name, address and all: a frame keeps it so it can say it is hidden, and prints
+        // and keys itself without the address (Frame.stableName, Frame.pretty).
+        final RecordedClass type = m.getType();
+        final Method method = new Method(type == null ? UNKNOWN : type.getName(), m.getName());
         if (methodsByIdentity.size() >= IDENTITY_LIMIT) {
             methodsByIdentity.clear();
             index = methodsByIdentity.keyIndex(m);
