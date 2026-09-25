@@ -12,7 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -90,7 +90,7 @@ public final class Live {
               --recording ID|NAME  which recording, when the JVM runs more than one; a name
                                    two recordings share is an error: use the id
               --out FILE           where the dump goes, replacing FILE (default
-                                   <pid>-<command>-<HHmmss.SSS>.jfr here, never replaced)
+                                   <pid>-<command>-<HHmmss.SSS>Z.jfr here, UTC, never replaced)
               --state DIR          where cursors are kept (default ~/.jfrq/live)
               --max-age D          keep this much recent data: 10m, 1h, in whole seconds (a
                                    fraction is rounded up); 0 or infinity removes the bound
@@ -110,17 +110,21 @@ public final class Live {
             shorter than asked. exit status: 0 ok, 1 the JVM or the dump failed, 2 usage error
             """.formatted(Main.VERSION);
 
-    private static final DateTimeFormatter DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.ROOT)
-            .withZone(ZoneId.systemDefault());
+    /**
+     * Every time jfrq-live prints is UTC and says so, as jfrq's own header does: a dump is read
+     * on other machines and next to other tools, and a clock time without a zone is a guess.
+     */
+    private static final DateTimeFormatter DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'",
+            Locale.ROOT).withZone(ZoneOffset.UTC);
     private static final String DEFAULT_NAME = "jfrq-live";
-    private static final DateTimeFormatter FILE_STAMP = DateTimeFormatter.ofPattern("HHmmss.SSS", Locale.ROOT)
-            .withZone(ZoneId.systemDefault());
+    private static final DateTimeFormatter FILE_STAMP = DateTimeFormatter.ofPattern("HHmmss.SSS'Z'", Locale.ROOT)
+            .withZone(ZoneOffset.UTC);
     private static final Set<String> FLAGS = Set.of("help", "version");
     private static final Pattern SIZE = Pattern.compile("\\s*(\\d+)\\s*([kKmMgGtT]?)[bB]?\\s*");
     /** Chunk boundaries are why a file and its window differ by a little; more than this is worth a line. */
     private static final Duration SLACK = Duration.ofSeconds(1);
-    private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss.SSS", Locale.ROOT)
-            .withZone(ZoneId.systemDefault());
+    private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss.SSS'Z'", Locale.ROOT)
+            .withZone(ZoneOffset.UTC);
 
     private final PrintStream err;
     private final PrintStream out;
@@ -142,7 +146,7 @@ public final class Live {
         stream.print(text + '\n');
     }
 
-    /** {@code 14:03:07.121 .. 14:05:12.004}, with "start" and "now" for the open ends. */
+    /** {@code 14:03:07.121Z .. 14:05:12.004Z}, with "start" and "now" for the open ends. */
     static String describe(final Window w) {
         return (w.begin() == null ? "the start" : TIME.format(w.begin())) + " .. "
                 + (w.end() == null ? "now" : TIME.format(w.end()));
@@ -512,12 +516,15 @@ public final class Live {
                 cursor.advance(taken, snapshot.stop());
             }
         }
-        check(snapshot, chunks, window, command, r, jvm);
-        line(out, cursorLine(cursor));
+        // A question that answers in JSON owns standard output: a program reads it whole, so
+        // what the dump itself says goes to standard error instead of ahead of the document.
+        final PrintStream to = question.length > 0 && Main.answersInJson(question) ? err : out;
+        check(snapshot, chunks, window, command, r, jvm, to);
+        line(to, cursorLine(cursor));
         if (question.length == 0) {
             return 0;
         }
-        line(out, "");
+        line(to, "");
         final List<String> argv = new ArrayList<>(question.length + 1);
         argv.add(question[0]);
         argv.add(file.toString());
@@ -529,34 +536,34 @@ public final class Live {
      * The span check: what the file holds against what was asked, and why they differ when
      * they do. The chunk headers say it all, so the dump is not parsed.
      */
-    private void check(final Snapshot snapshot, final Chunks chunks, final Window window, final String command,
-            final RecordingInfo r, final Jvm jvm) throws IOException {
+    private static void check(final Snapshot snapshot, final Chunks chunks, final Window window, final String command,
+            final RecordingInfo r, final Jvm jvm, final PrintStream to) throws IOException {
         if (chunks.complete() == 0) {
             throw new IOException("the dump " + snapshot.file() + " holds no complete chunk");
         }
         final Instant start = Instant.ofEpochSecond(0, chunks.startNanos());
         final Instant end = Instant.ofEpochSecond(0, chunks.endNanos());
-        line(out, String.format(Locale.ROOT, "Dumped     %s  %s, %d chunk%s, %s .. %s (%s)", snapshot.file(),
+        line(to, String.format(Locale.ROOT, "Dumped     %s  %s, %d chunk%s, %s .. %s (%s)", snapshot.file(),
                 Bytes.format(snapshot.bytes()), chunks.count(), chunks.count() == 1 ? "" : "s", TIME.format(start),
                 TIME.format(end), Durations.format(chunks.endNanos() - chunks.startNanos())));
         if (chunks.isTruncated()) {
-            line(out, "WARNING    the file is truncated: it ends inside a chunk; " + chunks.complete()
+            line(to, "WARNING    the file is truncated: it ends inside a chunk; " + chunks.complete()
                     + " complete chunk(s) before it");
         }
         if (chunks.isInProgress()) {
-            line(out, "WARNING    the file's last chunk is not finished; jfrq will refuse it");
+            line(to, "WARNING    the file's last chunk is not finished; jfrq will refuse it");
         }
         final String why = switch (command) {
             case "full" -> "everything the recording kept";
             case "delta" -> "since the previous dump";
             default -> "the previous window again";
         };
-        line(out, String.format(Locale.ROOT, "Window     %s (%s)", describe(window), why));
+        line(to, String.format(Locale.ROOT, "Window     %s (%s)", describe(window), why));
         for (final String note : span(window, start, end, r.getStartTime(), bounds(r))) {
-            line(out, note);
+            line(to, note);
         }
         if (command.equals("full") && r.getMaxAge() == 0 && r.getMaxSize() == 0) {
-            line(out, unboundedWarning(jvm));
+            line(to, unboundedWarning(jvm));
         }
     }
 

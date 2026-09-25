@@ -243,6 +243,33 @@ public final class RecordingSummary {
      * varies per worker.
      */
     public static String family(final String name) {
+        return fold(name, 'N');
+    }
+
+    /**
+     * The {@code --thread} glob that matches every thread of {@code name}'s family:
+     * {@code pool-*-thread-*}. The same fold as {@link #family}, with a wildcard where the
+     * family has {@code N}, so a name that has a capital N of its own keeps it, over the
+     * name made {@link #literal}.
+     */
+    public static String glob(final String name) {
+        return fold(literal(name), '*');
+    }
+
+    /** {@code name} as a glob that matches it and nothing else: its metacharacters and commas escaped. */
+    public static String literal(final String name) {
+        final StringBuilder sb = new StringBuilder(name.length() + 4);
+        for (int i = 0, n = name.length(); i < n; i++) {
+            final char c = name.charAt(i);
+            if (c == '*' || c == '?' || c == '[' || c == ']' || c == '\\' || c == ',') {
+                sb.append('\\');
+            }
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    private static String fold(final String name, final char wildcard) {
         final StringBuilder sb = new StringBuilder(name.length());
         boolean digits = false;
         for (int i = 0, n = name.length(); i < n; i++) {
@@ -252,13 +279,13 @@ public final class RecordingSummary {
                 continue;
             }
             if (digits) {
-                sb.append('N');
+                sb.append(wildcard);
                 digits = false;
             }
             sb.append(c);
         }
         if (digits) {
-            sb.append('N');
+            sb.append(wildcard);
         }
         return sb.toString();
     }

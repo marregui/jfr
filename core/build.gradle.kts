@@ -1,5 +1,7 @@
 plugins {
     `java-library`
+    // JsonParser, which the cli tests read --json output with; the product never parses JSON.
+    `java-test-fixtures`
     jacoco
 }
 

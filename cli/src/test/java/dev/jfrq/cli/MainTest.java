@@ -20,6 +20,7 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -32,6 +33,7 @@ import dev.jfrq.core.model.Interner;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
+import dev.jfrq.core.report.JsonParser;
 import dev.jfrq.core.stalls.Stall;
 import jdk.jfr.Recording;
 import jdk.jfr.consumer.RecordedEvent;
@@ -403,6 +405,45 @@ class MainTest {
     }
 
     @Test
+    void everyCommandAnswersInJsonWithTheNumbersTheTextHas() throws Exception {
+        final Map<String, Object> info = JsonParser.object(json("info", recording.toString()));
+        assertEquals("info", info.get("command"));
+        assertEquals("cli.jfr", map(info, "recording").get("file"));
+
+        final Run stallsText = run("stalls", recording.toString(), "--thread", "loop-*");
+        final Map<String, Object> stalls = JsonParser.object(json("stalls", recording.toString(), "--thread", "loop-*"));
+        assertTrue(stallsText.out().contains("STALLS >= 50.0 ms: " + stalls.get("stallsFound") + " found"),
+                stallsText.out() + stalls);
+        assertEquals(1L, stalls.get("threadsMatched"));
+
+        final Map<String, Object> locks = JsonParser.object(json("locks", recording.toString()));
+        final String locksText = run("locks", recording.toString()).out();
+        assertTrue(locksText.contains("across " + locks.get("waits") + " wait"), locksText + locks);
+        JsonParser.object(json("locks", recording.toString(), "--by-site"));
+
+        final Map<String, Object> alloc = JsonParser.object(json("alloc", recording.toString(), "--sites"));
+        assertEquals("alloc", alloc.get("command"));
+        assertTrue(alloc.containsKey("sites"));
+        final Map<String, Object> diff = JsonParser.object(json("alloc", recording.toString(), "--baseline",
+                recording.toString()));
+        assertEquals(0L, map(diff, "change").get("bytesPerSecondChange"));
+    }
+
+    /** The command's standard output with --json appended, which must be the JSON document alone. */
+    private String json(final String... argv) {
+        final String[] withJson = Arrays.copyOf(argv, argv.length + 1);
+        withJson[argv.length] = "--json";
+        final Run r = run(withJson);
+        assertEquals(0, r.status(), r.err());
+        return r.out();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> map(final Map<String, Object> doc, final String name) {
+        return (Map<String, Object>) doc.get(name);
+    }
+
+    @Test
     void alloc() throws Exception {
         final Path html = dir.resolve("alloc.html");
         final Run r = run("alloc", recording.toString(), "--top", "3", "--sites", "--html", html.toString());
@@ -494,7 +535,10 @@ class MainTest {
         assertEquals(0, r.status(), r.err());
         assertTrue(r.out().contains("Threads    1 matched"), r.out());
         // The names, samples and cadence are the PER THREAD table's job, not a header line's.
-        assertTrue(r.out().contains("PER THREAD (cadence"), r.out());
+        assertTrue(r.out().contains("PER THREAD (most stalled first; cadence"), r.out());
+        // Summary first: the totals and who stalled come before the evidence.
+        assertTrue(r.out().indexOf("BY VERDICT") < r.out().indexOf("PER THREAD"), r.out());
+        assertTrue(r.out().indexOf("PER THREAD") < r.out().indexOf("STALLS >="), r.out());
         assertTrue(r.out().contains("Native cadence"), r.out());
         assertTrue(r.out().contains("loop-cli"), r.out());
         assertTrue(r.out().contains("SLEEP"), r.out());

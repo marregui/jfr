@@ -125,6 +125,15 @@ Gap        50.0 ms
 Threads    2 matched
 Unseen     on 2 of 2 threads, a stall no event explains is seen only from 151 ms to 173 ms: each is sampled in native code every ~36.1 ms, about 4 threads in native code sharing the sampler's one native slot per 10.0 ms period. Record with jdk.NativeMethodSample#period=1ms, the shortest the sampler takes, to see them from ~52.2 ms; shorter ones only blocking events can show
 
+BY VERDICT
+  Verdict          Stalls  Stalled   Worst
+  BLOCKED_MONITOR      46   7.09 s  179 ms
+
+PER THREAD (most stalled first; cadence: median interval between samples, which bounds what can be seen)
+  Thread          Samples  Java cadence  Native cadence  Unseen below  Stalls  Stalled  Share   Worst
+  event-loop-3-2      312       24.8 ms         36.1 ms        173 ms      23   3.55 s  23.4%  179 ms
+  event-loop-3-1      334             —         35.8 ms        151 ms      23   3.54 s  23.4%  179 ms
+
 STALLS >= 50.0 ms: 46 found, showing 2, longest first
    1  event-loop-3-2         +0.493s    179 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@7d45ff2c0 held by housekeeper
         at dev.jfrq.demo.SessionRegistry.touch(SessionRegistry.java:29)
@@ -136,15 +145,6 @@ STALLS >= 50.0 ms: 46 found, showing 2, longest first
         ... 20 more
    2  event-loop-3-1         +0.493s    179 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@7d45ff2c0 held by housekeeper (handed on through event-loop-3-2)
         same stack as #1
-
-BY VERDICT
-  Verdict          Stalls  Stalled   Worst
-  BLOCKED_MONITOR      46   7.09 s  179 ms
-
-PER THREAD (cadence: median interval between samples, which bounds what can be seen)
-  Thread          Samples  Java cadence  Native cadence  Unseen below  Stalls  Stalled  Share   Worst
-  event-loop-3-1      334             —         35.8 ms        151 ms      23   3.54 s  23.4%  179 ms
-  event-loop-3-2      312       24.8 ms         36.1 ms        173 ms      23   3.55 s  23.4%  179 ms
 ```
 
 Three things to read off this:
@@ -248,6 +248,11 @@ scenario blocking-io: 17763 requests; latency p50 0.1 ms  p90 0.3 ms  p99 18.1 m
 
 $ jfrq stalls demo-blocking-io.jfr --thread 'event-loop-*' --top 1
 ...
+BY VERDICT
+  Verdict      Stalls  Stalled   Worst
+  BLOCKING_IO      44   7.98 s  227 ms
+
+...
 STALLS >= 50.0 ms: 44 found, showing 1, longest first
    1  event-loop-3-2         +11.412s    227 ms  BLOCKING_IO     blocking socket read from localhost:64138 (28 B)
         at sun.nio.cs.StreamDecoder.readBytes(StreamDecoder.java:279)
@@ -259,10 +264,6 @@ STALLS >= 50.0 ms: 44 found, showing 1, longest first
         ... 1 more
         at dev.jfrq.demo.RequestHandler.lookup(RequestHandler.java:77)
         ... 25 more
-
-BY VERDICT
-  Verdict      Stalls  Stalled   Worst
-  BLOCKING_IO      44   7.98 s  227 ms
 ...
 ```
 
@@ -286,15 +287,16 @@ scenario cpu: 21971 requests; latency p50 0.1 ms  p90 0.2 ms  p99 2.1 ms  max 12
 
 $ jfrq stalls demo-cpu.jfr --thread 'event-loop-*' --top 1
 ...
+BY VERDICT
+  Verdict  Stalls  Stalled   Worst
+  BUSY         21   2.46 s  156 ms
+
+...
 STALLS >= 50.0 ms: 21 found, showing 1, longest first
    1  event-loop-3-2         +2.057s    156 ms  BUSY            busy in dev.jfrq.demo.CpuWork.burn (89% of 9 samples) [samples]
         at dev.jfrq.demo.CpuWork.burn(CpuWork.java:20)
         at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:59)
         ...
-
-BY VERDICT
-  Verdict  Stalls  Stalled   Worst
-  BUSY         21   2.46 s  156 ms
 ...
 ```
 

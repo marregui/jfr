@@ -80,10 +80,15 @@ public final class Html {
             return p.finish();
         }
 
-        p.h2("Threads");
+        p.h2("Threads, most stalled first");
+        final List<StallReport.ThreadSummary> stalled = report.stalledThreads();
+        final int clean = report.threads().size() - stalled.size();
+        if (clean > 0) {
+            p.kv("Not listed", clean + (clean == 1 ? " thread" : " threads") + " with no stall");
+        }
         p.tableStart("Thread", "Samples", "Java cadence", "Native cadence", "Unseen below", "Stalls", "Stalled",
                 "Worst");
-        for (final StallReport.ThreadSummary t : report.threads()) {
+        for (final StallReport.ThreadSummary t : stalled) {
             p.row(t.thread().name(), t.samples(), Durations.formatOrDash(t.javaCadenceNanos()),
                     Durations.formatOrDash(t.nativeCadenceNanos()), t.unseenBelow(), t.stalls(),
                     Durations.format(t.stalledNanos()), Durations.format(t.worstNanos()));

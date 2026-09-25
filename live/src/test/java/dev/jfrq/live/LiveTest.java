@@ -24,7 +24,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
@@ -52,8 +52,8 @@ import org.junit.jupiter.api.io.TempDir;
  */
 class LiveTest {
 
-    private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss.SSS", Locale.ROOT)
-            .withZone(ZoneId.systemDefault());
+    private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss.SSS'Z'", Locale.ROOT)
+            .withZone(ZoneOffset.UTC);
     private static final String PID = Long.toString(ProcessHandle.current().pid());
 
     @TempDir
@@ -146,7 +146,7 @@ class LiveTest {
     void theDefaultDumpNameIsUniqueToTheMillisecond() {
         final Args none = Args.parse(new String[0], Set.of("out"), Set.of());
         final String name = Live.dumpFile(none, "4242", "delta").toString();
-        assertTrue(name.matches("4242-delta-\\d{6}\\.\\d{3}\\.jfr"), name);
+        assertTrue(name.matches("4242-delta-\\d{6}\\.\\d{3}Z\\.jfr"), name);
         final Args named = Args.parse(new String[] {"--out", "t1.jfr"}, Set.of("out"), Set.of());
         assertEquals(Path.of("t1.jfr"), Live.dumpFile(named, "4242", "delta"));
     }
@@ -525,6 +525,17 @@ class LiveTest {
         assertEquals(i1.startNanos(), i1b.startNanos());
         assertEquals(i1.endNanos(), i1b.endNanos());
         assertEquals(afterDelta, Cursor.load(dir, PID, jvmStart).next(), "again must not move the cursor");
+
+        // A question that answers in JSON gets standard output to itself: a program reads it whole,
+        // so the dump's own lines go to standard error.
+        final Path t1c = dir.resolve("t1c.jfr");
+        final Run json = run(concat(new String[] {PID, "again", "--out", t1c.toString()}, pick, "--", "info", "--json"));
+        assertEquals(0, json.status(), json.err());
+        assertTrue(json.out().startsWith("{\"tool\":\"jfrq\","), json.out());
+        assertTrue(json.out().endsWith("}\n"), json.out());
+        assertTrue(json.out().contains("\"command\":\"info\""), json.out());
+        assertTrue(json.err().contains("Dumped     " + t1c), json.err());
+        assertTrue(json.err().contains("Cursor     next delta from"), json.err());
 
         // A failed publish must not delete a path the caller already owned. The old direct writer
         // opened this directory, failed, and then deleted it as though it were its partial file.

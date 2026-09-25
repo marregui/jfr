@@ -34,6 +34,7 @@ import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionCollector;
 import dev.jfrq.core.report.Html;
+import dev.jfrq.core.report.Json;
 import dev.jfrq.core.report.ThreadCensus;
 import dev.jfrq.core.stalls.IdleMatcher;
 import dev.jfrq.core.stalls.StallCollector;
@@ -44,10 +45,10 @@ import dev.jfrq.core.util.Glob;
  * {@code jfrq}: ask a JFR recording one question and get the answer.
  *
  * <pre>
- *   jfrq info   recording.jfr
- *   jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html]
- *   jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html]
- *   jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html]
+ *   jfrq info   recording.jfr [--json]
+ *   jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html] [--json]
+ *   jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html] [--json]
+ *   jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html] [--json]
  * </pre>
  */
 public final class Main {
@@ -68,6 +69,8 @@ public final class Main {
             common options:
               --top N        rows per table (default 15; not for info)
               --html FILE    also write a self-contained HTML report (never over a recording read)
+              --json         print the answer as one JSON document instead of text: stable
+                             field names, units in the names, UTC instants (docs/JSON.md)
               --timing       print how long reading and analysing took, to stderr
               --version, --help
 
@@ -116,7 +119,7 @@ public final class Main {
             """.formatted(VERSION);
 
     private static final Set<String> COMMON_VALUED = Set.of("top", "html");
-    private static final Set<String> COMMON_FLAGS = Set.of("help", "version", "timing");
+    private static final Set<String> COMMON_FLAGS = Set.of("help", "version", "timing", "json");
 
     /** The options each command accepts, so an option in the wrong place is a usage error. */
     private static Args parse(final String command, final String[] rest) {
@@ -141,6 +144,8 @@ public final class Main {
     private final PrintStream out;
     private final PrintStream err;
     private boolean timing;
+    /** {@code --json}: the answer as one JSON document on standard output instead of text. */
+    private boolean json;
     private long phaseStart;
 
     Main(final PrintStream out, final PrintStream err) {
@@ -213,6 +218,14 @@ public final class Main {
     }
 
     /**
+     * Whether a question {@link #check} accepted answers in JSON, by the same parser that will
+     * run it: a caller that prints lines of its own around the answer moves them out of the way.
+     */
+    public static boolean answersInJson(final String[] question) {
+        return parse(question[0], Arrays.copyOfRange(question, 1, question.length)).flag("json");
+    }
+
+    /**
      * The message for an I/O failure that names what went wrong. The JDK's file-system
      * exceptions carry only the path when the OS gave no reason, which reads as nothing at all.
      */
@@ -261,6 +274,7 @@ public final class Main {
                 return 0;
             }
             timing = args.flag("timing");
+            json = args.flag("json");
             // Every option is resolved and checked before the recording is opened (G-9.4): a bad
             // --html target is found in a millisecond, not after the whole analysis.
             final Question question = resolve(command, args, recordingPath(args));
@@ -334,7 +348,7 @@ public final class Main {
         final ThreadCensus census = new ThreadCensus();
         final RecordingInfo info = JfrReader.read(q.recording(), census);
         phase("read");
-        out.print(Text.info(info, census.result()));
+        out.print(json ? Json.info(info, census.result(), VERSION) : Text.info(info, census.result()));
         html(q.html(), () -> Html.info(info, census.result()));
         phase("render");
         return 0;
@@ -347,13 +361,15 @@ public final class Main {
             readBoth(q.recording(), current, q.baseline(), baseline);
             phase("read");
             final AllocationDiff diff = new AllocationDiff(baseline.report(), current.report());
-            out.print(Text.allocDiff(diff, q.top(), q.sites(), q.key()));
+            out.print(json ? Json.allocDiff(diff, q.top(), q.sites(), q.key(), VERSION)
+                    : Text.allocDiff(diff, q.top(), q.sites(), q.key()));
             html(q.html(), () -> Html.allocDiff(diff, q.top(), q.sites(), q.key()));
         } else {
             JfrReader.read(q.recording(), current);
             phase("read");
             final AllocationReport report = current.report();
-            out.print(Text.alloc(report, q.top(), q.sites(), q.key()));
+            out.print(json ? Json.alloc(report, q.top(), q.sites(), q.key(), VERSION)
+                    : Text.alloc(report, q.top(), q.sites(), q.key()));
             html(q.html(), () -> Html.alloc(report, q.top(), q.sites(), q.key()));
         }
         phase("render");
@@ -381,7 +397,8 @@ public final class Main {
                 lock -> locks.test(lock.pretty()) || locks.test(lock.prettyClass()));
         JfrReader.read(q.recording(), collector);
         phase("read");
-        out.print(Text.locks(collector.report(), q.top(), q.bySite()));
+        out.print(json ? Json.locks(collector.report(), q.top(), q.bySite(), VERSION)
+                : Text.locks(collector.report(), q.top(), q.bySite()));
         html(q.html(), () -> Html.locks(collector.report(), q.top(), q.bySite()));
         phase("render");
         return 0;
@@ -456,7 +473,7 @@ public final class Main {
         final StallCollector collector = new StallCollector(q.threads(), q.idle(), q.workWaits(), q.gap());
         JfrReader.read(q.recording(), collector);
         phase("read");
-        out.print(Text.stalls(collector.report(), q.top()));
+        out.print(json ? Json.stalls(collector.report(), q.top(), VERSION) : Text.stalls(collector.report(), q.top()));
         html(q.html(), () -> Html.stalls(collector.report(), q.top()));
         phase("render");
         return 0;

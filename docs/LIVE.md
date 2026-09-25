@@ -40,8 +40,8 @@ with the file inserted for you, so `-- stalls --thread 'x'` becomes
 `--recording ID\|NAME` picks the recording when the JVM runs several; with one running
 recording nothing needs saying. A name two recordings share is a usage error that lists
 their ids, and `start` refuses a name the JVM already has. `--out FILE` names the dump,
-replacing a file of that name; the default, `<pid>-<command>-<HHmmss.SSS>.jfr` in the
-current directory, is stamped to the millisecond and never replaces a file. A dump is
+replacing a file of that name; the default, `<pid>-<command>-<HHmmss.SSS>Z.jfr` in the
+current directory, is stamped to the millisecond in UTC and never replaces a file. A dump is
 readable by its owner only (mode 0600): a recording can hold command lines, environment
 variables and system properties. `--state DIR` is where cursors live (default
 `~/.jfrq/live`).
@@ -53,10 +53,13 @@ there costs no dump and does not move the cursor.
 A dump prints three lines before the question's answer:
 
 ```
-Dumped     t1.jfr  804 KB, 1 chunk, 14:23:21.688 .. 14:23:31.077 (9.39 s)
-Window     14:23:21.689 .. now (since the previous dump)
-Cursor     next delta from 14:23:31.078; last window 14:23:21.689 .. 14:23:31.077 (~/.jfrq/live/4242.properties)
+Dumped     t1.jfr  804 KB, 1 chunk, 12:23:21.688Z .. 12:23:31.077Z (9.39 s)
+Window     12:23:21.689Z .. now (since the previous dump)
+Cursor     next delta from 12:23:31.078Z; last window 12:23:21.689Z .. 12:23:31.077Z (~/.jfrq/live/4242.properties)
 ```
+
+With `--json` in the question after `--`, these lines go to standard error instead, so
+that standard output is the JSON document alone.
 
 `Dumped` is what the file holds, read from its chunk headers (the ones `jfrq info`
 starts from; the events are not parsed): size, chunks, span. `Window` is what was asked. When they differ by more than a second a line

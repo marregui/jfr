@@ -52,12 +52,23 @@ public record Frame(String type, String method, int line, boolean isNative) {
         return type.contains("$$Lambda") || type.contains("/0x");
     }
 
+    /**
+     * {@link #qualifiedName()} without the per-JVM address of a hidden class:
+     * {@code dev.app.Handler$$Lambda.run}, the same in every run of the same code.
+     */
+    public String stableName() {
+        return isHidden() ? stableType() + "." + method : qualifiedName();
+    }
+
+    private String stableType() {
+        final int cut = type.indexOf("$$Lambda");
+        return cut > 0 ? type.substring(0, cut + "$$Lambda".length()) : type;
+    }
+
     /** {@code java.lang.Thread.sleep(Thread.java:509)} in the style of a stack trace line. */
     public String pretty() {
         if (isHidden()) {
-            final int cut = type.indexOf("$$Lambda");
-            final String shown = cut > 0 ? type.substring(0, cut + "$$Lambda".length()) : type;
-            return shown + "." + method + "(lambda)";
+            return stableType() + "." + method + "(lambda)";
         }
         String file = type.substring(type.lastIndexOf('.') + 1);
         final int inner = file.indexOf('$');

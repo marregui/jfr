@@ -15,6 +15,7 @@ java {
 dependencies {
     implementation(project(":core"))
     testImplementation(libs.junit.jupiter)
+    testImplementation(testFixtures(project(":core")))
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 

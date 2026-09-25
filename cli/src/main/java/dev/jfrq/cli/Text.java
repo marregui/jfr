@@ -436,6 +436,17 @@ final class Text {
             sb.append("WARNING    ").append(w).append('\n');
         }
 
+        // Summary first, as the HTML page is: the totals and who stalled, then the evidence.
+        if (!r.stalls().isEmpty()) {
+            sb.append("\nBY VERDICT\n");
+            final TextTable verdicts = new TextTable("Verdict", "Stalls", "Stalled", "Worst").numeric(1, 2, 3);
+            for (final StallReport.VerdictSummary v : r.byVerdict()) {
+                verdicts.row(v.verdict(), v.count(), Durations.format(v.totalNanos()), Durations.format(v.worstNanos()));
+            }
+            sb.append(verdicts.render("  "));
+        }
+        sb.append(perThread(r, top));
+
         final List<Stall> explained = r.explained();
         final List<Stall> shown = StallReport.top(explained, top);
         sb.append(String.format(Locale.ROOT, "\nSTALLS >= %s: %d found%s, longest first\n",
@@ -457,28 +468,48 @@ final class Text {
             sb.append(blindSpotNote(r.info()));
             sb.append(rows(r, shownGaps));
         }
-
-        if (!r.stalls().isEmpty()) {
-            sb.append("\nBY VERDICT\n");
-            final TextTable verdicts = new TextTable("Verdict", "Stalls", "Stalled", "Worst").numeric(1, 2, 3);
-            for (final StallReport.VerdictSummary v : r.byVerdict()) {
-                verdicts.row(v.verdict(), v.count(), Durations.format(v.totalNanos()), Durations.format(v.worstNanos()));
-            }
-            sb.append(verdicts.render("  "));
-        }
-
-        sb.append("\nPER THREAD (cadence: median interval between samples, which bounds what can be seen)\n");
-        final TextTable summary = new TextTable("Thread", "Samples", "Java cadence", "Native cadence",
-                "Unseen below", "Stalls", "Stalled", "Share", "Worst").numeric(1, 2, 3, 4, 5, 6, 7, 8);
-        final double span = Math.max(1, r.info().span().duration());
-        for (final StallReport.ThreadSummary t : r.threads()) {
-            summary.row(t.thread().name(), t.samples(), Durations.formatOrDash(t.javaCadenceNanos()),
-                    Durations.formatOrDash(t.nativeCadenceNanos()), t.unseenBelow(), t.stalls(),
-                    Durations.format(t.stalledNanos()), pct(t.stalledNanos() / span),
-                    Durations.format(t.worstNanos()));
-        }
-        sb.append(summary.render("  "));
         sb.append(pauses(r, top));
+        return sb.toString();
+    }
+
+    /**
+     * The threads that stalled, most stalled first, at most {@code top}; the rest, and the
+     * threads with no stall, counted on one line rather than listed.
+     */
+    private static String perThread(final StallReport r, final int top) {
+        final List<StallReport.ThreadSummary> stalled = r.stalledThreads();
+        final List<StallReport.ThreadSummary> shown = stalled.size() > top ? stalled.subList(0, top) : stalled;
+        final StringBuilder sb = new StringBuilder("\nPER THREAD (most stalled first; cadence: median interval between "
+                + "samples, which bounds what can be seen)\n");
+        if (!shown.isEmpty()) {
+            final TextTable summary = new TextTable("Thread", "Samples", "Java cadence", "Native cadence",
+                    "Unseen below", "Stalls", "Stalled", "Share", "Worst").numeric(1, 2, 3, 4, 5, 6, 7, 8);
+            final double span = Math.max(1, r.info().span().duration());
+            for (final StallReport.ThreadSummary t : shown) {
+                summary.row(t.thread().name(), t.samples(), Durations.formatOrDash(t.javaCadenceNanos()),
+                        Durations.formatOrDash(t.nativeCadenceNanos()), t.unseenBelow(), t.stalls(),
+                        Durations.format(t.stalledNanos()), pct(t.stalledNanos() / span),
+                        Durations.format(t.worstNanos()));
+            }
+            sb.append(summary.render("  "));
+        }
+        final String rest = rest(stalled.size() - shown.size(), r.threads().size() - stalled.size());
+        if (!rest.isEmpty()) {
+            sb.append("  ").append(rest).append('\n');
+        }
+        return sb.toString();
+    }
+
+    /** {@code 12 more that stalled, 110 with no stall}, leaving out a zero. */
+    static String rest(final int moreStalled, final int clean) {
+        final StringBuilder sb = new StringBuilder();
+        if (moreStalled > 0) {
+            sb.append(moreStalled).append(" more that stalled");
+        }
+        if (clean > 0) {
+            sb.append(sb.isEmpty() ? "" : ", ").append(clean).append(clean == 1 ? " thread" : " threads")
+                    .append(" with no stall");
+        }
         return sb.toString();
     }
 

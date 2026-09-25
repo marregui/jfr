@@ -670,7 +670,22 @@ writes one self-contained file: no scripts, no external resources, inline SVG
 timelines with a box per stall (or per wait) and a tooltip with the detail. A timeline
 row draws at most 2,000 boxes, the longest ones: a recording with a 1 ms threshold can
 hold hundreds of thousands of waits, and a file of hundreds of megabytes helps nobody.
-Both text and HTML come from the same report objects, so they never disagree.
+`--json` writes one document for a program to read, with the field names as the contract
+(docs/JSON.md). Text, HTML and JSON come from the same report objects and take the same
+`--top`, so they never disagree.
+
+The summary comes first. A `stalls --thread '*'` run on a live node was 235 lines, and
+its `PER THREAD` table listed all 134 threads alphabetically, most with no stall, after
+the stall list: the reader, human or agent, read the evidence before learning what it
+added up to. The text report now opens with `BY VERDICT` and `PER THREAD`, as the HTML
+page always did, and lists only the threads that stalled, most stalled first, bounded by
+`--top`, with one line counting the rest; what the others cannot show is the `Unseen`
+line's to say (section 4.3). The same run is 93 lines.
+
+Times are UTC, and say so: the report header prints an ISO instant, `jfrq-live` its clock
+times as `12:23:21.688Z`, and a dump's default file name is stamped in UTC. A recording is
+read on other machines and next to other tools' output, and a clock time without a zone
+is a guess; `jfrq-live` used to print local time beside a UTC header.
 
 ## 6. Damaged and unusual files
 

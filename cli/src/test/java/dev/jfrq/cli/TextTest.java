@@ -368,7 +368,8 @@ class TextTest {
         assertTrue(text.contains("Unseen     on 1 of 1 threads, a stall no event explains is seen only from 1.75 s"), text);
         assertTrue(text.indexOf("Unseen") < text.indexOf("WARNING    a warning"), text);
         assertTrue(text.contains("  none this recording can show: see Unseen above"), text);
-        assertTrue(section(text, "PER THREAD").contains("1.75 s"), text);
+        // A thread with no stall is counted, not listed: the Unseen line speaks for it.
+        assertTrue(section(text, "PER THREAD").contains("1 thread with no stall"), text);
     }
 
     @Test

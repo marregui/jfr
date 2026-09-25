@@ -278,6 +278,23 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
         return out;
     }
 
+    /**
+     * The threads that stalled, most stalled first: the rows a reader acts on. The others are
+     * counted, not listed, by both renderers; on a whole JVM they were most of a 235-line
+     * report, and what they cannot show is the {@link #unseen()} line's to say.
+     */
+    public List<ThreadSummary> stalledThreads() {
+        final List<ThreadSummary> out = new ArrayList<>();
+        for (final ThreadSummary t : threads) {
+            if (t.stalls() > 0) {
+                out.add(t);
+            }
+        }
+        out.sort(Comparator.comparingLong(ThreadSummary::stalledNanos).reversed()
+                .thenComparing(t -> t.thread().name()));
+        return out;
+    }
+
     public List<Stall> stallsOf(final ThreadRef thread) {
         final List<Stall> out = new ArrayList<>();
         for (final Stall s : stalls) {

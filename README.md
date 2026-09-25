@@ -96,11 +96,17 @@ and start-up is merely ordinary.
 ## Usage
 
 ```
-jfrq info   recording.jfr
-jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html]
-jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html]
-jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html]
+jfrq info   recording.jfr [--json]
+jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html] [--json]
+jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html] [--json]
+jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html] [--json]
 ```
+
+`--json` prints the answer as one JSON document instead of text, for a program or an
+agent to read: stable field names with the unit in the name, instants in UTC, `null` where
+the recording cannot say, and a `schema` number that changes only when a field does.
+[docs/JSON.md](docs/JSON.md) lists every field. Every time `jfrq` and `jfrq-live` print is
+UTC and says so.
 
 `GLOB` is a comma-separated list of shell globs on thread names (`*`, `?`, `[0-3]`,
 `[!0-9]`; a backslash makes the next character literal): `'event-loop-*'`,
