@@ -136,6 +136,9 @@ class ThreadCensusTest {
             stayer[0].start();
             JfrFixtures.onThread("gone-1", () -> JfrFixtures.sleep(1));
             JfrFixtures.onThread("gone-2", () -> JfrFixtures.sleep(1));
+            // A joined thread is gone in Java before the JVM has torn it down: stopped at once, the
+            // closing census can still list gone-2 and its ThreadEnd come after it (seen on Windows).
+            JfrFixtures.sleep(500);
         });
         release.countDown();
         silent.join();

@@ -96,7 +96,7 @@ class HealthCollectorTest {
     @BeforeAll
     static void record() throws Exception {
         file = JfrFixtures.record(dir, "health", HealthCollectorTest::settings, () -> {
-            // The throwable count is the difference of two statistics readings: one before the body.
+            // The throwable count is the difference of the statistics read at the chunk's two ends.
             JfrFixtures.sleep(150);
             assertEquals(THROWN, makeTrouble());
             for (int i = 0; i < ERRORS; i++) {
@@ -119,9 +119,13 @@ class HealthCollectorTest {
             r.enable(type);
         }
         for (final String type : List.of("jdk.GCConfiguration", "jdk.GCHeapConfiguration", "jdk.CPULoad",
-                "jdk.JavaThreadStatistics", "jdk.ResidentSetSize", "jdk.ExceptionStatistics")) {
+                "jdk.JavaThreadStatistics", "jdk.ResidentSetSize")) {
             r.enable(type).withPeriod(Duration.ofMillis(50));
         }
+        // Read when the chunk begins and when it ends, so the two readings bracket the body
+        // whatever the platform's timer does: on Windows the first 50 ms reading can come only
+        // after the body has thrown everything.
+        r.enable("jdk.ExceptionStatistics").with("period", "everyChunk");
         r.enable("jdk.JavaExceptionThrow").withStackTrace().with("throttle", "off");
     }
 
