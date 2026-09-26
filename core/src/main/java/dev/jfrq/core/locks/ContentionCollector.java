@@ -7,6 +7,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.Predicate;
 
+import dev.jfrq.core.coll.LongList;
 import dev.jfrq.core.coll.LongObjHashMap;
 import dev.jfrq.core.coll.ObjList;
 import dev.jfrq.core.jfr.EventKinds;
@@ -18,6 +19,7 @@ import dev.jfrq.core.jfr.Transient;
 import dev.jfrq.core.model.Interner;
 import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.stalls.IdleMatcher;
+import dev.jfrq.core.util.Sorts;
 import jdk.jfr.consumer.RecordedEvent;
 
 /**
@@ -35,8 +37,10 @@ public final class ContentionCollector implements JfrReader.Sink {
 
     public static final String MONITOR_ENTER = EventKinds.nameOf(EventKinds.JAVA_MONITOR_ENTER);
     public static final String THREAD_PARK = EventKinds.nameOf(EventKinds.THREAD_PARK);
+    /** Read for when a lock could have moved to a new address, not as a wait. */
+    public static final String GC_PHASE_PAUSE = EventKinds.nameOf(EventKinds.GC_PHASE_PAUSE);
 
-    private static final Set<String> TYPES = Set.of(MONITOR_ENTER, THREAD_PARK);
+    private static final Set<String> TYPES = Set.of(MONITOR_ENTER, THREAD_PARK, GC_PHASE_PAUSE);
 
     private final long minNanos;
     private final Predicate<String> waiterFilter;
@@ -50,6 +54,9 @@ public final class ContentionCollector implements JfrReader.Sink {
      * compares by value.
      */
     private final LongObjHashMap<Wait.LockKey> locks = new LongObjHashMap<>(64, Long.MIN_VALUE);
+    /** Collection pause starts and ends, in file order until {@link #finish}. */
+    private final LongList pauseStarts = new LongList(64);
+    private final LongList pauseEnds = new LongList(64);
     private Interner interner = new Interner();
     private ContentionReport report;
 
@@ -103,6 +110,12 @@ public final class ContentionCollector implements JfrReader.Sink {
      */
     @Override
     public void accept(@Transient final RecordedEvent e, final int kind) {
+        if (kind == EventKinds.GC_PHASE_PAUSE) {
+            final long start = Events.startNanos(e);
+            pauseStarts.add(start);
+            pauseEnds.add(Math.max(start, Events.endNanos(e)));
+            return;
+        }
         final ThreadRef waiter = interner.thread(e);
         if (waiter == null) {
             return;
@@ -137,7 +150,13 @@ public final class ContentionCollector implements JfrReader.Sink {
 
     @Override
     public void finish(final RecordingInfo info) {
-        report = new ContentionReport(info, waits.toList(), minNanos, waiterFilter, workWaits, lockFilter);
+        final int[] order = Sorts.order(pauseStarts);
+        final LongList pauses = new LongList(2 * order.length);
+        for (final int i : order) {
+            pauses.add(pauseStarts.getQuick(i));
+            pauses.add(pauseEnds.getQuick(i));
+        }
+        report = new ContentionReport(info, waits.toList(), minNanos, waiterFilter, workWaits, lockFilter, pauses);
     }
 
     public ContentionReport report() {

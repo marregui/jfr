@@ -6,6 +6,7 @@ package dev.jfrq.core.locks;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -15,6 +16,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 
+import dev.jfrq.core.coll.LongList;
 import dev.jfrq.core.coll.ObjList;
 import dev.jfrq.core.coll.ObjLongHashMap;
 import dev.jfrq.core.coll.ObjObjHashMap;
@@ -189,6 +191,16 @@ public final class ContentionReport {
     public ContentionReport(final RecordingInfo info, final List<Wait> waits, final long minNanos,
                             final Predicate<String> waiterFilter, final IdleMatcher workWaits,
                             final Predicate<Wait.LockKey> lockFilter) {
+        this(info, waits, minNanos, waiterFilter, workWaits, lockFilter, new LongList(0));
+    }
+
+    /**
+     * @param gcPauses the recording's collection pauses as flat (start, end) pairs, ascending:
+     *                 when a lock could have moved to a new address (see {@link Perch#moved})
+     */
+    public ContentionReport(final RecordingInfo info, final List<Wait> waits, final long minNanos,
+                            final Predicate<String> waiterFilter, final IdleMatcher workWaits,
+                            final Predicate<Wait.LockKey> lockFilter, final LongList gcPauses) {
         this.info = info;
         final ObjList<Wait> sorted = new ObjList<>(waits.size());
         for (int i = 0, n = waits.size(); i < n; i++) {
@@ -244,6 +256,7 @@ public final class ContentionReport {
                     }
                 }
             });
+            foldMoved(sorted, insides, shapes, perches, perchLoops, loops, gcPauses, window.duration());
             // What shape finds is a lock; what it identifies is the loop above it. One worker
             // out of thirteen that was busy for two thirds of the recording parks on its own
             // mailbox exactly like the other twelve, and a rule that let a threshold decide
@@ -304,6 +317,58 @@ public final class ContentionReport {
         this.perchCount = byShape.size();
     }
 
+
+    /**
+     * The perches a collection split by moving the lock: the park locks only one thread waited
+     * on, folded by {@link Perch.Place} (that thread and the loop it waits in), whose total
+     * passes the rule and whose changes of address {@link Perch#moved} explains. Each folded
+     * lock becomes a perch, and the loop answers for the others as any perch's does.
+     */
+    private static void foldMoved(final ObjList<Wait> sorted, final ObjList<Wait> insides,
+                                  final Map<Wait.LockKey, Perch.Shape> shapes, final Set<Wait.LockKey> perches,
+                                  final Set<String> perchLoops, final Map<Stack, String> loops,
+                                  final LongList gcPauses, final long windowNanos) {
+        if (gcPauses.isEmpty()) {
+            return;
+        }
+        final Map<Perch.Place, Perch.Shape> folded = new HashMap<>();
+        final Map<Wait.LockKey, Perch.Place> placeOf = new HashMap<>();
+        shapes.forEach((lock, s) -> {
+            if (lock.kind() == Wait.Kind.PARK && !perches.contains(lock) && s.ownThread()) {
+                final String loop = loops.computeIfAbsent(s.stack(), Perch::loop);
+                if (loop != null) {
+                    final Perch.Place place = new Perch.Place(s.waiter(), loop);
+                    folded.computeIfAbsent(place, _ -> new Perch.Shape()).add(s);
+                    placeOf.put(lock, place);
+                }
+            }
+        });
+        folded.values().removeIf(s -> !s.matches(windowNanos));
+        if (folded.isEmpty()) {
+            return;
+        }
+        // The waits at each candidate place in time order: one thread's, so start order is end order.
+        final Map<Perch.Place, LongList[]> turns = new HashMap<>();
+        for (int i = 0, n = sorted.size(); i < n; i++) {
+            final Wait w = sorted.getQuick(i);
+            final Perch.Place place = insides.getQuick(i).duration() > 0 ? placeOf.get(w.lock()) : null;
+            if (place != null && folded.containsKey(place)) {
+                final LongList[] t = turns.computeIfAbsent(place, _ -> new LongList[]{new LongList(), new LongList()});
+                t[0].add(w.lock().address());
+                t[1].add(w.interval().end());
+            }
+        }
+        turns.forEach((place, t) -> {
+            if (Perch.moved(t[0], t[1], gcPauses)) {
+                perchLoops.add(place.loop());
+                placeOf.forEach((lock, p) -> {
+                    if (p.equals(place)) {
+                        perches.add(lock);
+                    }
+                });
+            }
+        });
+    }
 
     /** A wait counted only for the part inside the window; the same object when it is wholly inside. */
     private static Wait clip(final Wait w, final Interval window) {

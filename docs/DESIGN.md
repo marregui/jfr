@@ -358,14 +358,35 @@ nothing to tell them apart.
 
 **Lock identity** is class plus address. Addresses are stable only until a collection
 moves the object, so the class is always shown and the address only disambiguates. A
-move splits a lock in two, which also splits the evidence for a perch: a mailbox moved at
-a third and at two thirds of the window is three locks at a third each, none of them
-over the line, and is listed as contention unless another perch shares its loop. JFR
-carries no identity that survives a move, and a rule that joined one thread's locks of
-one class and one loop would also join distinct objects: on one loaded recording it
-would have moved 153 s of listed waits, spread over 32 and 42 addresses on two threads,
-into waiting for work. So the split stays, and `WHERE THEY WAITED` shows the
-pieces under one stack.
+move splits a lock in two, which also splits the evidence for a perch: a dispatcher's
+mailbox that young collections moved eight times in three minutes was nine locks of about
+twenty seconds each, none of them over the line, and one idle thread filled the report
+with contention. JFR carries no identity that survives a move, and joining one thread's
+locks by class and loop alone would also join distinct objects: on one loaded recording
+it would have moved 153 s of listed waits, spread over 32 and 42 addresses on two threads,
+into waiting for work, and those were browse consumers waiting for data. What tells the
+two apart is when the address changes. An object gets a new address only under a moving
+collection, so every change of a moved lock, from one wait to the next, spans a pause;
+a thread that waits on a new object per request changes whenever the request does. That
+alone is not evidence when the waits are long against the time between pauses: a
+consumer waiting 800 ms on a new future per request, with a collection every 200 ms, has a
+pause inside every change because it has one inside every wait. So the changes must also
+be unlikely to have met their pauses by chance. A change of length `L`, in a stretch whose
+`k` pauses come over `T`, meets one by chance at odds of at most `L k / T`; the product
+over every change has to be one in a thousand or less. On the recordings above, the moved
+locks scored between 10<sup>-5</sup> (a monitor polling every 5 s, eight changes in eight
+collections) and 10<sup>-19</sup>, and every thread waiting on a new object per request
+either had changes with no pause in them (20 of 31, 28 of 41) or scored 1. The pieces are
+joined per thread and loop: the park locks one thread alone waited on, from one loop,
+whose total passes the rule and whose changes pass both tests. Each piece is then a perch,
+and the loop answers for other locks, other threads' included, as any perch's does; joining
+by loop alone would find two waiters in a pool whose workers each have a moved mailbox,
+and fold none. On the ten recordings of that node `Blocked` fell from about 7m54s to two
+60 s waits (2m00s; 2m15s on one, section 9), which the rule leaves alone because two waits on two addresses
+score 1: the recording cannot tell a moved lock from two objects there. `stalls` kept 2 of
+its 181 parked stalls for the same reason. The fifteen recordings of the earlier rounds did
+not change beyond the sentence that explains the shape rule. `WHERE THEY WAITED` shows the
+pieces of a split lock under one stack.
 
 **Window semantics.** JFR writes a blocking event when the wait *ends*, so a file holds
 waits that began before its first chunk, and a `jfrq-live delta` window slices waits at
@@ -921,6 +942,12 @@ in-process time of the last twenty of thirty runs (warm, whole command), same JV
 Output is byte-identical before and after on `stalls`, `locks`, `alloc` and `info` of
 both files.
 
+Joining the pieces of a moved perch (section 3, 2026-09-25) costs `locks` its read of
+`jdk.GCPhasePause` and both commands a pass over every park lock one thread alone waited
+on. Median of three alternating cold runs on a 19.8 MB, 22-minute recording of a loaded
+node, `--thread '*'`: `locks` analyse 121 → 129 ms and `stalls` analyse 149 → 164 ms;
+parse within noise for both (58 pause events against 277 thousand parks).
+
 ## 9. Known limits, in one place
 
 - A wait shorter than the recording's threshold for its event does not exist in the
@@ -961,8 +988,17 @@ both files.
   loop, and its waits are set aside as scheduled idle (section 4.5). The warning names the five
   threads with the most time set aside and counts the rest; `--idle none` reports them as stalls.
 - Lock addresses move with the objects; a lock that was compacted mid-recording appears
-  twice under the same class, and a perch split that way can fall under the half-window
-  line and be listed as contention (section 3).
+  twice under the same class. A perch split that way is joined again only on evidence
+  (section 3): every change of address spans a collection pause, at odds chance puts at one
+  in a thousand or less. A short recording, a few long waits, or a collector that moves
+  objects between its pauses (ZGC, Shenandoah) can leave too little of it, and the pieces
+  are then listed as contention. Collections set off by the waiting thread's own allocation
+  land next to its changes more often than chance says; the browse consumers, the heaviest
+  allocators measured, still had a third of their changes without a pause.
+- An address a second object takes later merges the two into one lock. `locks` then judges
+  it by the stack of its longer wait, and `stalls`, which matches each wait's own stack,
+  can disagree: on one recording three 5 s polls of a directory monitor shared an address
+  with a logger's 60 s wait, and were contention in `locks` and idle in `stalls`.
 - `health` cannot see the JVM's own `OutOfMemoryError` (the heap, metaspace) or any
   `StackOverflowError`: JFR does not record them (section 10). For the heap, a failed
   evacuation or a full collection is the warning it can give.

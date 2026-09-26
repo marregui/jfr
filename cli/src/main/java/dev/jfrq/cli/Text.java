@@ -483,8 +483,9 @@ final class Text {
                 r.workWaits().size() == 1 ? "" : "s"));
         if (r.perchCount() > 0) {
             sb.append(String.format(Locale.ROOT, "  %d of these lock%s recognised by shape rather than by name: "
-                            + "one thread, no holder,\n  most of the recording parked there — or the same stack "
-                            + "as a lock like that. Pass --idle none to see them all.\n",
+                            + "one thread, no holder,\n  most of the recording parked there, counting the addresses "
+                            + "a collection moved it to — or the same\n  stack as a lock like that. Pass --idle none "
+                            + "to see them all.\n",
                     r.perchCount(), r.perchCount() == 1 ? " was" : "s were"));
         }
         final TextTable idle = new TextTable("Queue", "Total", "Parks", "Max", "Threads").numeric(1, 2, 3);

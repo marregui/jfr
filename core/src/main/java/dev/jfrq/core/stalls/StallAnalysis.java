@@ -290,13 +290,28 @@ public final class StallAnalysis {
      * about. Found once for the whole analysis, because the evidence is what a lock did across
      * every thread in the recording, not what one block did.
      */
-    private void findPerches(final ParkShapes parks, final Interval span) {
+    private void findPerches(final ParkShapes parks, final Interval span, final List<Pause> pauses) {
         perchRenderings.clear();
         perchVerdict.clear();
         if (workWaits.matchesNothing()) {
             return;
         }
-        final ObjList<Stack> stacks = parks.perchStacks(span);
+        final LongList starts = new LongList();
+        final LongList ends = new LongList();
+        for (int i = 0, n = pauses.size(); i < n; i++) {
+            final Pause p = pauses.get(i);
+            if (p.kind() == PauseKind.GC) {
+                starts.add(p.start());
+                ends.add(p.interval().end());
+            }
+        }
+        final int[] order = Sorts.order(starts);
+        final LongList gcPauses = new LongList(2 * order.length);
+        for (final int i : order) {
+            gcPauses.add(starts.getQuick(i));
+            gcPauses.add(ends.getQuick(i));
+        }
+        final ObjList<Stack> stacks = parks.perchStacks(span, gcPauses);
         for (int i = 0, n = stacks.size(); i < n; i++) {
             final String loop = Perch.loop(stacks.getQuick(i));
             if (loop != null) {
@@ -417,7 +432,7 @@ public final class StallAnalysis {
         timerWaitNanos = 0;
         timerWaitByThread.clear();
         loopNames.clear();
-        findPerches(parks, info.span());
+        findPerches(parks, info.span(), pauses);
 
         final ObjList<Pause> sortedPauses = new ObjList<>(pauses.size());
         for (int i = 0, n = pauses.size(); i < n; i++) {

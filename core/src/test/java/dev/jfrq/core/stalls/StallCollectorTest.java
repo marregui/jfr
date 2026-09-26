@@ -5,18 +5,26 @@ package dev.jfrq.core.stalls;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.locks.ReentrantLock;
 
 import dev.jfrq.core.jfr.JfrFixtures;
 import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
+import dev.jfrq.core.locks.ContentionCollector;
+import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.stalls.Stall.Verdict;
 import dev.jfrq.core.util.Glob;
 import jdk.jfr.Recording;
@@ -66,6 +74,98 @@ class StallCollectorTest {
         final StallReport both = stalls(file, "perch-a,other-b");
         assertEquals(4, both.stallsOf(watched.threads().getFirst().thread()).size(), both.stalls().toString());
     }
+
+    @Test
+    void aMailboxACollectionMovedIsStillItsThreadsPerch() throws Exception {
+        // A worker waits on its own mailbox and is signalled every 40 ms by a thread of its
+        // own, so no wait runs out a timeout and the timer rule has nothing to say. Young
+        // collections at a fifth, two fifths, three and four fifths of the way move the
+        // condition, which JFR then names by a new address: five pieces, none holding the
+        // thread for half the window on its own. Four changes of 40 ms among 50 waits meet a
+        // pause by chance at odds of about 1 in 12 each, so together at 1 in 20 000.
+        final Path file = JfrFixtures.record(dir, "moved", r -> {
+            parks(r);
+            r.enable("jdk.GCPhasePause");
+        }, () -> {
+            final ReentrantLock lock = new ReentrantLock();
+            final Condition mail = lock.newCondition();
+            final AtomicBoolean stop = new AtomicBoolean();
+            final Thread worker = new Thread(() -> {
+                lock.lock();
+                try {
+                    while (!stop.get()) {
+                        mail.awaitUninterruptibly();
+                    }
+                } finally {
+                    lock.unlock();
+                }
+            }, "mailbox");
+            final Thread postman = new Thread(() -> {
+                while (worker.isAlive()) {
+                    JfrFixtures.sleep(40);
+                    lock.lock();
+                    try {
+                        mail.signal();
+                    } finally {
+                        lock.unlock();
+                    }
+                }
+            }, "postman");
+            worker.start();
+            postman.start();
+            for (int i = 0; i < 4; i++) {
+                JfrFixtures.sleep(400);
+                youngCollection();
+            }
+            JfrFixtures.sleep(400);
+            stop.set(true);
+            worker.join();
+            postman.join();
+        });
+
+        // The premise: the lock was split, and no piece is a perch by itself. A collector that
+        // moves objects outside its pauses, or none that moved this one, leaves nothing to test.
+        final ContentionCollector raw = new ContentionCollector(0, "mailbox"::equals, IdleMatcher.none());
+        final RecordingInfo info = JfrReader.read(file, raw);
+        final List<ContentionReport.LockStats> pieces = raw.report().locks(100);
+        assumeTrue(pieces.size() >= 2, "the collections did not move the mailbox: " + pieces);
+        for (final ContentionReport.LockStats piece : pieces) {
+            assumeTrue(2 * piece.totalNanos() < info.span().duration(), piece + " is a perch on its own");
+        }
+
+        // locks: every piece is the worker waiting for mail.
+        final ContentionCollector locks = new ContentionCollector(0, "mailbox"::equals);
+        JfrReader.read(file, locks);
+        assertTrue(locks.report().waits().isEmpty(), locks.report().waits().toString());
+        assertEquals(pieces.size(), locks.report().perchCount());
+
+        // stalls: none of its waits is a stall.
+        final StallReport r = stalls(file, "mailbox");
+        assertEquals(0, count(r, Verdict.PARKED), r.stalls().toString());
+    }
+
+    /** Allocates until a collection has run: a young one, which copies what it keeps. */
+    private static void youngCollection() {
+        final long before = collections();
+        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        while (collections() == before) {
+            for (int i = 0; i < 1_024; i++) {
+                garbage = new byte[16 * 1_024];
+            }
+            assertTrue(System.nanoTime() < deadline, "no collection in 30 s");
+        }
+    }
+
+    private static long collections() {
+        long n = 0;
+        for (final GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
+            n += Math.max(0, gc.getCollectionCount());
+        }
+        return n;
+    }
+
+    /** Where {@link #youngCollection} drops its allocations, so they cannot be optimised away. */
+    private static volatile byte[] garbage;
 
     @Test
     void aBackoffLoopsBlockerlessParksAreStalls() throws Exception {
