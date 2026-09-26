@@ -111,7 +111,22 @@ class RecordingTest {
 
     @Test
     void fieldMaskAgreesWithHasFieldOnEveryEvent() throws Exception {
-        final Path file = JfrFixtures.record(dir, "fields", r -> {
+        // Sampling is at the machine's mercy: a loaded runner can let the 60 ms loop pass
+        // unsampled, so a recording with no sample is made again rather than asserted on.
+        int[] present = fieldsRecording("fields0");
+        for (int attempt = 1; attempt < 3 && present[Fields.SAMPLED_THREAD] == 0; attempt++) {
+            present = fieldsRecording("fields" + attempt);
+        }
+        // Both thread fields, and fields of more than one kind, were actually seen.
+        assertTrue(present[Fields.EVENT_THREAD] > 0);
+        assertTrue(present[Fields.SAMPLED_THREAD] > 0);
+        assertTrue(present[Fields.OBJECT_CLASS] > 0);
+        assertTrue(present[Fields.NAME] > 0);
+    }
+
+    /** Records a sleep, a collection and a loop, checks every event's mask, and counts each field seen. */
+    private int[] fieldsRecording(final String name) throws Exception {
+        final Path file = JfrFixtures.record(dir, name, r -> {
             r.enable("jdk.ThreadSleep").withThreshold(Duration.ZERO).withStackTrace();
             r.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(10));
             r.enable("jdk.ObjectAllocationSample");
@@ -153,11 +168,7 @@ class RecordingTest {
         JfrReader.read(file, everything);
 
         assertTrue(events[0] > 50, "events " + events[0]);
-        // Both thread fields, and fields of more than one kind, were actually seen.
-        assertTrue(present[Fields.EVENT_THREAD] > 0);
-        assertTrue(present[Fields.SAMPLED_THREAD] > 0);
-        assertTrue(present[Fields.OBJECT_CLASS] > 0);
-        assertTrue(present[Fields.NAME] > 0);
+        return present;
     }
 
     @Test

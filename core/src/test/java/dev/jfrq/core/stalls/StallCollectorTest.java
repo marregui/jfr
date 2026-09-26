@@ -77,12 +77,13 @@ class StallCollectorTest {
 
     @Test
     void aMailboxACollectionMovedIsStillItsThreadsPerch() throws Exception {
-        // A worker waits on its own mailbox and is signalled every 40 ms by a thread of its
-        // own, so no wait runs out a timeout and the timer rule has nothing to say. Young
-        // collections at a fifth, two fifths, three and four fifths of the way move the
-        // condition, which JFR then names by a new address: five pieces, none holding the
-        // thread for half the window on its own. Four changes of 40 ms among 50 waits meet a
-        // pause by chance at odds of about 1 in 12 each, so together at 1 in 20 000.
+        // A worker waits on its own mailbox and is signalled 50 times, 40 ms apart, by a thread
+        // of its own, so no wait runs out a timeout and the timer rule has nothing to say. A
+        // third thread forces a young collection after the 10th, 20th, 30th and 40th letter,
+        // which moves the condition, and JFR then names it by a new address: five pieces, none
+        // holding the thread for half the window on its own. The evidence is counted in waits,
+        // not in time, so a slow machine gets the same: four changes, each one wait long, among
+        // 50 waits meet a pause by chance at odds of about 1 in 12 each, 1 in 20 000 together.
         final Path file = JfrFixtures.record(dir, "moved", r -> {
             parks(r);
             r.enable("jdk.GCPhasePause");
@@ -90,6 +91,7 @@ class StallCollectorTest {
             final ReentrantLock lock = new ReentrantLock();
             final Condition mail = lock.newCondition();
             final AtomicBoolean stop = new AtomicBoolean();
+            final AtomicInteger letters = new AtomicInteger();
             final Thread worker = new Thread(() -> {
                 lock.lock();
                 try {
@@ -101,26 +103,34 @@ class StallCollectorTest {
                 }
             }, "mailbox");
             final Thread postman = new Thread(() -> {
-                while (worker.isAlive()) {
+                for (int i = 1; i <= LETTERS; i++) {
                     JfrFixtures.sleep(40);
+                    if (i == LETTERS) {
+                        stop.set(true);
+                    }
                     lock.lock();
                     try {
                         mail.signal();
                     } finally {
                         lock.unlock();
                     }
+                    letters.set(i);
                 }
             }, "postman");
+            final Thread mover = new Thread(() -> {
+                for (int after = 10; after < LETTERS; after += 10) {
+                    while (letters.get() < after) {
+                        JfrFixtures.sleep(1);
+                    }
+                    youngCollection();
+                }
+            }, "mover");
             worker.start();
             postman.start();
-            for (int i = 0; i < 4; i++) {
-                JfrFixtures.sleep(400);
-                youngCollection();
-            }
-            JfrFixtures.sleep(400);
-            stop.set(true);
-            worker.join();
+            mover.start();
             postman.join();
+            worker.join();
+            mover.join();
         });
 
         // The premise: the lock was split, and no piece is a perch by itself. A collector that
@@ -143,6 +153,9 @@ class StallCollectorTest {
         final StallReport r = stalls(file, "mailbox");
         assertEquals(0, count(r, Verdict.PARKED), r.stalls().toString());
     }
+
+    /** How many letters the mailbox of {@link #aMailboxACollectionMovedIsStillItsThreadsPerch} is sent. */
+    private static final int LETTERS = 50;
 
     /** Allocates until a collection has run: a young one, which copies what it keeps. */
     private static void youngCollection() {
