@@ -109,6 +109,8 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
 
     /** The shortest period the JFR sampler takes: a shorter one samples no more often (measured on JDK 25). */
     static final long MIN_SAMPLER_PERIOD = 1_000_000L;
+    /** Past this ratio between the worst and the best thread's bound, the headline names only the best. */
+    private static final long WIDE_SPREAD = 10;
     /** How many threads in Java the sampler takes per period. */
     private static final int JAVA_PER_PERIOD = 5;
 
@@ -167,10 +169,15 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
         if (hi == 0) {
             return "unexplained stalls are not observable at all on " + of + exact;
         }
-        // The best thread's bound holds on every one of them; the worst's is how far it reaches.
+        // The best thread's bound holds on every one of them; the worst's is how far it reaches,
+        // unless the spread is so wide that one number says nothing (84.5 ms against 24m18s over
+        // 434 threads with --thread '*'), and "far longer on some" is the true part of it.
         final String best = Durations.format(lo);
         final String worst = Durations.format(hi);
-        return "unexplained stalls shorter than " + best + (best.equals(worst) ? "" : " (" + worst + " on the worst thread)")
+        final String reach = best.equals(worst) ? ""
+                : hi <= WIDE_SPREAD * lo ? " (" + worst + " on the worst thread)"
+                : " (far longer on some)";
+        return "unexplained stalls shorter than " + best + reach
                 + " are not observable on " + of + (never == 0 ? "" : ", and none at all on " + never + " of them")
                 + exact;
     }

@@ -35,7 +35,7 @@ with the file inserted for you, so `-- stalls --thread 'x'` becomes
 | `full` | Dumps everything the recording holds. | set to the dump's end |
 | `delta` | Dumps what happened since the cursor. | moved to the dump's end |
 | `again` | Dumps the previous window once more. | unchanged |
-| `stop` | Stops and closes the recording; the JVM discards its data. | |
+| `stop` | Stops and closes the recording; the JVM discards its data, unless the recording has a destination (`-XX:StartFlightRecording=filename=...`), where the JVM writes it before closing it. | |
 
 `--recording ID\|NAME` picks the recording when the JVM runs several; with one running
 recording nothing needs saying. A name two recordings share is a usage error that lists

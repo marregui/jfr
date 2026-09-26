@@ -164,5 +164,10 @@ class StallReportTest {
         assertEquals("unexplained stalls are not observable at all on 1 of 1 threads; stalls a blocking event or pause "
                 + "explains are exact", report(20, summary(1, Sight.OWN_ABSENCE, 0, 0, 0)).unseenHeadline());
         assertNull(report(20, summary(1, Sight.CLEAR, 0, 0, 0)).unseenHeadline());
+        // Ten times apart and more, the worst says nothing a reader can use.
+        assertEquals("unexplained stalls shorter than 85.0 ms (far longer on some) are not "
+                + "observable on 2 of 2 threads; stalls a blocking event or pause explains are exact",
+                report(20, summary(1, Sight.OWN_ABSENCE, 85, 30, 0), summary(2, Sight.OWN_ABSENCE, 9_000, 3_000, 0))
+                        .unseenHeadline());
     }
 }

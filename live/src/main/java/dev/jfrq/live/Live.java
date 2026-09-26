@@ -468,6 +468,13 @@ public final class Live {
         final boolean running = "RUNNING".equals(r.getState());
         if (running) {
             fr.stopRecording(r.getId());
+            // A recording with a destination (-XX:StartFlightRecording=filename=...) is written
+            // there when it stops and closed by the JVM itself: there is nothing left to close.
+            if (!exists(fr, r.getId())) {
+                line(out, String.format(Locale.ROOT, "Stopped    %d  %s  and the JVM wrote it to %s and closed it",
+                        r.getId(), r.getName(), r.getDestination()));
+                return 0;
+            }
         }
         fr.closeRecording(r.getId());
         line(out, running
@@ -475,6 +482,15 @@ public final class Live {
                 : String.format(Locale.ROOT, "Closed     %d  %s  (it was %s); the JVM discards its data", r.getId(),
                         r.getName(), r.getState()));
         return 0;
+    }
+
+    private static boolean exists(final FlightRecorderMXBean fr, final long id) {
+        for (final RecordingInfo r : fr.getRecordings()) {
+            if (r.getId() == id) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private int dump(final Jvm jvm, final String command, final Args args, final String[] question, final Path file)

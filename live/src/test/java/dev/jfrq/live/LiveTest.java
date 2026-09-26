@@ -605,6 +605,29 @@ class LiveTest {
     }
 
     @Test
+    void stoppingARecordingWithADestinationIsASuccessThatSaysWhereItWent() throws Exception {
+        // -XX:StartFlightRecording=filename=... gives the recording a destination, and the JVM
+        // closes such a recording itself once it has written it there: a close after the stop
+        // found nothing, and a stop that worked was reported as the JVM refusing it.
+        final String name = "live-dest-" + System.nanoTime();
+        final Path destination = dir.resolve("dest.jfr");
+        final Recording r = new Recording();
+        try {
+            r.setName(name);
+            r.setDestination(destination);
+            r.start();
+            final Run stop = run(PID, "stop", "--recording", name, "--state", dir.toString());
+            assertEquals(0, stop.status(), stop.err());
+            assertTrue(stop.out().contains("Stopped    " + r.getId() + "  " + name + "  and the JVM wrote it to "
+                    + destination + " and closed it"), stop.out());
+            assertTrue(Files.size(destination) > 0);
+            assertEquals(1, run(PID, "stop", "--recording", name, "--state", dir.toString()).status());
+        } finally {
+            r.close();
+        }
+    }
+
+    @Test
     void aNameTwoRecordingsShareIsAmbiguousAndAStoppedOneIsClosed() throws Exception {
         final String name = "live-twin-" + System.nanoTime();
         try (final Recording a = new Recording(); final Recording b = new Recording()) {
