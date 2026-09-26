@@ -376,17 +376,27 @@ be unlikely to have met their pauses by chance. A change of length `L`, in a str
 over every change has to be one in a thousand or less. On the recordings above, the moved
 locks scored between 10<sup>-5</sup> (a monitor polling every 5 s, eight changes in eight
 collections) and 10<sup>-19</sup>, and every thread waiting on a new object per request
-either had changes with no pause in them (20 of 31, 28 of 41) or scored 1. The pieces are
-joined per thread and loop: the park locks one thread alone waited on, from one loop,
-whose total passes the rule and whose changes pass both tests. Each piece is then a perch,
-and the loop answers for other locks, other threads' included, as any perch's does; joining
-by loop alone would find two waiters in a pool whose workers each have a moved mailbox,
-and fold none. On the ten recordings of that node `Blocked` fell from about 7m54s to two
-60 s waits (2m00s; 2m15s on one, section 9), which the rule leaves alone because two waits on two addresses
-score 1: the recording cannot tell a moved lock from two objects there. `stalls` kept 2 of
-its 181 parked stalls for the same reason. The fifteen recordings of the earlier rounds did
-not change beyond the sentence that explains the shape rule. `WHERE THEY WAITED` shows the
-pieces of a split lock under one stack.
+either had changes with no pause in them (20 of 31, 28 of 41) or scored 1.
+
+That is evidence, not proof, and a review built the case that defeats it: a consumer
+waiting on a new future per request, whose own work between two waits allocates enough to
+set off a young collection every time. Every change then has a pause in it by cause, not
+chance, and 40 futures on 40 addresses scored 10<sup>-4.9</sup>; folded into waiting for
+work, 11.9 s of a slow downstream became "no contention", the worst answer this command
+can give. A pause inside the new wait rather than between waits would stop that case and
+not the next (a backend that allocates while it produces each result). So the pieces are
+never set aside on this evidence. They are gathered per thread and loop (the park locks
+one thread alone waited on, from one loop, whose total has a perch's shape and whose
+changes pass both tests; gathering by loop alone would find two waiters in a pool whose
+workers each have a moved mailbox) and labelled: `locks` keeps every wait in `Blocked`,
+says how much of it is on such locks, and lists them under `MOVED BY THE COLLECTOR` with
+the number of addresses, the odds and the stack; `stalls` keeps the parked stalls and
+names each such thread in a warning with the same evidence. On the ten recordings of that
+node `Blocked` stays about 7m54s and the label accounts for 5m54s of it, all but two 60 s
+waits (two waits on two addresses score 1: the recording cannot tell a moved lock from two
+objects there); on one of them 35 s more stays unlabelled, a monitor's poll whose address a
+logger's condition took later (section 9). The reader decides; the report says what the file shows. `WHERE THEY WAITED` shows
+the pieces of a split lock under one stack.
 
 **Window semantics.** JFR writes a blocking event when the wait *ends*, so a file holds
 waits that began before its first chunk, and a `jfrq-live delta` window slices waits at
@@ -946,7 +956,7 @@ in-process time of the last twenty of thirty runs (warm, whole command), same JV
 Output is byte-identical before and after on `stalls`, `locks`, `alloc` and `info` of
 both files.
 
-Joining the pieces of a moved perch (section 3, 2026-09-25) costs `locks` its read of
+Labelling the pieces of a moved lock (section 3, 2026-09-25) costs `locks` its read of
 `jdk.GCPhasePause` and both commands a pass over every park lock one thread alone waited
 on. Median of three alternating cold runs on a 19.8 MB, 22-minute recording of a loaded
 node, `--thread '*'`: `locks` analyse 121 → 129 ms and `stalls` analyse 149 → 164 ms;
@@ -992,13 +1002,13 @@ parse within noise for both (58 pause events against 277 thousand parks).
   loop, and its waits are set aside as scheduled idle (section 4.5). The warning names the five
   threads with the most time set aside and counts the rest; `--idle none` reports them as stalls.
 - Lock addresses move with the objects; a lock that was compacted mid-recording appears
-  twice under the same class. A perch split that way is joined again only on evidence
-  (section 3): every change of address spans a collection pause, at odds chance puts at one
-  in a thousand or less. A short recording, a few long waits, or a collector that moves
-  objects between its pauses (ZGC, Shenandoah) can leave too little of it, and the pieces
-  are then listed as contention. Collections set off by the waiting thread's own allocation
-  land next to its changes more often than chance says; the browse consumers, the heaviest
-  allocators measured, still had a third of their changes without a pause.
+  under several addresses, and each piece can fall under a perch's half-window line. Such
+  pieces are labelled as probably one moved lock (section 3) but never set aside, so an
+  idle thread's moved mailbox stays in `Blocked` and in the parked stalls, with the label
+  and its odds next to it. A short recording, a few long waits, or a collector that moves
+  objects between its pauses (ZGC, Shenandoah) can leave too little evidence for the label.
+  A thread whose own allocation sets off a collection per request can earn the label
+  without a moved lock, which is why it is only a label.
 - An address a second object takes later merges the two into one lock. `locks` then judges
   it by the stack of its longer wait, and `stalls`, which matches each wait's own stack,
   can disagree: on one recording three 5 s polls of a directory monitor shared an address

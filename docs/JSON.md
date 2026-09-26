@@ -87,6 +87,8 @@ with `--json` after `--` gets standard output to itself: the dump's own lines (`
 | `thresholdNanos` | for `jdk.JavaMonitorEnter` and `jdk.ThreadPark` |
 | `noContention` | the sentence the text prints when every wait was a worker waiting for work, else `null` |
 | `blockedNanos`, `waits`, `clippedWaits` | the totals, and the waits cut to the recording's span |
+| `movedNanos` | the part of `blockedNanos` on `movedByCollector` |
+| `movedByCollector[]` | one thread's waits from one place over addresses that changed only at GC pauses, probably one object the collector moved (counted in the totals, not set aside): `thread`, `threadId`, `class`, `locks` (the addresses), `waits`, `totalNanos`, `chanceLog10` (the odds, as a power of ten, that chance put a pause in every change), `stack` (the longest wait's) |
 | `locksFound`, `sitesFound`, `threadsFound` | how many rows `locks`/`sites` and `threads` had before `--top` |
 | `locks[]` | without `--by-site`: `lock`, `class`, `kind`, `totalNanos`, `waits`, `maxNanos`, `waiters`, `heldBy`, `stack` (the longest wait's) |
 | `sites[]` | with `--by-site`, instead of `locks`: `kind`, `totalNanos`, `waits`, `maxNanos`, `locks` (the instances), `waiters`, `heldBy`, `stack` |

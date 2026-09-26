@@ -724,49 +724,87 @@ class ContentionReportTest {
     static final long[] TWO_MOVES = {2_305, 2_310, 4_615, 4_620};
 
     @Test
-    void aPerchACollectionMovedIsStillOnePerch() {
+    void aLockTheCollectorMovedIsLabelledAndStillCounted() {
         // Park 32 ends at 2 300 ms and park 33 at 2 370 ms; park 65 at 4 610 ms and park 66 at
         // 4 680 ms. Each address holds the thread for about a fifth of the window, none over the
         // line on its own; together they are 60 % of it. Two pauses in 6.9 s meet a 70 ms change
-        // by chance at odds of 1 in 50, both changes at 1 in 2 400.
+        // by chance at odds of 1 in 50, both changes at about 1 in 2 400.
         final List<Wait> waits = movedPerch(LOOP1, 0x10);
-        final ContentionReport moved = withPauses(waits, pauses(TWO_MOVES));
-        assertTrue(moved.waits().isEmpty(), moved.waits().toString());
-        assertEquals(100, moved.workWaits().size());
-        assertEquals(3, moved.perchCount());
+        final ContentionReport r = withPauses(waits, pauses(TWO_MOVES));
+        // Timing is the only evidence the three addresses are one object, so nothing is set aside.
+        assertEquals(100, r.waits().size());
+        assertEquals(0, r.perchCount());
+        assertEquals(1, r.moved().size());
+        final ContentionReport.MovedLock m = r.moved().getFirst();
+        assertEquals(LOOP1, m.waiter());
+        assertEquals(3, m.locks().size());
+        assertEquals(100, m.count());
+        assertEquals(r.totalNanos(), m.totalNanos());
+        assertEquals(r.totalNanos(), r.movedNanos());
+        assertTrue(m.chanceLog10() < -3.3 && m.chanceLog10() > -3.5, Double.toString(m.chanceLog10()));
 
         // Without the pauses nothing says the three addresses are one object.
-        assertEquals(100, withPauses(waits, pauses()).waits().size());
-        // A change of address no pause explains is a new object, and the pieces stay apart.
-        assertEquals(100, withPauses(waits, pauses(2_305, 2_310)).waits().size());
-        // --idle none turns it off with the rest.
+        assertTrue(withPauses(waits, pauses()).moved().isEmpty());
+        // A change of address no pause explains is a new object.
+        assertTrue(withPauses(waits, pauses(2_305, 2_310)).moved().isEmpty());
+        // It is a label, not an idle rule: --idle none shows it too.
         final ContentionReport raw = new ContentionReport(window(0, 10_000), waits, 0, _ -> true, IdleMatcher.none(),
                 _ -> true, pauses(TWO_MOVES));
         assertEquals(100, raw.waits().size());
+        assertEquals(1, raw.moved().size());
     }
 
     @Test
-    void eachThreadsMovedMailboxIsFoldedOnItsOwn() {
+    void eachThreadsMovedMailboxIsLabelledOnItsOwn() {
         // A pool: two workers in one loop, each on a mailbox of its own that the same two
-        // collections moved. Folding by loop alone would see two waiters and fold neither.
+        // collections moved. Gathering by loop alone would see two waiters and label neither.
         final List<Wait> waits = new ArrayList<>(movedPerch(LOOP1, 0x10));
         waits.addAll(movedPerch(LOOP2, 0x20));
         final ContentionReport r = withPauses(waits, pauses(TWO_MOVES));
-        assertTrue(r.waits().isEmpty(), r.waits().toString());
-        assertEquals(6, r.perchCount());
+        assertEquals(200, r.waits().size());
+        assertEquals(2, r.moved().size());
 
-        // A third thread in the loop that parked once, for a tenth of the window, is the busy
-        // worker of theWorkerThatWasBusyParksWhereTheIdleOnesDo: the loop answers for it.
+        // A third thread in the loop that parked once has one address and nothing moved: no label.
         waits.add(new Wait(new Interval(0, 1_000 * MS), HOUSEKEEPER,
                 new LockKey("dev.app.DefaultMailbox", 0x30, Kind.PARK), null, MAILBOX));
-        assertTrue(withPauses(waits, pauses(TWO_MOVES)).waits().isEmpty());
+        final ContentionReport three = withPauses(waits, pauses(TWO_MOVES));
+        assertEquals(201, three.waits().size());
+        assertEquals(2, three.moved().size());
+    }
+
+    @Test
+    void aConsumerWhoseOwnAllocationCollectsEveryRequestIsLabelledButNeverSetAside() {
+        // The case that makes timing evidence and not proof: a consumer waits on a new future
+        // per request, alternately 100 ms and 900 ms, and the work between two waits allocates
+        // enough to set off a young collection every time. Every change of address has a pause in
+        // it by cause, and the short changes are unlikely by chance, so the label fires. The
+        // waits must still be counted: a slow downstream reported as idle is the worst answer.
+        final List<Wait> waits = new ArrayList<>();
+        final LongList pauses = new LongList();
+        long t = 0;
+        for (int i = 0; i < 40; i++) {
+            final long length = i % 2 == 0 ? 100 : 900;
+            waits.add(new Wait(new Interval(t * MS, (t + length) * MS), LOOP1,
+                    new LockKey("java.util.concurrent.CompletableFuture$Signaller", 0x100 + i, Kind.PARK), null, MAILBOX));
+            t += length;
+            pauses.add((t + 20) * MS);
+            pauses.add((t + 25) * MS);
+            t += 50;
+        }
+        final ContentionReport r = new ContentionReport(window(0, t), waits, 0, _ -> true, IdleMatcher.forWorkWaits(),
+                _ -> true, pauses);
+        assertEquals(1, r.moved().size(), "the timing looks like a move: it is labelled as one");
+        assertEquals(40, r.waits().size());
+        assertEquals(r.totalNanos(), r.movedNanos());
+        assertTrue(r.workWaits().isEmpty());
+        assertEquals(0, r.perchCount());
     }
 
     @Test
     void longWaitsOnNewObjectsAreNotAMovedLock() {
         // A consumer waits 800 ms on a new future per request, with a collection every 200 ms:
         // every change of address has a pause in it, because every wait does. The pauses come
-        // too often for that to say anything, and the waits stay what they are.
+        // too often for that to say anything, and there is no label.
         final List<Wait> waits = new ArrayList<>();
         for (int i = 0; i < 10; i++) {
             final long from = i * 900L;
@@ -774,12 +812,12 @@ class ContentionReportTest {
                     new LockKey("java.util.concurrent.CompletableFuture$Signaller", 0x100 + i, Kind.PARK), null, MAILBOX));
         }
         final LongList every200 = new LongList();
-        for (long t = 100; t < 10_000; t += 200) {
-            every200.add(t * MS);
-            every200.add((t + 5) * MS);
+        for (long p = 100; p < 10_000; p += 200) {
+            every200.add(p * MS);
+            every200.add((p + 5) * MS);
         }
         final ContentionReport r = withPauses(waits, every200);
         assertEquals(10, r.waits().size());
-        assertEquals(0, r.perchCount());
+        assertTrue(r.moved().isEmpty());
     }
 }

@@ -4,6 +4,7 @@
 package dev.jfrq.core.stalls;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -143,15 +144,21 @@ class StallCollectorTest {
             assumeTrue(2 * piece.totalNanos() < info.span().duration(), piece + " is a perch on its own");
         }
 
-        // locks: every piece is the worker waiting for mail.
+        // locks: every piece is labelled as one lock the collector moved, and still counted.
         final ContentionCollector locks = new ContentionCollector(0, "mailbox"::equals);
         JfrReader.read(file, locks);
-        assertTrue(locks.report().waits().isEmpty(), locks.report().waits().toString());
-        assertEquals(pieces.size(), locks.report().perchCount());
+        final ContentionReport report = locks.report();
+        assertEquals(1, report.moved().size(), report.moved().toString());
+        assertEquals(pieces.size(), report.moved().getFirst().locks().size());
+        assertEquals(report.totalNanos(), report.movedNanos());
+        assertFalse(report.waits().isEmpty());
 
-        // stalls: none of its waits is a stall.
+        // stalls: the waits stay stalls, and a warning says what the evidence is.
         final StallReport r = stalls(file, "mailbox");
-        assertEquals(0, count(r, Verdict.PARKED), r.stalls().toString());
+        assertTrue(count(r, Verdict.PARKED) > 0, r.stalls().toString());
+        assertTrue(r.warnings().stream().anyMatch(w -> w.contains("parked stalls of mailbox")
+                && w.contains("on one lock the collector probably moved: " + pieces.size() + " addresses")),
+                r.warnings().toString());
     }
 
     /** How many letters the mailbox of {@link #aMailboxACollectionMovedIsStillItsThreadsPerch} is sent. */

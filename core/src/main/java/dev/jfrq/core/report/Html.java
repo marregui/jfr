@@ -26,6 +26,7 @@ import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.stalls.Stall;
+import dev.jfrq.core.stalls.Perch;
 import dev.jfrq.core.stalls.StallReport;
 import dev.jfrq.core.stalls.Timeline.Pause;
 import dev.jfrq.core.util.Bytes;
@@ -219,6 +220,11 @@ public final class Html {
             p.kv("Clipped to the window", report.clippedCount() + (report.clippedCount() == 1 ? " wait" : " waits")
                     + " began before the recording or outlived it, and count only for the part inside it");
         }
+        if (!report.moved().isEmpty()) {
+            p.kv("Moved by the collector", Durations.format(report.movedNanos()) + " of it on locks the collector "
+                    + "probably moved from under " + report.moved().size()
+                    + (report.moved().size() == 1 ? " thread" : " threads"));
+        }
         thresholds(p, report.info());
 
         if (bySite) {
@@ -242,6 +248,22 @@ public final class Html {
                         Durations.format(l.maxNanos()), names(l.waiters()), names(l.owners()));
                 if (l.longest() != null && !l.longest().stack().isEmpty()) {
                     p.stackRow(7, l.longest().stack());
+                }
+            }
+            p.tableEnd();
+        }
+
+        if (!report.moved().isEmpty()) {
+            p.h2("Moved by the collector");
+            p.raw("<p>" + escape("One thread's waits from one place, over addresses that changed only at GC pauses: "
+                    + "probably one object the thread waits on for its own work, which JFR cannot prove. They are "
+                    + "counted in the totals above.") + "</p>\n");
+            p.tableStart("Thread", "Lock", "Addresses", "Waits", "Total", "By chance");
+            for (final ContentionReport.MovedLock m : report.moved().subList(0, Math.min(top, report.moved().size()))) {
+                p.row(m.waiter().name(), ClassNames.pretty(m.lockClass()), m.locks().size(), m.count(),
+                        Durations.format(m.totalNanos()), Perch.odds(m.chanceLog10()));
+                if (!m.stack().isEmpty()) {
+                    p.stackRow(6, m.stack());
                 }
             }
             p.tableEnd();

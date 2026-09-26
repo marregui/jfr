@@ -77,16 +77,17 @@ final class ParkShapes {
      * only for the part inside the span, as it does in {@code locks}.
      */
     ObjList<Stack> perchStacks(final Interval span) {
-        return perchStacks(span, new LongList(0));
+        return perchStacks(span, new LongList(0), new ObjList<>());
     }
 
     /**
-     * {@link #perchStacks(Interval)}, and the perches a collection split by moving the lock:
-     * see {@link Perch#moved}.
+     * {@link #perchStacks(Interval)}, and in {@code moves} the locks the collector probably
+     * moved from under one thread (see {@link Perch#moved}): a label for the stalls on them,
+     * never a perch, since timing is the only evidence they are one object.
      *
      * @param gcPauses collection pauses as flat (start, end) pairs, ascending
      */
-    ObjList<Stack> perchStacks(final Interval span, final LongList gcPauses) {
+    ObjList<Stack> perchStacks(final Interval span, final LongList gcPauses, final ObjList<Perch.Move> moves) {
         final int locks = lockIds.size();
         final int n = waiters.size();
         // First the total per lock: a lock whose total fails the rule even with one waiter and
@@ -117,20 +118,20 @@ final class ParkShapes {
             }
         }
         if (gcPauses.notEmpty()) {
-            foldMoved(span, gcPauses, inside, perch, found);
+            moved(span, gcPauses, inside, perch, moves);
         }
         return found;
     }
 
     /**
-     * The fold {@code locks} makes: the locks only one thread parked on, folded by
-     * {@link Perch.Place} (that thread and the loop it parks in), whose total passes the rule
-     * and whose changes of address {@link Perch#moved} explains. One thread is parked at most
-     * once at a time, so only a thread whose such locks add up to more than half the span can
-     * hold a fold, and only its locks are looked at.
+     * The label {@code locks} puts on the same waits: the locks only one thread parked on,
+     * gathered by {@link Perch.Place} (that thread and the loop it parks in), whose total has
+     * a perch's shape and whose changes of address {@link Perch#moved} explains. One thread is
+     * parked at most once at a time, so only a thread whose such locks add up to more than
+     * half the span can hold one, and only its locks are looked at.
      */
-    private void foldMoved(final Interval span, final LongList gcPauses, final long[] inside,
-                           final boolean[] perch, final ObjList<Stack> found) {
+    private void moved(final Interval span, final LongList gcPauses, final long[] inside,
+                       final boolean[] perch, final ObjList<Perch.Move> moves) {
         final int locks = inside.length;
         final int n = waiters.size();
         final ThreadRef[] waiterOf = new ThreadRef[locks];
@@ -193,6 +194,12 @@ final class ParkShapes {
                 continue;
             }
             final Perch.Place place = places.getQuick(f);
+            int addresses = 0;
+            for (int lock = 0; lock < locks; lock++) {
+                if (place.equals(placeOf[lock])) {
+                    addresses++;
+                }
+            }
             final LongList ids = new LongList();
             final LongList ends = new LongList();
             for (int i = 0; i < n; i++) {
@@ -210,7 +217,8 @@ final class ParkShapes {
                 orderedEnds.add(ends.getQuick(i));
             }
             if (Perch.moved(orderedIds, orderedEnds, gcPauses)) {
-                found.add(fold.stack());
+                moves.add(new Perch.Move(place, fold.stack(), addresses,
+                        Perch.chanceLog10(orderedIds, orderedEnds, gcPauses)));
             }
         }
     }

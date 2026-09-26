@@ -48,6 +48,22 @@ public final class ContentionReport {
                             Set<ThreadRef> waiters, Set<ThreadRef> owners, Wait longest) {
     }
 
+    /**
+     * One thread's waits from one place, over several addresses the collector probably moved
+     * one object to: see {@link Perch#moved}. Its waits are in {@link #waits()} like any
+     * other; this is the label on them.
+     *
+     * @param locks       the addresses, in the order their waits were reported
+     * @param stack       the stack of its longest wait, which names the place
+     * @param chanceLog10 the odds, as a power of ten, that chance put a GC pause in every
+     *                    change of address
+     * @param totalNanos  its reported waits, in the window
+     * @param count       how many those were
+     */
+    public record MovedLock(ThreadRef waiter, String lockClass, List<Wait.LockKey> locks, Stack stack,
+                            double chanceLog10, long totalNanos, int count) {
+    }
+
     /** Totals for one waiting thread. */
     public record ThreadStats(ThreadRef thread, long totalNanos, int count, long maxNanos) {
     }
@@ -141,6 +157,10 @@ public final class ContentionReport {
      * listed park on them was recognised by a frame in the idle list.
      */
     private final int perchCount;
+    /** The reported waits the collector probably moved from under one thread, most waited first. */
+    private final List<MovedLock> moved;
+    /** The part of {@link #totalNanos()} that is theirs. */
+    private final long movedNanos;
     /**
      * Every lock ranked, and every wait longest first: each is asked for by more than one
      * section of a report, and computed once. On a loaded node's 13 000 waits the second
@@ -240,11 +260,11 @@ public final class ContentionReport {
         // The shape verdict is reached before any filter narrows the report, so that --min or
         // --thread cannot turn a perch into contention by hiding the waits that prove it is not.
         final Set<Wait.LockKey> perches = new HashSet<>();
+        // Stacks are interned, and a server has thousands of locks and a handful of loops:
+        // each stack is rendered once, not once per lock.
+        final Map<Stack, String> loops = new IdentityHashMap<>();
         if (!workWaits.matchesNothing()) {
             final Set<String> perchLoops = new HashSet<>();
-            // Stacks are interned, and a server has thousands of locks and a handful of loops:
-            // each stack is rendered once, not once per lock.
-            final Map<Stack, String> loops = new IdentityHashMap<>();
             shapes.forEach((lock, s) -> {
                 if (lock.kind() == Wait.Kind.PARK && s.matches(window.duration())) {
                     perches.add(lock);
@@ -256,7 +276,6 @@ public final class ContentionReport {
                     }
                 }
             });
-            foldMoved(sorted, insides, shapes, perches, perchLoops, loops, gcPauses, window.duration());
             // What shape finds is a lock; what it identifies is the loop above it. One worker
             // out of thirteen that was busy for two thirds of the recording parks on its own
             // mailbox exactly like the other twelve, and a rule that let a threshold decide
@@ -273,6 +292,13 @@ public final class ContentionReport {
                 }
             });
         }
+
+        // Labelled, never set aside: the evidence that the pieces are one object is timing, and
+        // timing can be caused (Perch#moved), so their waits stay contention.
+        final Map<Wait.LockKey, Perch.Move> movedOf = moved(sorted, insides, shapes, perches, loops, gcPauses,
+                window.duration());
+        final Map<Perch.Move, MovedAcc> movedAcc = new LinkedHashMap<>();
+        long movedTotal = 0;
 
         int clipped = 0;
         int filteredOut = 0;
@@ -306,6 +332,11 @@ public final class ContentionReport {
                 if (inside.duration() < w.duration()) {
                     clipped++;
                 }
+                final Perch.Move move = movedOf.get(w.lock());
+                if (move != null) {
+                    movedAcc.computeIfAbsent(move, _ -> new MovedAcc()).add(inside);
+                    movedTotal += inside.duration();
+                }
             }
         }
         byShape.removeAll(byName);
@@ -315,21 +346,45 @@ public final class ContentionReport {
         this.filteredOutCount = filteredOut;
         this.clippedCount = clipped;
         this.perchCount = byShape.size();
+        final List<MovedLock> movedLocks = new ArrayList<>(movedAcc.size());
+        movedAcc.forEach((move, acc) -> movedLocks.add(new MovedLock(move.place().waiter(), acc.lockClass,
+                List.copyOf(acc.locks), move.stack(), move.chanceLog10(), acc.total, acc.count)));
+        movedLocks.sort(Comparator.comparingLong(MovedLock::totalNanos).reversed());
+        this.moved = List.copyOf(movedLocks);
+        this.movedNanos = movedTotal;
+    }
+
+    /** One {@link MovedLock} being summed from the reported waits. */
+    private static final class MovedAcc {
+        final Set<Wait.LockKey> locks = new LinkedHashSet<>();
+        String lockClass;
+        long total;
+        int count;
+
+        void add(final Wait w) {
+            if (lockClass == null) {
+                lockClass = w.lock().className();
+            }
+            locks.add(w.lock());
+            total += w.duration();
+            count++;
+        }
     }
 
 
     /**
-     * The perches a collection split by moving the lock: the park locks only one thread waited
-     * on, folded by {@link Perch.Place} (that thread and the loop it waits in), whose total
-     * passes the rule and whose changes of address {@link Perch#moved} explains. Each folded
-     * lock becomes a perch, and the loop answers for the others as any perch's does.
+     * The locks the collector probably moved from under one thread: the park locks only one
+     * thread waited on and nobody was seen holding, not already its perch, gathered by
+     * {@link Perch.Place} (that thread and the loop it waits in), whose total has a perch's
+     * shape and whose changes of address {@link Perch#moved} explains. Each piece maps to the
+     * {@link Perch.Move} it belongs to.
      */
-    private static void foldMoved(final ObjList<Wait> sorted, final ObjList<Wait> insides,
-                                  final Map<Wait.LockKey, Perch.Shape> shapes, final Set<Wait.LockKey> perches,
-                                  final Set<String> perchLoops, final Map<Stack, String> loops,
-                                  final LongList gcPauses, final long windowNanos) {
+    private static Map<Wait.LockKey, Perch.Move> moved(final ObjList<Wait> sorted, final ObjList<Wait> insides,
+                                                       final Map<Wait.LockKey, Perch.Shape> shapes,
+                                                       final Set<Wait.LockKey> perches, final Map<Stack, String> loops,
+                                                       final LongList gcPauses, final long windowNanos) {
         if (gcPauses.isEmpty()) {
-            return;
+            return Map.of();
         }
         final Map<Perch.Place, Perch.Shape> folded = new HashMap<>();
         final Map<Wait.LockKey, Perch.Place> placeOf = new HashMap<>();
@@ -345,7 +400,7 @@ public final class ContentionReport {
         });
         folded.values().removeIf(s -> !s.matches(windowNanos));
         if (folded.isEmpty()) {
-            return;
+            return Map.of();
         }
         // The waits at each candidate place in time order: one thread's, so start order is end order.
         final Map<Perch.Place, LongList[]> turns = new HashMap<>();
@@ -358,16 +413,23 @@ public final class ContentionReport {
                 t[1].add(w.interval().end());
             }
         }
+        final Map<Wait.LockKey, Perch.Move> out = new HashMap<>();
         turns.forEach((place, t) -> {
+            final double chance = Perch.chanceLog10(t[0], t[1], gcPauses);
             if (Perch.moved(t[0], t[1], gcPauses)) {
-                perchLoops.add(place.loop());
+                final List<Wait.LockKey> pieces = new ArrayList<>();
                 placeOf.forEach((lock, p) -> {
                     if (p.equals(place)) {
-                        perches.add(lock);
+                        pieces.add(lock);
                     }
                 });
+                final Perch.Move move = new Perch.Move(place, folded.get(place).stack(), pieces.size(), chance);
+                for (final Wait.LockKey lock : pieces) {
+                    out.put(lock, move);
+                }
             }
         });
+        return out;
     }
 
     /** A wait counted only for the part inside the window; the same object when it is wholly inside. */
@@ -475,6 +537,16 @@ public final class ContentionReport {
      */
     public int perchCount() {
         return perchCount;
+    }
+
+    /** The locks the collector probably moved from under one thread, most waited first: a label, not a filter. */
+    public List<MovedLock> moved() {
+        return moved;
+    }
+
+    /** How much of {@link #totalNanos()} is on {@link #moved()}. */
+    public long movedNanos() {
+        return movedNanos;
     }
 
     /** How many distinct threads were waiting for work. */

@@ -150,6 +150,8 @@ public final class StallAnalysis {
     private int workWaitCount;
     /** The loops {@link Perch} recognised in this recording, as their stacks print. */
     private final ObjHashSet<String> perchRenderings = new ObjHashSet<>(16);
+    /** The locks the collector probably moved from under one thread: labelled on their stalls, never idle. */
+    private final ObjList<Perch.Move> moves = new ObjList<>();
     /** That verdict per distinct stack, so a rendering is built once and not once per block (G-2.2). */
     private final ObjLongHashMap<Stack> perchVerdict = new ObjLongHashMap<>(256);
     private long workWaitNanos;
@@ -293,6 +295,7 @@ public final class StallAnalysis {
     private void findPerches(final ParkShapes parks, final Interval span, final List<Pause> pauses) {
         perchRenderings.clear();
         perchVerdict.clear();
+        moves.clear();
         if (workWaits.matchesNothing()) {
             return;
         }
@@ -311,11 +314,45 @@ public final class StallAnalysis {
             gcPauses.add(starts.getQuick(i));
             gcPauses.add(ends.getQuick(i));
         }
-        final ObjList<Stack> stacks = parks.perchStacks(span, gcPauses);
+        final ObjList<Stack> stacks = parks.perchStacks(span, gcPauses, moves);
         for (int i = 0, n = stacks.size(); i < n; i++) {
             final String loop = Perch.loop(stacks.getQuick(i));
             if (loop != null) {
                 perchRenderings.add(loop);
+            }
+        }
+    }
+
+    /**
+     * One line per thread whose parked stalls are on a lock the collector probably moved
+     * ({@link Perch#moved}): the stalls stay, since the evidence that the pieces are one object
+     * is timing, and a thread whose own allocation sets off each collection fakes it; the line
+     * says what the evidence is and how strong. A place a perch already answers for has no
+     * stalls to label.
+     */
+    private void warnMoved(final ObjList<Stall> stalls, final List<String> warnings) {
+        for (int m = 0, k = moves.size(); m < k; m++) {
+            final Perch.Move move = moves.getQuick(m);
+            if (perchRenderings.contains(move.place().loop())) {
+                continue;
+            }
+            int count = 0;
+            long total = 0;
+            for (int i = 0, n = stalls.size(); i < n; i++) {
+                final Stall st = stalls.getQuick(i);
+                if (st.verdict() == Verdict.PARKED && st.thread().equals(move.place().waiter())
+                        && move.place().loop().equals(Perch.loop(st.stack()))) {
+                    count++;
+                    total += st.duration();
+                }
+            }
+            if (count > 0) {
+                warnings.add(count + (count == 1 ? " parked stall of " : " parked stalls of ")
+                        + move.place().waiter().name() + ", " + Durations.format(total) + ", "
+                        + (count == 1 ? "is" : "are") + " on one lock the collector probably moved: "
+                        + move.addresses() + " addresses, every change at a GC pause, where chance puts it at "
+                        + Perch.odds(move.chanceLog10()) + "; probably the thread waiting for its own work, "
+                        + "which JFR cannot prove");
             }
         }
     }
@@ -480,6 +517,7 @@ public final class StallAnalysis {
                     + "--idle names, and are not stalls; --idle none turns this off");
         }
         warnTimers(warnings);
+        warnMoved(stalls, warnings);
         if (clippedStalls > 0) {
             warnings.add(clippedStalls == 1
                     ? "1 stall extends beyond the recording's span and is counted only for the part inside it"

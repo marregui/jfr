@@ -16,6 +16,7 @@ import java.util.Set;
 import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
 import dev.jfrq.core.alloc.SiteKey;
+import dev.jfrq.core.coll.LongList;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
@@ -24,7 +25,10 @@ import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.report.Html;
+import dev.jfrq.core.report.Json;
+import dev.jfrq.core.report.JsonParser;
 import dev.jfrq.core.report.ThreadCensus;
+import dev.jfrq.core.stalls.IdleMatcher;
 import dev.jfrq.core.stalls.Stall;
 import dev.jfrq.core.stalls.StallReport;
 import dev.jfrq.core.stalls.Timeline.Pause;
@@ -43,6 +47,29 @@ class TextTest {
     static RecordingInfo window() {
         return new RecordingInfo(Path.of("delta.jfr"), new Interval(1_000 * MS, 2_000 * MS), 1, Map.of(), Map.of(),
                 Set.of(), List.of());
+    }
+
+    /**
+     * One thread's mailbox over three addresses, two collections moving it between park 32 and
+     * 33 and between 65 and 66: 100 parks of 60 ms, 10 ms apart, in a 10 s window.
+     */
+    static ContentionReport movedMailbox() {
+        final ThreadRef loop = new ThreadRef(1, "dispatcher-1");
+        final Stack mailbox = new Stack(List.of(new Frame("dev.app.DefaultMailbox", "await", 95, "JIT compiled"),
+                new Frame("dev.app.Dispatcher", "run", 80, "JIT compiled")), false);
+        final List<Wait> waits = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            final long from = i * 70L;
+            waits.add(new Wait(new Interval(from * MS, (from + 60) * MS), loop,
+                    new Wait.LockKey("dev.app.DefaultMailbox", i < 33 ? 0x10 : i < 66 ? 0x11 : 0x12, Wait.Kind.PARK),
+                    null, mailbox));
+        }
+        final LongList pauses = new LongList();
+        for (final long ms : new long[] {2_305, 2_310, 4_615, 4_620}) {
+            pauses.add(ms * MS);
+        }
+        return new ContentionReport(new RecordingInfo(Path.of("moved.jfr"), new Interval(0, 10_000 * MS), 1, Map.of(),
+                Map.of(), Set.of(), List.of()), waits, 0, _ -> true, IdleMatcher.forWorkWaits(), _ -> true, pauses);
     }
 
     static Wait blocked(final long fromMs, final long toMs) {
@@ -460,5 +487,33 @@ class TextTest {
         assertTrue(text.contains("Full (gcId 9)"), text);
         assertFalse(text.contains("PER THREAD"), text);
         assertTrue(text.endsWith("\n"), text);
+    }
+
+    @Test
+    void locksLabelALockTheCollectorMovedAndKeepItsWaits() {
+        final ContentionReport r = movedMailbox();
+        final String text = Text.locks(r, 15, false);
+        // Counted in the total, and the total says how much of it carries the label.
+        assertTrue(text.contains("Blocked    6.00 s across 100 waits\n"), text);
+        assertTrue(text.contains("Moved      6.00 s of it on locks the collector probably moved from under 1 thread: "
+                + "see MOVED BY THE COLLECTOR"), text);
+        final String section = section(text, "MOVED BY THE COLLECTOR (");
+        assertTrue(section.contains("dispatcher-1  dev.app.DefaultMailbox"), section);
+        assertTrue(section.contains("1 in 10^3"), section);
+        assertTrue(section.contains("dev.app.DefaultMailbox.await"), section);
+        final String html = Html.locks(r, 15, false);
+        assertTrue(html.contains("Moved by the collector"), html);
+        assertTrue(html.contains("1 in 10^3"), html);
+        final Map<String, Object> doc = JsonParser.object(Json.locks(r, 15, false, "9.9.9"));
+        assertEquals(6_000 * MS, doc.get("movedNanos"));
+        @SuppressWarnings("unchecked")
+        final Map<String, Object> moved = ((List<Map<String, Object>>) doc.get("movedByCollector")).getFirst();
+        assertEquals("dispatcher-1", moved.get("thread"));
+        assertEquals(3, ((List<?>) moved.get("locks")).size());
+        assertEquals(100L, moved.get("waits"));
+        assertTrue((Double) moved.get("chanceLog10") < -3.0, moved.toString());
+        // Nothing to label, nothing printed.
+        assertFalse(Text.locks(new ContentionReport(window(), List.of(blocked(400, 1_900))), 15, false)
+                .contains("MOVED BY THE COLLECTOR"));
     }
 }

@@ -78,8 +78,14 @@ public final class Perch {
      * as well: the recording cannot tell a moved lock from two objects there, and says so by
      * listing them.
      *
+     * <p>It is evidence, not proof. A thread that waits on a new object per request, and whose
+     * own allocation sets off a young collection every request, puts a pause in every change
+     * by cause, not chance: 40 futures on 40 addresses scored 10<sup>-4.9</sup>. So the reports
+     * label such locks as probably moved, with the odds, and keep their waits in the
+     * contention and the stalls; nothing is set aside on this evidence alone.
+     *
      * <p>A collector that moves objects outside its pauses (ZGC, Shenandoah) may move a lock
-     * with no pause in the change, and that lock then stays split.
+     * with no pause in the change, and that lock is then not labelled.
      *
      * @param locks  the lock of each wait, in the order the waits ended
      * @param ends   when each wait ended, ascending: one thread's waits do not overlap
@@ -88,14 +94,23 @@ public final class Perch {
      * chance explains that at odds of one in a thousand or less
      */
     public static boolean moved(final LongList locks, final LongList ends, final LongList pauses) {
+        return chanceLog10(locks, ends, pauses) <= CHANCE_LOG10;
+    }
+
+    /**
+     * The odds, as a power of ten, that chance alone put a pause in every change of lock (see
+     * {@link #moved}); {@link Double#NaN} when the waits are not a move at all: fewer than two
+     * locks, a change with no pause in it, or ends out of order.
+     */
+    public static double chanceLog10(final LongList locks, final LongList ends, final LongList pauses) {
         final int n = locks.size();
         if (n < 2) {
-            return false;
+            return Double.NaN;
         }
         final long first = ends.getQuick(0);
         final long last = ends.getQuick(n - 1);
         if (last <= first) {
-            return false;
+            return Double.NaN;
         }
         final long pausesInStretch = pausesIn(pauses, first, last);
         double chance = 0;
@@ -104,17 +119,22 @@ public final class Perch {
             final long from = ends.getQuick(i - 1);
             final long to = ends.getQuick(i);
             if (to < from) {
-                return false;
+                return Double.NaN;
             }
             if (locks.getQuick(i) != locks.getQuick(i - 1)) {
-                if (pausesIn(pauses, from, to) == 0) {
-                    return false;
+                if (to == from || pausesIn(pauses, from, to) == 0) {
+                    return Double.NaN;
                 }
                 chance += Math.log10(Math.min(1.0, (double) (to - from) * pausesInStretch / (last - first)));
                 changed = true;
             }
         }
-        return changed && chance <= CHANCE_LOG10;
+        return changed ? chance : Double.NaN;
+    }
+
+    /** {@code 1 in 10^8}: the odds {@link #chanceLog10} gave, as the reports print them. */
+    public static String odds(final double chanceLog10) {
+        return "1 in 10^" + (long) Math.floor(-chanceLog10);
     }
 
     /** How many pauses overlap {@code (from, to]}: from the first one ending after {@code from} while they start by {@code to}. */
@@ -139,10 +159,21 @@ public final class Perch {
 
     /**
      * Where a thread waits: the thread and the loop, as {@link #loop} prints it. The pieces
-     * of a moved lock are folded per place, so one idle thread's mailbox is found whether or
-     * not other threads run the same loop.
+     * of a moved lock are gathered per place, so one thread's mailbox is found whether or not
+     * other threads run the same loop.
      */
     public record Place(ThreadRef waiter, String loop) {
+    }
+
+    /**
+     * One thread's waits from one place, over several addresses of one lock class, that
+     * {@link #moved} judges one object the collector moved.
+     *
+     * @param stack       the stack of its longest wait, which names the place
+     * @param addresses   how many addresses the waits were on
+     * @param chanceLog10 the odds that chance put a pause in every change, as a power of ten
+     */
+    public record Move(Place place, Stack stack, int addresses, double chanceLog10) {
     }
 
     /**

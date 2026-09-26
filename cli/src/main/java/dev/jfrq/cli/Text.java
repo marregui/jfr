@@ -22,6 +22,7 @@ import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.report.RecordingSummary;
 import dev.jfrq.core.report.ThreadCensus;
 import dev.jfrq.core.stalls.Stall;
+import dev.jfrq.core.stalls.Perch;
 import dev.jfrq.core.stalls.StallReport;
 import dev.jfrq.core.stalls.Timeline.Pause;
 import dev.jfrq.core.util.Bytes;
@@ -385,6 +386,11 @@ final class Text {
                             + "only the part inside it is counted\n", "Note", r.clippedCount(),
                     r.clippedCount() == 1 ? "" : "s"));
         }
+        if (!r.moved().isEmpty()) {
+            sb.append(String.format(Locale.ROOT, "%-10s %s of it on locks the collector probably moved from under "
+                            + "%d thread%s: see MOVED BY THE COLLECTOR\n", "Moved", Durations.format(r.movedNanos()),
+                    r.moved().size(), r.moved().size() == 1 ? "" : "s"));
+        }
 
         if (bySite) {
             sb.append(lockSites(r, top));
@@ -423,6 +429,8 @@ final class Text {
                 }
             }
         }
+
+        sb.append(movedByCollector(r, top));
 
         sb.append("\nTHREADS BY TIME BLOCKED\n");
         final TextTable threads = new TextTable("Thread", "Total", "Waits", "Max", "Share").numeric(1, 2, 3, 4);
@@ -483,9 +491,8 @@ final class Text {
                 r.workWaits().size() == 1 ? "" : "s"));
         if (r.perchCount() > 0) {
             sb.append(String.format(Locale.ROOT, "  %d of these lock%s recognised by shape rather than by name: "
-                            + "one thread, no holder,\n  most of the recording parked there, counting the addresses "
-                            + "a collection moved it to — or the same\n  stack as a lock like that. Pass --idle none "
-                            + "to see them all.\n",
+                            + "one thread, no holder,\n  most of the recording parked there — or the same stack "
+                            + "as a lock like that. Pass --idle none to see them all.\n",
                     r.perchCount(), r.perchCount() == 1 ? " was" : "s were"));
         }
         final TextTable idle = new TextTable("Queue", "Total", "Parks", "Max", "Threads").numeric(1, 2, 3);
@@ -516,6 +523,33 @@ final class Text {
             }
             // The depth the rows were grouped at, so what one row stands for is what it prints.
             sb.append(s.longest().stack().pretty("        ", ContentionReport.SITE_FRAMES));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * The waits one thread made from one place over addresses the collector probably moved one
+     * object to: counted in the totals above, since timing is the only evidence they are one
+     * object, and labelled here with it.
+     */
+    private static String movedByCollector(final ContentionReport r, final int top) {
+        if (r.moved().isEmpty()) {
+            return "";
+        }
+        final StringBuilder sb = new StringBuilder("\nMOVED BY THE COLLECTOR (one thread's waits from one place, over "
+                + "addresses that changed only at GC pauses: probably one object the thread waits on for its own work, "
+                + "which JFR cannot prove; counted above)\n");
+        final TextTable moved = new TextTable("Thread", "Lock", "Addresses", "Waits", "Total", "By chance")
+                .numeric(2, 3, 4);
+        final List<ContentionReport.MovedLock> shown = r.moved().subList(0, Math.min(top, r.moved().size()));
+        for (final ContentionReport.MovedLock m : shown) {
+            moved.row(m.waiter().name(), ClassNames.pretty(m.lockClass()), m.locks().size(), m.count(),
+                    Durations.format(m.totalNanos()), Perch.odds(m.chanceLog10()));
+        }
+        sb.append(moved.render("  "));
+        for (final ContentionReport.MovedLock m : shown) {
+            sb.append("  ").append(m.waiter().name()).append('\n');
+            sb.append(m.stack().pretty("        ", STACK_FRAMES));
         }
         return sb.toString();
     }

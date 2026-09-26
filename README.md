@@ -159,8 +159,10 @@ A thread parked on its own empty queue is not contention and is not a stall: `lo
 those apart and `stalls` leaves them out. They are recognised by the frame of a pool
 waiting for work (`locks --idle` replaces the list; in `stalls`, a sleep, wait or park
 under a frame `--idle` names is idle too) and, for a worker loop no list knows about,
-by shape — one thread, no holder, most of the recording parked there, counting the
-addresses a garbage collection moved the lock to. `stalls` also leaves
+by shape — one thread, no holder, most of the recording parked there. A lock the
+collector moved has several addresses, so its pieces can each fall short of that; `locks`
+lists them under `MOVED BY THE COLLECTOR`, still counted, and `stalls` names them in a
+warning, because only timing says the pieces are one object. `stalls` also leaves
 out a timer loop: a thread whose waits from one place ran out the timeout it chose, at least
 twice and for more than half its life (a `java.util.Timer`, a cleaner, a periodic poll); the
 recording says which waits timed out, so no list is needed. One wait that timed out is

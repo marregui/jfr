@@ -307,6 +307,25 @@ public final class Json {
         w.name("blockedNanos").value(r.totalNanos());
         w.name("waits").value(r.waits().size());
         w.name("clippedWaits").value(r.clippedCount());
+        w.name("movedNanos").value(r.movedNanos());
+        w.name("movedByCollector").array();
+        for (final ContentionReport.MovedLock m : top(r.moved(), top)) {
+            w.object();
+            w.name("thread").value(m.waiter().name());
+            w.name("threadId").value(m.waiter().id());
+            w.name("class").value(m.lockClass());
+            final List<String> addresses = new ArrayList<>(m.locks().size());
+            for (final Wait.LockKey lock : m.locks()) {
+                addresses.add(lock.pretty());
+            }
+            w.name("locks").strings(addresses);
+            w.name("waits").value(m.count());
+            w.name("totalNanos").value(m.totalNanos());
+            w.name("chanceLog10").value(Math.round(m.chanceLog10() * 10) / 10.0);
+            stack(w, m.stack());
+            w.end();
+        }
+        w.end();
         if (bySite) {
             final List<ContentionReport.SiteStats> sites = r.lockSites(Integer.MAX_VALUE);
             w.name("sitesFound").value(sites.size());
