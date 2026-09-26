@@ -78,13 +78,15 @@ class StallCollectorTest {
 
     @Test
     void aMailboxACollectionMovedIsStillItsThreadsPerch() throws Exception {
-        // A worker waits on its own mailbox and is signalled 50 times, 40 ms apart, by a thread
+        // A worker waits on its own mailbox and is signalled 50 times, 80 ms apart, by a thread
         // of its own, so no wait runs out a timeout and the timer rule has nothing to say. A
         // third thread forces a young collection after the 10th, 20th, 30th and 40th letter,
         // which moves the condition, and JFR then names it by a new address: five pieces, none
         // holding the thread for half the window on its own. The evidence is counted in waits,
         // not in time, so a slow machine gets the same: four changes, each one wait long, among
         // 50 waits meet a pause by chance at odds of about 1 in 12 each, 1 in 20 000 together.
+        // 80 ms, not less: each wait has to clear the 50 ms gap to be a stall at all, and waits
+        // 40 ms apart sat on the line and crossed it on some machines only.
         final Path file = JfrFixtures.record(dir, "moved", r -> {
             parks(r);
             r.enable("jdk.GCPhasePause");
@@ -105,7 +107,7 @@ class StallCollectorTest {
             }, "mailbox");
             final Thread postman = new Thread(() -> {
                 for (int i = 1; i <= LETTERS; i++) {
-                    JfrFixtures.sleep(40);
+                    JfrFixtures.sleep(80);
                     if (i == LETTERS) {
                         stop.set(true);
                     }
@@ -155,7 +157,7 @@ class StallCollectorTest {
 
         // stalls: the waits stay stalls, and a warning says what the evidence is.
         final StallReport r = stalls(file, "mailbox");
-        assertTrue(count(r, Verdict.PARKED) > 0, r.stalls().toString());
+        assertTrue(count(r, Verdict.PARKED) >= LETTERS / 2, r.stalls().toString());
         assertTrue(r.warnings().stream().anyMatch(w -> w.contains("parked stalls of mailbox")
                 && w.contains("on one lock the collector probably moved: " + pieces.size() + " addresses")),
                 r.warnings().toString());
