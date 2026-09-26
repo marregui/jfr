@@ -125,6 +125,7 @@ class JsonTest {
         assertNull(map(doc, "samplingPeriodNanos").get("java"));
         assertEquals(10 * MS, map(doc, "thresholdNanos").get("jdk.JavaMonitorEnter"));
         assertNull(map(doc, "thresholdNanos").get("jdk.ThreadPark"));
+        assertEquals(r.unseenHeadline(), doc.get("unseenHeadline"));
         assertEquals(r.unseen(), doc.get("unseen"));
         assertEquals(List.of("a warning"), doc.get("warnings"));
 

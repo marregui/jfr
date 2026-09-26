@@ -5,6 +5,7 @@ package dev.jfrq.live;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.lang.management.ManagementFactory;
 import java.lang.management.RuntimeMXBean;
 
@@ -30,6 +31,8 @@ public final class Jvm implements Closeable {
 
     private static final String FLIGHT_RECORDER = "jdk.management.jfr:type=FlightRecorder";
     private static final String RMI_HOSTNAME = "java.rmi.server.hostname";
+    /** How long an attach runs before {@link #attach(String, PrintStream)} says it is attaching. */
+    static final long ATTACH_NOTICE_MILLIS = 1_000;
 
     private final JMXConnector connector;
     private final FlightRecorderMXBean flightRecorder;
@@ -41,6 +44,55 @@ public final class Jvm implements Closeable {
         this.connector = connector;
         this.flightRecorder = flightRecorder;
         this.runtime = runtime;
+    }
+
+    /**
+     * {@link #attach(String)}, saying so on {@code err} when it takes longer than
+     * {@link #ATTACH_NOTICE_MILLIS}: the first attach starts the target's management agent,
+     * which took 5.4 s on one machine, and a command that is silent that long looks hung.
+     */
+    public static Jvm attach(final String pid, final PrintStream err) throws IOException {
+        return noticeIfSlow(() -> attach(pid), ATTACH_NOTICE_MILLIS, err, "jfrq-live: attaching to JVM " + pid
+                + "; the first attach starts its management agent, which can take a few seconds\n");
+    }
+
+    /** Something that can fail with an {@link IOException}, run by {@link #noticeIfSlow}. */
+    @FunctionalInterface
+    interface Slow<T> {
+        T run() throws IOException;
+    }
+
+    /**
+     * Runs {@code action}, and prints {@code notice} on {@code err} once if it has not returned
+     * after {@code afterMillis}; never after it has returned, so the notice cannot land among
+     * what the caller prints next.
+     */
+    static <T> T noticeIfSlow(final Slow<T> action, final long afterMillis, final PrintStream err, final String notice)
+            throws IOException {
+        // One flag, read and set under one lock: the notice is printed before the action
+        // settles or not at all.
+        final boolean[] settled = new boolean[1];
+        final Thread watch = Thread.ofVirtual().name("jfrq-live-attach-notice").start(() -> {
+            try {
+                Thread.sleep(afterMillis);
+            } catch (final InterruptedException e) {
+                return;
+            }
+            synchronized (settled) {
+                if (!settled[0]) {
+                    err.print(notice);
+                    err.flush();
+                }
+            }
+        });
+        try {
+            return action.run();
+        } finally {
+            synchronized (settled) {
+                settled[0] = true;
+            }
+            watch.interrupt();
+        }
     }
 
     /** @throws IOException when the process does not exist, is not a JVM, or refuses attachment */

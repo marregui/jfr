@@ -1074,7 +1074,14 @@ again from `Error`'s (`OutOfMemoryError` excepted), each time adding one to the 
 total and emitting a `jdk.JavaExceptionThrow`; the second also emits the
 `jdk.JavaErrorThrow`. So an event with `Error.<init>` on top is skipped, and the total loses
 one per `jdk.JavaErrorThrow` inside its stretch. The test checks the corrected total
-against the events inside the stretch, exactly. `jdk.JavaExceptionThrow` fires in the `Throwable` constructor, so it counts
+against the events inside the stretch, exactly. A `java.lang.NoSuchMethodError` whose message names a
+`Holder` class in `java.lang.invoke` (`Invokers$Holder.linkToTargetMethod(...)`) is not a
+fault: the JDK links a method handle by looking for a form generated ahead of time,
+creates that error when there is none, catches it, and generates the form. JFR records the
+creation, so any service that uses lambdas or method handles shows a few, at start-up or
+when a call shape is first used (`MemberName.Factory.resolveOrNull` in JDK 25); the demo
+shows seven in its first half second, five of them under Netty's cleaner. A count of them
+is not a finding. `jdk.JavaExceptionThrow` fires in the `Throwable` constructor, so it counts
 creations: an object made only for its stack trace counts, and a rethrow does not. It is
 throttled (100/s in `default`, 300/s in `profile`), so the class and site shares are of
 the events, and a class's rate is the exact total's rate times its share. That rate is an

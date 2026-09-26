@@ -541,9 +541,14 @@ final class Text {
         sb.append(String.format(Locale.ROOT, "%-10s %d matched\n", "Threads", r.threads().size()));
         // The verdict on the question comes before the stalls, and before the warnings: "0 found"
         // on threads the recording cannot see into is not an answer.
+        // The bound first, on one line; the reasons and the setting that helps below it.
         final List<String> unseen = r.unseen();
+        final String headline = r.unseenHeadline();
+        if (headline != null) {
+            sb.append(String.format(Locale.ROOT, "%-10s %s\n", "Unseen", headline));
+        }
         for (final String u : unseen) {
-            sb.append(String.format(Locale.ROOT, "%-10s %s\n", "Unseen", u));
+            sb.append(String.format(Locale.ROOT, "%-10s %s\n", "", u));
         }
         for (final String w : r.warnings()) {
             sb.append("WARNING    ").append(w).append('\n');

@@ -133,6 +133,48 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
         return out;
     }
 
+    /**
+     * {@link #unseen()} in one line, before its reasons: how short an unexplained stall these
+     * threads cannot show, and on how many of them. {@code null} when every thread's view is
+     * clear. The {@link #unseen()} sentences explain it and name the setting that would help;
+     * this is the line a reader who stops early still needs, since "0 found" means nothing
+     * below it.
+     */
+    public String unseenHeadline() {
+        final long span = info.span().duration();
+        int limited = 0;
+        int never = 0;
+        long lo = Long.MAX_VALUE;
+        long hi = 0;
+        for (final ThreadSummary t : threads) {
+            if (t.sight() == Sight.CLEAR) {
+                continue;
+            }
+            limited++;
+            final long u = t.unseenBelowNanos();
+            if (u > span) {
+                never++;
+            } else if (u > 0) {
+                lo = Math.min(lo, u);
+                hi = Math.max(hi, u);
+            }
+        }
+        if (limited == 0) {
+            return null;
+        }
+        final String of = limited + " of " + threads.size() + " threads";
+        final String exact = "; stalls a blocking event or pause explains are exact";
+        if (hi == 0) {
+            return "unexplained stalls are not observable at all on " + of + exact;
+        }
+        // The best thread's bound holds on every one of them; the worst's is how far it reaches.
+        final String best = Durations.format(lo);
+        final String worst = Durations.format(hi);
+        return "unexplained stalls shorter than " + best + (best.equals(worst) ? "" : " (" + worst + " on the worst thread)")
+                + " are not observable on " + of + (never == 0 ? "" : ", and none at all on " + never + " of them")
+                + exact;
+    }
+
     private List<ThreadSummary> withSight(final Sight sight) {
         final List<ThreadSummary> out = new ArrayList<>();
         for (final ThreadSummary t : threads) {

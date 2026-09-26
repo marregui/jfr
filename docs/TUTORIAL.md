@@ -123,7 +123,8 @@ Sampling   ExecutionSample 10.0 ms, NativeMethodSample 10.0 ms
 Thresholds JavaMonitorEnter 1.00 ms, ThreadPark 1.00 ms, ThreadSleep 1.00 ms, SocketRead 1.00 ms, FileRead 1.00 ms
 Gap        50.0 ms
 Threads    2 matched
-Unseen     on 2 of 2 threads, a stall no event explains is seen only from 151 ms to 173 ms: each is sampled in native code every ~36.1 ms, about 4 threads in native code sharing the sampler's one native slot per 10.0 ms period. Record with jdk.NativeMethodSample#period=1ms, the shortest the sampler takes, to see them from ~52.2 ms; shorter ones only blocking events can show
+Unseen     unexplained stalls shorter than 151 ms (173 ms on the worst thread) are not observable on 2 of 2 threads; stalls a blocking event or pause explains are exact
+           on 2 of 2 threads, a stall no event explains is seen only from 151 ms to 173 ms: each is sampled in native code every ~36.1 ms, about 4 threads in native code sharing the sampler's one native slot per 10.0 ms period. Record with jdk.NativeMethodSample#period=1ms, the shortest the sampler takes, to see them from ~52.2 ms; shorter ones only blocking events can show
 
 BY VERDICT
   Verdict          Stalls  Stalled   Worst
@@ -496,8 +497,8 @@ a long read that lost the draw is not in the file, and the silence it caused sta
 unexplained. Record with `throttle=off` on those events, as the README's line does.
 
 The `Unseen` line, right under `Threads`, is the verdict on the question before any
-answer to it: on how many of the watched threads a stall that no event explains must be
-long to be seen at all, and why. When the sampler's pace is the limit, it gives the
+answer to it: how short a stall that no event explains can be and still go unseen, and on
+how many of the watched threads. The lines under it say why. When the sampler's pace is the limit, it gives the
 `NativeMethodSample` or `ExecutionSample` period that would help and how far it would
 get; when the thread's own absences are (parked, blocked, idle), it says no period helps
 much and blocking events are what will show the stalls. If what it says is longer than

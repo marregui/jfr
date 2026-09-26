@@ -69,8 +69,12 @@ public final class Html {
     public static String stalls(final StallReport report, final int top) {
         final Page p = new Page("jfrq stalls", report.info());
         p.kv("Gap", Durations.format(report.gapNanos()));
+        final String headline = report.unseenHeadline();
+        if (headline != null) {
+            p.kv("Unseen", headline);
+        }
         for (final String u : report.unseen()) {
-            p.kv("Unseen", u);
+            p.kv("Why", u);
         }
         p.warnings(report.warnings());
         p.kv("Evidence", "event: exact to the event's timestamps; samples: as good as the sampling density; "

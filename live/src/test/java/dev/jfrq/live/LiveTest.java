@@ -71,6 +71,38 @@ class LiveTest {
     }
 
     @Test
+    void aSlowAttachIsAnnouncedOnceAndAFastOrFailedOneNever() throws Exception {
+        final ByteArrayOutputStream slow = new ByteArrayOutputStream();
+        assertEquals("jvm", Jvm.noticeIfSlow(() -> {
+            pause(500);
+            return "jvm";
+        }, 20, new PrintStream(slow, true, StandardCharsets.UTF_8), "attaching\n"));
+        assertEquals("attaching\n", slow.toString(StandardCharsets.UTF_8));
+
+        // Settled before the notice was due, and it stays unsaid after: nothing lands among what
+        // the caller prints next.
+        final ByteArrayOutputStream fast = new ByteArrayOutputStream();
+        assertEquals("jvm", Jvm.noticeIfSlow(() -> "jvm", 50, new PrintStream(fast, true, StandardCharsets.UTF_8),
+                "attaching\n"));
+        final ByteArrayOutputStream failed = new ByteArrayOutputStream();
+        assertThrows(IOException.class, () -> Jvm.noticeIfSlow(() -> {
+            throw new IOException("no such process");
+        }, 50, new PrintStream(failed, true, StandardCharsets.UTF_8), "attaching\n"));
+        pause(300);
+        assertEquals("", fast.toString(StandardCharsets.UTF_8));
+        assertEquals("", failed.toString(StandardCharsets.UTF_8));
+    }
+
+    private static void pause(final long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Test
     void helpAndVersion() {
         assertEquals(0, run().status());
         assertTrue(run().out().contains("usage: jfrq-live"));

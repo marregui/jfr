@@ -217,7 +217,7 @@ public final class Live {
             if (command.equals("bound") && limits.isEmpty()) {
                 throw new Args.UsageException("bound needs --max-age and/or --max-size");
             }
-            final Jvm jvm = Jvm.attach(pid);
+            final Jvm jvm = Jvm.attach(pid, err);
             final int status;
             try {
                 status = switch (command) {

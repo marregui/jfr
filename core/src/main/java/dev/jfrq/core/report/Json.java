@@ -220,6 +220,7 @@ public final class Json {
         }
         w.end();
         w.name("threadsMatched").value(r.threads().size());
+        w.name("unseenHeadline").value(r.unseenHeadline());
         w.name("unseen").strings(r.unseen());
         w.name("warnings").strings(r.warnings());
         w.name("byVerdict").array();

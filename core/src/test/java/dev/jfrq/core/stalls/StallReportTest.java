@@ -5,6 +5,7 @@ package dev.jfrq.core.stalls;
 
 import static dev.jfrq.core.stalls.StallAnalysisTest.MS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
@@ -142,5 +143,26 @@ class StallReportTest {
                 r.threads().stream().map(ThreadSummary::sight).toList(), r.threads().toString());
         assertEquals(100 * MS, r.threads().get(2).roundTripNanos());
         assertEquals(2, r.unseen().size(), r.unseen().toString());
+    }
+
+    @Test
+    void theHeadlineStatesTheBoundInOneLine() {
+        // Every limited thread, whatever the reason, in one bound: the best thread's holds on all
+        // of them, and the worst's is how far it reaches.
+        assertEquals("unexplained stalls shorter than 510 ms (1.75 s on the worst thread) are not observable on 2 of "
+                + "3 threads; stalls a blocking event or pause explains are exact",
+                report(20, summary(1, Sight.NATIVE_SAMPLER, 1_750, 571, 571), summary(2, Sight.OWN_ABSENCE, 510, 51, 0),
+                        summary(3, Sight.CLEAR, 0, 0, 0)).unseenHeadline());
+        assertEquals("unexplained stalls shorter than 750 ms are not observable on 1 of 1 threads; stalls a blocking "
+                + "event or pause explains are exact", report(20, summary(1, Sight.NATIVE_SAMPLER, 750, 250, 250))
+                .unseenHeadline());
+        // A bound past the recording is no bound: those threads are counted as not seen at all.
+        assertEquals("unexplained stalls shorter than 750 ms are not observable on 2 of 2 threads, and none at all on "
+                + "1 of them; stalls a blocking event or pause explains are exact",
+                report(20, summary(1, Sight.NATIVE_SAMPLER, 750, 250, 250),
+                        summary(2, Sight.NATIVE_SAMPLER, 12_000, 4_000, 4_000)).unseenHeadline());
+        assertEquals("unexplained stalls are not observable at all on 1 of 1 threads; stalls a blocking event or pause "
+                + "explains are exact", report(20, summary(1, Sight.OWN_ABSENCE, 0, 0, 0)).unseenHeadline());
+        assertNull(report(20, summary(1, Sight.CLEAR, 0, 0, 0)).unseenHeadline());
     }
 }

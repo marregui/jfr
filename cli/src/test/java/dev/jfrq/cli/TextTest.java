@@ -412,7 +412,10 @@ class TextTest {
                 List.of(), List.of(), List.of("a warning"));
         final String text = Text.stalls(r, 15);
         // Before the warnings, and before the empty list it qualifies.
-        assertTrue(text.contains("Unseen     on 1 of 1 threads, a stall no event explains is seen only from 750 ms"), text);
+        // The bound in one line first, the reasons under it.
+        assertTrue(text.contains("Unseen     unexplained stalls shorter than 750 ms are not observable on 1 of 1 threads; "
+                + "stalls a blocking event or pause explains are exact\n"
+                + "           on 1 of 1 threads, a stall no event explains is seen only from 750 ms"), text);
         assertTrue(text.indexOf("Unseen") < text.indexOf("WARNING    a warning"), text);
         assertTrue(text.contains("  none this recording can show: see Unseen above"), text);
         // A thread with no stall is counted, not listed: the Unseen line speaks for it.

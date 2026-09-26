@@ -93,7 +93,9 @@ The launcher runs the JVM in `JAVA_HOME` when that is set and a `java` from the
 is not rescued by a newer `java` on the `PATH`. The first run
 writes an AppCDS archive to `lib/jfrq.jsa` next to the jars, which makes every later run
 start in about a tenth of a second; if the directory is not writable nothing is written
-and start-up is merely ordinary.
+and start-up is merely ordinary. JVM options go in `JFRQ_OPTS` (`jfrq`) or
+`JFRQ_LIVE_OPTS` (`jfrq-live`): `JFRQ_OPTS=-Xmx4g` for a very large recording, or
+`JFRQ_OPTS="-XX:StartFlightRecording=filename=self.jfr"` to record jfrq itself.
 
 ## Usage
 
@@ -149,7 +151,9 @@ which fires in the constructor: a site is the code that made the throwable, past
 constructors and factory. JFR records an `OutOfMemoryError` only when Java code
 constructs one (direct buffer memory): the JVM makes its own, for the heap or metaspace,
 and every `StackOverflowError`, without running a constructor, so they never reach the
-file. A failed evacuation is the step before a heap one.
+file. A failed evacuation is the step before a heap one. A few `java.lang.NoSuchMethodError`s whose message
+names `java.lang.invoke.Invokers$Holder` are the JDK linking method handles, thrown and
+caught inside the JDK; they are not a fault.
 
 A thread parked on its own empty queue is not contention and is not a stall: `locks` lists
 those apart and `stalls` leaves them out. They are recognised by the frame of a pool
@@ -244,9 +248,10 @@ jfrq locks  demo-lock.jfr
 and the limits that follow from how the JFR sampler works. The short version: anything a
 blocking event or a pause event explains is exact; anything that rests on samples alone
 is only as good as the sampling cadence. `jfrq` measures that cadence per thread, and
-`stalls` opens with an `Unseen` line when it is too coarse: how long a stall no event
-explains must be to be seen on the threads you asked about, whether the sampler's pace or
-the thread's own absences are why, and the sampling period that would help.
+`stalls` opens with an `Unseen` line when it is too coarse: first, in one line, how short
+a stall no event explains can be and still go unseen on the threads you asked about; then,
+under it, whether the sampler's pace or the thread's own absences are why, and the sampling
+period that would help.
 
 ## Layout
 
