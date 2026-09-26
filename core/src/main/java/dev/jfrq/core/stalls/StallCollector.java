@@ -100,6 +100,8 @@ public final class StallCollector implements JfrReader.Sink {
         }
     };
 
+    /** The coarsest wall-clock tick a deadline and an event end can disagree by: Windows' 15.6 ms. */
+    private static final long WALL_CLOCK_TICK_NANOS = 16_000_000L;
     /** GC pauses are kept flat until the end (G-1.8): three longs per pause. */
     private static final int GC_SLOT = 3;
     private static final int GC_START = 0;
@@ -289,6 +291,11 @@ public final class StallCollector implements JfrReader.Sink {
      * Whether a park ran out the time it was given: a relative timeout (nanoseconds) it lasted
      * at least, or an absolute deadline (epoch milliseconds) it ended at or after. An untimed
      * park carries neither.
+     *
+     * <p>The deadline was read from the wall clock and the event's end is JFR's tick clock
+     * placed on the wall clock at the chunk's start; the two can disagree by a clock tick,
+     * and on Windows a 150 ms {@code parkUntil} that ran its course was seen ending before
+     * its deadline. So an end within {@link #WALL_CLOCK_TICK_NANOS} of it counts.
      */
     private boolean parkTimedOut(@Transient final RecordedEvent e, final Interval interval) {
         // Nanoseconds on every JDK, and Long.MIN_VALUE for an untimed park, which a Duration cannot hold.
@@ -297,7 +304,7 @@ public final class StallCollector implements JfrReader.Sink {
             return interval.duration() >= timeout;
         }
         final long until = Events.longOr(e, Fields.UNTIL, Nulls.LONG_NULL, interner);
-        return until > 0 && interval.end() >= until * 1_000_000L;
+        return until > 0 && interval.end() >= until * 1_000_000L - WALL_CLOCK_TICK_NANOS;
     }
 
     /** {@code dev.app.Registry@1f2e}: one string per (class, address), reused across events. */

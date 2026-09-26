@@ -649,7 +649,11 @@ configuration poll in `wait(60 s)`, two `java.util.Timer` threads, a wheel timer
 sleeps of 100 ms. The recording says which waits were the thread's own choice of time:
 `jdk.JavaMonitorWait` carries `timedOut`, `jdk.ThreadPark` its `timeout` (nanoseconds) or
 `until` (an epoch-millisecond deadline) to hold its duration against, and `jdk.ThreadSleep`
-its `time`. A wait that ran out its own timeout was not held up by anyone. It is not idle
+its `time`. The deadline is read from the wall clock and the event's end is JFR's tick
+clock placed on it at the chunk's start, and the two can disagree by a clock tick: on
+Windows a 150 ms `parkUntil` that ran its course was seen ending before its deadline, so an
+end within 16 ms of the deadline counts. A wait that ran out its own timeout was not held
+up by anyone. It is not idle
 by that alone, though: an event loop that sleeps is the bug this command exists to find,
 and a caller whose `get` with a timeout gave up waited the whole time for nothing. So the
 rule takes the shape `Perch` takes (section 3), per thread: waits from one place (the loop
