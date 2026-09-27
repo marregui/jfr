@@ -100,7 +100,7 @@ and start-up is merely ordinary. JVM options go in `JFRQ_OPTS` (`jfrq`) or
 ## Usage
 
 ```
-jfrq info   recording.jfr [--json]
+jfrq info   recording.jfr [--html out.html] [--json]
 jfrq health recording.jfr [--top N] [--html out.html] [--json]
 jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html] [--json]
 jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html] [--json]

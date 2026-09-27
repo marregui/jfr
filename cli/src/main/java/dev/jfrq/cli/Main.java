@@ -47,7 +47,7 @@ import dev.jfrq.core.util.Glob;
  * {@code jfrq}: ask a JFR recording one question and get the answer.
  *
  * <pre>
- *   jfrq info   recording.jfr [--json]
+ *   jfrq info   recording.jfr [--html out.html] [--json]
  *   jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html] [--json]
  *   jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html] [--json]
  *   jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html] [--json]
