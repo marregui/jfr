@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -31,7 +32,10 @@ public final class Workload {
         }
         final AtomicInteger n = new AtomicInteger();
         final ThreadFactory named = r -> new Thread(r, "worker-" + n.incrementAndGet());
-        final ExecutorService pool = Executors.newCachedThreadPool(named);
+        // A cached pool whose idle threads end after 100 ms: they are gone by the next burst, so
+        // every burst starts threads, whenever the recording began.
+        final ExecutorService pool = new ThreadPoolExecutor(0, Integer.MAX_VALUE, 100, TimeUnit.MILLISECONDS,
+                new SynchronousQueue<>(), named);
         System.out.println("ready");
         System.out.flush();
         final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds);
