@@ -1,11 +1,11 @@
 # Coding Guidelines for High-Throughput Java
 
-Revision 2026-09-21 (first issued 2026-09-18; G-10.2 now covers locals and parameters).
+Revision 2026-09-21.
 
 These rules describe how to write Java that stays fast under sustained load: a
 hot path that allocates nothing, boxes nothing, builds no `String`, throws no
 fresh exception and takes no lock. They are distilled from the practice of
-mature zero-GC Java systems and stated here generically. Every code example in
+production zero-GC Java systems and stated here generically. Every code example in
 this document is original and illustrative; none is copied from any codebase.
 
 Each rule has an ID (`G-<section>.<n>`) so a diff or a review can cite it. Where
@@ -40,8 +40,8 @@ public final class Nulls {
 }
 ```
 
-*Apply:* a `long` nanosecond timestamp with `LONG_NULL` for "none" beats
-`Optional<Instant>`; a `Map<String, Long>` on a per-event path is a defect.
+*Apply:* a `long` nanosecond timestamp with `LONG_NULL` for "none" replaces
+`Optional<Instant>`; a `Map<String, Long>` on a per-event path violates this rule.
 
 **G-1.2 Two sentinel families, kept apart.** A collection's "no entry" value
 (`-1` by default) and the domain's null (`MIN_VALUE`) are different constants
@@ -75,7 +75,7 @@ a `CharSequenceIntHashMap`.
 
 **G-1.4 A growable object list over `T[]` and `ArrayList`.** `getQuick` is
 unchecked, `remove` nulls the vacated slot, `clear()` nulls every slot so
-references are released. Primitive lists do **not** zero on `clear()`, they just
+references are released. Primitive lists do **not** zero on `clear()`, they
 reset the position; if stale values matter, use `clear(int)` or fill explicitly.
 
 ```java
@@ -967,73 +967,66 @@ representation. Narrow unit tests need no base class.
 
 ## 12. Applying these to this project
 
-Transfers unchanged: G-1 (data layout), G-2 (text), G-3 (reuse), G-4.1–G-4.5
-(ownership), G-5 (errors), G-6.1–G-6.2 (message shape), G-8.4 (incremental
-parser shape), G-9 (configuration and facades), G-10, G-11.
+**Transfers unchanged:** G-1 (data layout), G-2 (text), G-3 (reuse), G-4.1–G-4.5
+(ownership), G-5 (errors), G-6.1–G-6.2 (message shape), G-8.4 (incremental parser
+shape), G-9 (configuration and facades), G-10, G-11.
 
-Transfers in spirit: G-4.7 becomes "every pooled object has an owner and a
-baseline the tests can assert"; G-7 applies only if a parallel pass over the
-file is introduced, and then G-7.1, G-7.2, G-7.3 and G-7.5 are the ones to
-follow.
+**Transfers in spirit:** G-4.7 becomes "every pooled object has an owner and a baseline
+the tests can assert"; G-7 applies only if a parallel pass over the file is introduced,
+and then G-7.1, G-7.2, G-7.3 and G-7.5 are the ones to follow.
 
-Applied on 2026-09-18 to the per-event path, in the order this section originally
-prescribed (collections, then sentinels and reuse, then the per-event allocations):
-the primitive collections (`core/coll`: `ObjObjHashMap`,
-`IdentityObjObjHashMap`, `ObjLongHashMap`, `LongObjHashMap`, `ObjHashSet`,
-`ObjList`, `LongList`, with the `keyIndex()` sign convention, backward-shift delete and
-the `Quick` / `At` / `AtSlot` naming), the sentinel conventions (`Nulls`,
-`parseNanosQuiet`, `periodNanos` / `thresholdNanos`, `culpritOrNull`), the reuse cycle
-(`of()` on the scratch objects, `clear()` per candidate, interner tables probed with raw
-components so a hit allocates nothing), and `int` event tags resolved once per event
-type. Two departures are kept on purpose and should not be "fixed" without a design
-change:
+**Applied** (per-event path 2026-09-18; G-10.2 to every module 2026-09-21):
 
-- The analysis input is records (`Sample`, `Block`, `Wait`, `Pause`) with an
-  `Interval` each, allocated per event. The analysis API and the pure-logic tests are
-  built on them; flattening them (G-1.8) means a new timeline representation and a new
-  test fixture, not a local edit.
+- Primitive collections in `core/coll` (`ObjObjHashMap`, `IdentityObjObjHashMap`,
+  `ObjLongHashMap`, `LongObjHashMap`, `ObjHashSet`, `ObjList`, `LongList`), with the
+  `keyIndex()` sign convention, backward-shift delete and the `Quick` / `At` / `AtSlot`
+  naming.
+- Sentinels: `Nulls`, `parseNanosQuiet`, `periodNanos` / `thresholdNanos`,
+  `culpritOrNull`.
+- Reuse: `of()` on the scratch objects, `clear()` per candidate, interner tables probed
+  with raw components so a hit allocates nothing; `int` event tags resolved once per
+  event type.
+- G-10.2 on main and test sources: 1901 declarations gained `final`. A javac-tree
+  rewriter made the change; the build (`-Werror`, the test suites) and a second rewriter
+  run reporting nothing left verified it. Declarations still bare are reassigned or of
+  the exempt shapes the rule lists. `live`'s one stream became a loop (G-10.7).
+
+**Departures kept on purpose.** These are design decisions; changing them is a design
+change, not a local edit.
+
+- The analysis input is records (`Sample`, `Block`, `Wait`, `Pause`) with an `Interval`
+  each, allocated per event. The analysis API and the pure-logic tests are built on them;
+  flattening them (G-1.8) needs a new timeline representation and a new test fixture.
 - Report objects (`AllocationReport`, `ContentionReport`, `StallReport`) and the text and
   HTML writers use `java.util` collections, `Optional`, `String.format` and
-  `StringBuilder`. That is final reporting, which G-2.3 exempts; the sink protocol
-  (G-2.4) would not change what the user sees or how long it takes.
+  `StringBuilder`. That is final reporting, which G-2.3 exempts; the sink protocol (G-2.4)
+  would not change the output or its cost.
+- The JDK exposes event timestamps only as `Instant`, so `getStartTime()` allocates once
+  per read; the value is converted to `long` immediately and nothing else is kept.
 
-Two rules were judged not to earn their weight here and were not applied: G-9.2/G-9.3
-(facades and three classes per configuration: there is one implementation of each and
-the tests exercise the real filesystem and the real JFR parser) and G-3.3 object pools
-(every per-event object that is not interned is retained by the analysis, so there is
-nothing to return to a pool). One rule cannot be applied: the JDK exposes event
-timestamps only as `Instant`, so `getStartTime()` allocates once per read; the value is
-converted to `long` immediately and nothing else is kept.
+**Not applied, on purpose.** A site that does not follow one of these is not a finding.
 
-Applied on 2026-09-21 to every module, main and test sources alike: G-10.2 in its
-revised form (1901 declarations gained `final`: locals, `try`-with-resources variables,
-enhanced-`for` variables, single- and multi-catch parameters and method parameters; the
-ones still bare are reassigned, or are of the exempt shapes the rule lists),
-done by a javac-tree rewriter and proven by the build (`-Werror` and the test suites) plus
-a second run of the rewriter reporting nothing left. The `live` module, written after the
-first application, was checked against the rest of §10 at the same time; its one stream
-(a digit check on the pid) became a loop (G-10.7).
-
-Recorded on 2026-09-24, after a conformance audit found them followed nowhere: these rules
-are not applied, on purpose, and a bare site is not a finding.
-
+- G-3.3 object pools: every per-event object that is not interned is retained by the
+  analysis, so nothing returns to a pool.
 - G-5.2/G-5.3: exceptions carry prose messages from constructors. Almost every message
-  ends up on the terminal as the tool's answer to a user, so it reads as a sentence; there
-  is no caller that re-derives meaning from message text.
-- G-9.1, G-9.4 in part: each command's options are resolved and validated once, into a
-  record per command, before the recording is opened; `Args` underneath stays a string
-  map and there is no configuration interface. The literal capacities left are initial
+  reaches the terminal as the tool's answer to a user, so it is a sentence; no caller
+  derives meaning from message text.
+- G-9.1 and G-9.4, in part: each command's options are resolved and validated once, into
+  a record per command, before the recording is opened; `Args` underneath stays a string
+  map, and there is no configuration interface. The literal capacities left are initial
   sizes of growable tables, not pool sizes.
+- G-9.2/G-9.3 (facades, three classes per configuration): there is one implementation of
+  each, and the tests exercise the real filesystem and the real JFR parser.
 - G-10.3: no nullability library (`core` depends on `jdk.jfr` only). Absence is a
   sentinel (G-1.2) or an `…OrNull` name plus javadoc; `@Override` and `@SuppressWarnings`
   still apply.
-- G-10.5, test names only: tests are descriptive sentence-style method names under JUnit 5,
-  not `testXxx`. The rest of G-10.5 applies.
+- G-10.5, test names only: descriptive sentence-style method names under JUnit 5, not
+  `testXxx`. The rest of G-10.5 applies.
 - G-10.8, signature wrapping only: multi-parameter signatures wrap where the line is long,
   not one parameter per line. The rest of G-10.8 applies.
-- G-11.1, G-11.2, G-11.3: no leak-check harness, fluent assertion builder or fault-injecting
-  facade (G-9.2 was not applied, so there is no facade to subclass). Tests that start
-  JVM-global resources (recordings, threads) release them in `finally`.
+- G-11.1, G-11.2, G-11.3: no leak-check harness, fluent assertion builder or
+  fault-injecting facade (no facade exists to subclass). Tests that start JVM-global
+  resources (recordings, threads) release them in `finally`.
 - G-11.4: one printed, replayable seed per randomised test rather than two; test order is
   JUnit's default.
 

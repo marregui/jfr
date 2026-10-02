@@ -49,7 +49,7 @@ JDK Mission Control shows the data; `jfr view` prints aggregate tables. Neither 
 - **Text, HTML or JSON.** Text for a terminal or a ticket, `--html` for a self-contained
   report, `--json` for a program or an agent ([schema](docs/JSON.md)).
 
-## It does not guess
+## Every number states its basis
 
 - A number that rests on sampling says so, and says how far the sampling can be trusted.
   `stalls` opens by stating how long a stall no event explains can be and still go unseen.

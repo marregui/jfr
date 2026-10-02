@@ -62,8 +62,8 @@ pause is printed as its offset from the recording's start and its time of day,
 `+13.682s 11:37:15.286Z`, so the line in a log written beside the recording can be found
 without converting by hand.
 
-What it will not do is guess. Every number that rests on sampling says so and says how
-far the sampling can be trusted; the allocation estimate is printed next to the JVM's own
+Every number states its basis. A number that rests on sampling says so and says how far
+the sampling can be trusted; the allocation estimate is printed next to the JVM's own
 counters; a truncated file is read as far as it goes and every report says where it
 stops; a file still being written is refused with the command that produces a readable
 one, instead of the parser hanging on it.

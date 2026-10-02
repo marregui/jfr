@@ -3,23 +3,24 @@
 Ask a running JVM's flight recording one question at a time.
 
 `jfrq` reads a finished `.jfr` file. A JVM that is recording has no finished file: the
-chunk it is writing is open, and the JDK parser waits on it forever. `jfrq-live` attaches
+chunk it is writing is open, and the JDK parser blocks on it indefinitely. `jfrq-live` attaches
 to the JVM, takes a dump of a time window (a finished file), checks what the dump holds
 against what was asked, and runs the `jfrq` question on it. A cursor per JVM remembers
 where the last dump stopped, so the next one can be a delta.
 
 ```
 $ jfrq-live 4242 start --max-age 10m
-JVM        4242@host, started 2026-09-21 14:22:31, 25.0.4.1+1-LTS
-Recording  1   jfrq-live        RUNNING  since 14:23:07.334, max-age 10m00s, to disk
+JVM        4242, started 2026-10-02T10:48:54Z, 25.0.4.1+1-LTS
+Recording  1   jfrq-live        RUNNING  since 10:49:02.850Z, max-age 10m00s, to disk
+Settings   the JDK's 'profile' settings, then: thresholds FileRead 1 ms, ...
 
 $ jfrq-live 4242 full -- stalls --thread 'event-loop-*'
-Dumped     4242-full-142321.jfr  1.03 MB, 1 chunk, 14:23:07.334 .. 14:23:21.688 (14.4 s)
+Dumped     4242-full-104915.008Z.jfr  933 KB, 1 chunk, 10:49:02.850Z .. 10:49:15.125Z (12.3 s)
 Window     the start .. now (everything the recording kept)
-Cursor     next delta from 14:23:21.689; last window the start .. 14:23:21.688 (~/.jfrq/live/4242.properties)
-
-STALLS >= 50.0 ms: 42 found, showing 15, longest first
-   1  event-loop-3-2  +9.798s  168 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@714e97100 held by housekeeper
+Cursor     next delta from 10:49:15.126Z; last window 10:49:02.850Z .. 10:49:15.125Z (~/.jfrq/live/4242.properties)
+...
+STALLS >= 50.0 ms: 38 found, showing 15, longest first
+   1  event-loop-3-2  +0.080s 10:49:02.931Z  174 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@7a4a2d4b60 held by housekeeper ...
    ...
 
 $ jfrq-live 4242 delta -- stalls --thread 'event-loop-*'      # only what happened since
@@ -46,8 +47,7 @@ live/build/install/jfrq-live/bin/jfrq-live --help
 Put `live/build/install/jfrq-live/bin` on your `PATH`, or call the script by path. The
 launcher needs `JAVA_HOME` or a `java` on the `PATH` that is JDK 25.
 
-Try it on the demo service in this repository, which runs without a recording of its own
-when told to:
+To try it, run the demo service without its in-process recording:
 
 ```
 netty-demo/build/install/netty-demo/bin/netty-demo --scenario lock --duration 5m --no-jfr &
@@ -70,7 +70,7 @@ jfrq-live <pid> <command> [options] [-- <jfrq command> [jfrq options]]
 | Command | What it does |
 |---|---|
 | `status` | The JVM's recordings (id, name, state, since when, bounds) and the cursor kept for it. |
-| `start` | Starts a recording: the JDK `profile` settings with the thresholds the top-level README recommends, or `--settings NAME` for another JDK profile treated the same way, or `--settings FILE.jfc` taken as it is. |
+| `start` | Starts a recording: the JDK `profile` settings with the thresholds [RECORDING.md](../docs/RECORDING.md) recommends, or `--settings NAME` for another JDK profile treated the same way, or `--settings FILE.jfc` taken as it is. |
 | `bound` | Sets `--max-age` and/or `--max-size` on the running recording; `0` removes a bound. |
 | `full` | Dumps everything the recording holds; the cursor moves to the dump's end. |
 | `delta` | Dumps what happened since the cursor; the cursor moves to the dump's end. |
@@ -87,8 +87,8 @@ jfrq-live <pid> <command> [options] [-- <jfrq command> [jfrq options]]
 | `--settings NAME\|FILE` | JDK profile name (`default`, `profile`) or a `.jfc` file (`start`). |
 | `--name NAME` | The recording's name (`start`; default `jfrq-live`). |
 
-Everything after `--` is a `jfrq` command and its options, run on the dump with the file
-inserted for you: `-- stalls --thread 'x'` becomes `jfrq stalls <dump> --thread 'x'`.
+Everything after `--` is a `jfrq` command and its options, run on the dump with the dump's
+path inserted: `-- stalls --thread 'x'` becomes `jfrq stalls <dump> --thread 'x'`.
 Only `full`, `delta` and `again` take one.
 
 Exit status: 0 on success; 1 when the JVM cannot be attached, refuses the operation, or
@@ -108,9 +108,9 @@ than a second, a line says why:
   the window's beginning aged out under `max-age` or `max-size`; the answer covers what
   is left.
 - `WARNING  the recording has no bound`: a `full` dump of a recording that keeps every
-  chunk since it started; `bound --max-age 10m` fixes it without restarting anything.
+  chunk since it started; `bound --max-age 10m` sets one without restarting the recording.
 
-## How it works, in one paragraph
+## How it works
 
 A dump is what `jcmd <pid> JFR.dump` does, driven over JMX: clone the recording and stop
 the clone, which seals the chunk being written at instant `T` (so the newest events are

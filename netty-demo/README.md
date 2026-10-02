@@ -1,7 +1,7 @@
 # netty-demo
 
-A Netty service with injected event-loop pathologies, recorded with JFR, so that `jfrq`
-has something real to find. The walkthrough is in [docs/TUTORIAL.md](../docs/TUTORIAL.md).
+A Netty service with injected event-loop faults, recorded with JFR, used to exercise
+`jfrq` on a real workload. The walkthrough is in [docs/TUTORIAL.md](../docs/TUTORIAL.md).
 
 ```
 netty-demo [--scenario all|blocking-io|lock|cpu|alloc|clean] [--duration 20s]
@@ -24,5 +24,5 @@ What each scenario does lives in `Scenario.java`; the bugs themselves are in
 settings are in `Recorder.java`, with the equivalent `-XX:StartFlightRecording` line in
 its Javadoc.
 
-The demo prints the client-side latency percentiles when it finishes. Compare them with
-what `jfrq stalls` reports: the percentiles hide the stalls, the recording does not.
+The demo prints the client-side latency percentiles when it finishes. The percentiles
+summarise all requests; `jfrq stalls` lists each stall with its start, duration and cause.

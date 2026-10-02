@@ -3,7 +3,7 @@
 This walkthrough uses the `netty-demo` module: a small Netty service with a paced load
 generator and four injected bugs, each selectable as a scenario. You record each scenario
 with JFR, then ask `jfrq` what happened. Every output below is real, captured on a
-MacBook with JDK 25; your numbers will differ, the shape will not.
+MacBook with JDK 25. Numbers vary by machine; the structure of each report does not.
 
 Time needed: about fifteen minutes.
 
@@ -27,7 +27,7 @@ when it is not; either way it must be JDK 25.
   measuring the latency of every reply;
 - depending on the scenario, a slow backend, a housekeeping thread, a persistence flusher,
   or two bulk allocators;
-- an in-process JFR recording with the thresholds `jfrq` likes (1 ms for blocking events,
+- an in-process JFR recording with the thresholds `jfrq` recommends (1 ms for blocking events,
   no throttling of socket and file events, 10 ms sampling, 1000 allocation samples per
   second).
 
@@ -54,11 +54,10 @@ scenario lock: 18591 requests; latency p50 0.2 ms  p90 0.5 ms  p99 23.0 ms  max 
 ...
 ```
 
-Note what the percentiles hide. The loops were blocked for nearly a quarter of the recording,
-yet p99 is 23 ms, under a seventh of the worst stall: in a closed loop only the eight requests
-in flight during a stall pay for all of it, and eight requests in 18,600 is 0.04 %. The
-`max` is the only number that says something is wrong, and it does not say what. That is
-the gap this tool fills.
+The loops were blocked for nearly a quarter of the recording, yet p99 is 23 ms, under a
+seventh of the worst stall. In a closed loop only the eight requests in flight during a
+stall wait for it, and eight requests in 18,600 is 0.04 %. Of the client's numbers, only
+`max` shows the stall, and it does not show the cause.
 
 ## 3. What is in the file
 
@@ -89,7 +88,7 @@ THREADS (the names --thread matches)
   CPU: the share of the JVM's CPUs (the machine's, unless -XX:ActiveProcessorCount, a container limit or a CPU affinity mask sets fewer) across the window, from jdk.ThreadCPULoad; 10 readings left out: of threads whose start is not in the file, read before any evaluation the file shows (alive before the recording) or in a recording without jdk.ThreadStart, which cover a stretch not in the file; and of threads native code attached, up to the first below one core, which hold CPU the native thread used before the attach. A dash is a family the JVM does not measure (the collector's threads, virtual threads).
 ```
 
-`Threads` has two counts, and they answer different questions. *Seen in events* is how
+`Threads` has two counts, for two questions. *Seen in events* is how
 many threads some event names in this window: it moves with the window's activity, so a
 pool that starts a worker per task reads 39 in one window and 64 in the next without
 leaking anything. The census after it counts platform threads *alive* when the recording
@@ -112,10 +111,9 @@ a 15 ms wait never existed as far as the file is concerned. It lists every event
 whose threshold suppresses something, in name order; a threshold of zero lets everything
 through, so it is not one, and it stays in the per-type table below instead. `jfrq` prints these
 thresholds on every `stalls` and `locks` report and warns when one is coarser than the
-stall gap, and warns
-too when the JDK's default *throttle* on socket and file events is in force (the
-`profile` settings keep at most 300 of them per second, so a busy service can lose the
-one long read that mattered; the demo switches it off).
+stall gap. It also warns when the JDK's default *throttle* on socket and file events is
+in force: the `profile` settings keep at most 300 of them per second across the JVM, so a
+long read on a busy service can be dropped. The demo switches the throttle off.
 
 `Chunks` is the file's structure. A recording is a sequence of self-contained chunks;
 `jfrq` reads their headers before anything else, takes the recording's span from them,
@@ -177,7 +175,7 @@ Three things to read off this:
    That does not weaken this result: every `BLOCKED_MONITOR` above comes from a
    `jdk.JavaMonitorEnter` event, which is exact whatever the sampling.
 
-Now the other side of the same story:
+The same recording, from the lock side:
 
 ```
 $ jfrq locks demo-lock.jfr --top 3
@@ -233,10 +231,11 @@ CONVOYS (the holder was itself blocked)
 ...
 ```
 
-The convoy is the part no aggregate table gives you: while the loop waited for the
-registry, the housekeeper holding the registry was itself waiting for the persistence
-lock, held by the flusher. The fix is not "make the housekeeper faster"; it is "do not
-flush while holding the registry", and the report says so.
+`CONVOYS` follows the chain that an aggregate table does not show: while the loop waited
+for the registry, the housekeeper holding the registry was itself waiting for the
+persistence lock, held by the flusher. The chain locates the change: the housekeeper
+flushes while it holds the registry, and moving the flush outside that lock removes the
+loops' wait.
 
 Note what is *not* in this report: 18,355 `jdk.ThreadPark` events from the client
 threads' pacing sleeps. A park with no blocker object is a sleep, not a lock, and
@@ -248,7 +247,7 @@ convoy following still go through every thread's waits, so asking only about
 by a loop's wait is still followed into the housekeeper and the flusher. Only waits
 that pass the filters are listed and head convoys.
 
-## 5. Scenario `blocking-io`: the call that should have been async
+## 5. Scenario `blocking-io`: a synchronous call on the event loop
 
 ```
 $ netty-demo --scenario blocking-io --duration 15s --out demo-blocking-io.jfr
@@ -276,18 +275,18 @@ STALLS >= 50.0 ms: 45 found, showing 1, longest first
 ...
 ```
 
-Forty-five lookups, forty-five stalls: nothing missed, nothing invented. The
+45 lookups, 45 stalls: each lookup is found, and no stall is reported without one. The
 `jdk.SocketRead` event carries the peer and the byte count, so the verdict names the
 backend by port. The stack printer always shows the first application frame even when it
-lies below the cut, which is why `RequestHandler.lookup` appears after the elision: that
-is the line to change.
+lies below the cut, which is why `RequestHandler.lookup` appears after the elision: it is
+the frame that makes the call.
 
 Had the reads been short and many instead of long and few, they would still be found:
 a silence in the samples is explained by every read from the same peer that falls
 inside it, whatever their byte counts, as `12 × blocking socket read from backend:9000
 (1.27 KB)`.
 
-## 6. Scenario `cpu`: nothing blocked, the loop just did not come back
+## 6. Scenario `cpu`: CPU-bound work on the event loop
 
 ```
 $ netty-demo --scenario cpu --duration 15s --out demo-cpu.jfr
@@ -313,15 +312,14 @@ One request in a thousand, 22,027 requests, 22 stalls. There is no event for "ra
 long", so this verdict comes from the sampler: eleven consecutive samples, each within
 a few periods of the last, none at the idle point, ten of them in `CpuWork.burn`. A
 thread executing Java is sampled at close to the configured period (about 13 ms here),
-so this evidence is solid. Had the samples been spread out, `jfrq` would not have
-chained them into a run at all: sparse samples prove nothing about the time between
-them.
+so the run is densely sampled. Had the samples been spread out, `jfrq` would not have
+chained them into a run: sparse samples say nothing about the time between them.
 
 Two further verdicts belong to this family. `SATURATED` means the loop never returned
 to idle but no single frame dominates, which is a loop that has too much work rather
-than one long task; it needs at least five samples before `jfrq` will say so. On a clean
-run you may see one `SATURATED` stall in the first 100 ms of the recording: that is class
-loading and JIT warm-up, and it is real.
+than one long task; `jfrq` reports it only on five samples or more. A clean run can show
+one `SATURATED` stall in the first 100 ms of the recording: class loading and JIT
+warm-up, which do keep the loop from idling.
 
 ## 7. Scenario `alloc`: who is allocating, and what changed
 
@@ -361,8 +359,8 @@ that stretch holds nearly all of the row. Here they agree to the percent, on thr
 carry all of the estimate: the line says what share of the estimate the comparison covers,
 because a thread that starts and ends between two readings has no counter, and a
 percentage measured on the rest says nothing about it. `Samples` is how many samples each
-row rests on: `Long` at 328 MB is eighteen of them, a size worth knowing and a share not
-worth quoting. Add `--sites` for the allocating stacks, one row per allocating method (the
+row rests on: `Long` at 328 MB is eighteen of them, enough for an order of magnitude, not
+for a precise share. Add `--sites` for the allocating stacks, one row per allocating method (the
 innermost frame outside the JDK) with every path through it summed, or `--app PREFIX` to
 rank them by your own code instead.
 
@@ -370,16 +368,16 @@ One sample per thread not seen starting in the recording is not in the estimate:
 first. Its weight is the bytes allocated since the thread was *last* sampled, and for
 a thread that was never sampled before that is its lifetime; the `Source` line says how
 many were left out. A thread that started during the recording keeps it, since all of its
-lifetime is in the window. An earlier version of this tutorial showed `main` at
-150 MB and 9.94 MB/s, all `MemberName`: start-up work from before the recording began,
-reported as if it had happened during it. The counters would have said 67 KB. Virtual
+lifetime is in the window. Counting the first sample showed `main` at 150 MB and
+9.94 MB/s, all `MemberName`: start-up work from before the recording began, reported as
+if it had happened during it. The counters said 67 KB. Virtual
 threads lose their first sample too, and there it costs more: the JVM counts allocation
 per carrier, so a virtual thread's first sample can carry its carrier's history from
 before the recording, and since most virtual threads are sampled once, most of their
 allocation is left out. The report says so on a `WARNING` line with the number of samples
 and bytes dropped (docs/DESIGN.md, section 2).
 
-The comparison is the feature you actually use when tuning:
+`--baseline` compares two recordings, which is how a change is measured:
 
 ```
 $ jfrq alloc demo-alloc.jfr --baseline demo-clean.jfr --top 4
@@ -409,7 +407,7 @@ single report ranks them by, so one method reached down many paths is one row of
 Everything is a rate, so a one-minute recording compares with a ten-minute one. The
 `Samples` column is the evidence on each side: the clean baseline holds 21 samples in all,
 so `event-loop-3-2` at +33 % rests on two of them before, and `java.lang.Object[]` at ×305
-on one; either rate before is a guess, not a measurement.
+on one. Each "before" rate rests on one or two samples.
 
 Where does allocation show up on the loop? As GC pauses, which stop every thread:
 
@@ -446,22 +444,22 @@ BY VERDICT
 ...
 ```
 
-`BY VERDICT` is the triage table: the blocking reads and the lock cost about the same, so
-fix both, and the CPU work is a distant third. Every read here is an event stall of its
+`BY VERDICT` is the triage table: the blocking reads and the lock cost 5.87 s each, the
+CPU work 1.48 s. Every read here is an event stall of its
 own. Two reads back to back, with no return to the selector between them, are also a
 silence in the samples, but not a third row: the two event stalls already account for
 that time. A thread's stalls never overlap — a busy run with a short read inside it is
 the read, and what is left of the run — so a per-thread total never exceeds wall time.
 The HTML report has the same tables plus a timeline per thread with one coloured box per
-stall, so a burst of stalls at a particular moment is visible at a glance. Open
-`demo-all.html` in a browser; it is one file with no external resources, safe to attach
-to a ticket.
+stall, so a burst of stalls at a particular moment shows on the time axis. Open
+`demo-all.html` in a browser; it is one file with no external resources and can be
+attached to a ticket as is.
 
 ## 9. Using it on your own service
 
-1. Record with the thresholds shown in [RECORDING.md](RECORDING.md), or at least with the `profile`
-   settings. With the `default` settings the monitor threshold is 20 ms and the sampler
-   runs at 20 ms; both work, `jfrq` will just tell you what it could not see.
+1. Record with the thresholds shown in [RECORDING.md](RECORDING.md), or at least with
+   the `profile` settings. With the `default` settings the monitor threshold is 20 ms and the sampler
+   runs at 20 ms; `jfrq` still answers, and reports what such a recording cannot show.
 2. Find the loop's thread names with `jfrq info`. Netty names them after the
    `DefaultThreadFactory` you gave it, or `nioEventLoopGroup-N-M` if you gave none.
 3. `jfrq stalls app.jfr --thread '<glob>'`. Read the warnings, then `BY VERDICT`, then
@@ -485,7 +483,7 @@ to a ticket.
    recording is answered as far as it goes, and a file copied while the JVM was still
    writing it is refused with the command that produces a readable one.
 
-## 10. Reading the warnings honestly
+## 10. Evidence and warnings
 
 `jfrq` separates what it knows from what it infers:
 
@@ -500,12 +498,13 @@ to a ticket.
 
 A `throttled events` warning means the recording's settings capped socket or file
 events at so many per second across the JVM (the JDK's `profile` settings do, at 300);
-a long read that lost the draw is not in the file, and the silence it caused stays
+a long read dropped by the throttle is not in the file, and the silence it caused stays
 unexplained. Record with `throttle=off` on those events, as the line in [RECORDING.md](RECORDING.md) does.
 
-The `Unseen` line, right under `Threads`, is the verdict on the question before any
-answer to it: how short a stall that no event explains can be and still go unseen, and on
-how many of the watched threads. The lines under it say why. When the sampler's pace is the limit, it gives the
+The `Unseen` line, right under `Threads`, qualifies the question before any answer to
+it: how short a stall that no event explains can be and still go unseen, and on
+how many of the watched threads. The lines under it say why. When the sampler's pace is
+the limit, it gives the
 `NativeMethodSample` or `ExecutionSample` period that would help and how far it would
 get; when the thread's own absences are (parked, blocked, idle), it says no period helps
 much and blocking events are what will show the stalls. If what it says is longer than

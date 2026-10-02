@@ -3,6 +3,56 @@
 How `jfrq` turns a recording into a verdict, which JFR events each answer rests on, and
 where the evidence runs out. Read this before trusting a result you did not expect.
 
+## Contents
+
+- [1. One pass, several sinks](#1-one-pass-several-sinks)
+- [2. `alloc`: allocation pressure](#2-alloc-allocation-pressure)
+- [3. `locks`: contention](#3-locks-contention)
+- [4. `stalls`: when a thread did not return to idle](#4-stalls-when-a-thread-did-not-return-to-idle)
+  - [4.1 Idle detection](#41-idle-detection)
+  - [4.2 Evidence](#42-evidence)
+  - [4.3 Sampling cadence is measured, not assumed](#43-sampling-cadence-is-measured-not-assumed)
+  - [4.4 Pauses](#44-pauses)
+  - [4.5 Merging and reporting](#45-merging-and-reporting)
+- [5. Output](#5-output)
+- [6. Damaged and unusual files](#6-damaged-and-unusual-files)
+- [7. Testing](#7-testing)
+- [8. Performance](#8-performance)
+  - [8.1 The per-event path](#81-the-per-event-path)
+- [9. Known limits, in one place](#9-known-limits-in-one-place)
+- [10. `health`: what the JVM reports about itself](#10-health-what-the-jvm-reports-about-itself)
+- [11. `info`: how threads were started, and what they used](#11-info-how-threads-were-started-and-what-they-used)
+- [12. Source layout](#12-source-layout)
+
+## At a glance
+
+A command reads the file once. The chunk headers are checked first; then one
+`EventStream` pass feeds every event the command subscribed to into its sinks, which
+keep only what their analysis needs. When the pass ends, each sink's results become a
+report object, and the three renderers print that same object, so text, HTML and JSON carry the same numbers.
+
+```mermaid
+flowchart LR
+    F[".jfr file"] --> C["Chunks<br/>header scan"]
+    C -->|"span, damage,<br/>open chunk"| R["JfrReader<br/>one EventStream pass"]
+    R --> A["AllocationCollector<br/>alloc"]
+    R --> L["ContentionCollector<br/>locks"]
+    R --> S["StallCollector<br/>stalls"]
+    R --> H["HealthCollector<br/>health"]
+    R --> T["ThreadCensus<br/>info"]
+    A --> M["Report objects"]
+    L --> M
+    S --> M
+    H --> M
+    T --> M
+    M --> TX["Text"]
+    M --> HT["HTML"]
+    M --> J["JSON"]
+```
+
+Each command attaches only the sinks it needs, and the reader subscribes only to the
+event types those sinks ask for; everything else is skipped by the parser (section 8).
+
 ## 1. One pass, several sinks
 
 A recording is read once, event by event, through `jdk.jfr.consumer.EventStream`.
@@ -20,14 +70,16 @@ settings were active, or on any other recording that happened to be running in t
 Nothing widens it, so every command reports the same span for the same file: an event
 that sticks out of the last chunk (a safepoint the final rotation ends a millisecond
 late) is clipped by the analyses like a wait that began before the recording.
-That last point matters: a JVM usually runs a continuous recording next to an on-demand
-one, and the on-demand file carries `jdk.ActiveRecording` events for both; anchoring the
-span on the earliest recording start, as an earlier version did, stretched a one-second
-dump to the age of the continuous recording and divided every rate by it.
+The span is not taken from `jdk.ActiveRecording`: a JVM usually runs a continuous
+recording next to an on-demand one, and the on-demand file carries `jdk.ActiveRecording`
+events for both. Anchored on the earliest recording start, a one-second dump took the
+age of the continuous recording as its span, and every rate was divided by it.
 
 The headers also say whether the file is whole. A chunk whose declared size runs past
-the end of the file is a truncated recording; the JDK parser stops silently at it, which
-would turn "the disk filled up" into "no stalls found". A chunk whose size fits but whose
+the end of the file is a truncated recording; the JDK parser stops at it without an
+error, so a full disk would read as "no stalls found".
+
+A chunk whose size fits but whose
 last constant pool and metadata are not where its header points (both are events of known
 type at offsets the header gives) was cut short and had something appended: JFR files
 concatenate, and `head -c` of one recording followed by another reads, to the JDK parser,
@@ -37,13 +89,31 @@ copy of the chunk header into the chunk, marked as still being written, so a flu
 is full of headers that are not chunks. `jfrq` reads every complete chunk, from a
 temporary copy without the damage when complete chunks sit behind it, prints a warning on
 every report naming the damaged bytes and the time span their header declared, and
-refuses the file when no chunk is complete. A chunk whose file-state byte is not zero is one still being written: a copy
-of a live recording, or what a killed JVM left behind. The JVM rewrites the chunk's size
+refuses the file when no chunk is complete.
+
+A chunk whose file-state byte is not zero is one still being written: a copy of a live
+recording, or what a killed JVM left behind. The JVM rewrites the chunk's size
 and duration at every flush, so those say nothing on their own; the state byte is what
 it clears when it closes the chunk, and the JDK parser keys on the same byte. It does
-not fail on an open chunk; it polls the header until the byte clears, forever. `jfrq`
+not fail on an open chunk; it polls the header until the byte clears, without a
+timeout. `jfrq`
 refuses such a file before the parser sees it and says how to get a readable one
 (`jcmd <pid> JFR.dump`, or, when complete chunks precede the open one, truncate to them).
+
+The outcome of the header checks, before any event is parsed:
+
+```mermaid
+flowchart TD
+    A["Read every chunk header"] --> B{"Magic and major<br/>version valid?"}
+    B -->|no| X1["Refuse: not a recording<br/>exit status 1"]
+    B -->|yes| C{"A chunk still<br/>being written?"}
+    C -->|yes| X2["Refuse; name the size to<br/>truncate to, or JFR.dump"]
+    C -->|no| D{"At least one<br/>complete chunk?"}
+    D -->|no| X3["Refuse"]
+    D -->|yes| E{"Truncated, damaged<br/>or joined chunks?"}
+    E -->|yes| W["Read the complete chunks;<br/>a warning on every report"]
+    E -->|no| OK["Read the whole file"]
+```
 
 The settings come from `jdk.ActiveSetting` events, which carry an event-type id, a
 setting name and a value (`"10 ms"`, `"300/s"`, `"true"`). Every JDK profile
@@ -56,8 +126,7 @@ aggregates; the contention sink keeps one small record per wait; the stall sink 
 samples and blocking events only for the threads that match the filter, plus every
 thread's monitor waits (one small record each, however many the file holds) to resolve
 lock holders and every thread's parks (three longs, a thread and a stack each) to decide
-which locks are a loop's perch. Stacks
-and frames are interned for the duration of a pass, so a million samples over a few
+which locks are a loop's perch. Stacks and frames are interned for the duration of a pass, so a million samples over a few
 thousand distinct stacks retain a few thousand stacks.
 
 Timestamps are carried as nanoseconds since the epoch in `long`s. `Interval` is
@@ -68,7 +137,7 @@ half-open, `[start, end)`.
 **Events.** `jdk.ObjectAllocationSample` (JDK 16+): a throttled sample whose `weight`
 is the number of bytes it stands for, i.e. the bytes allocated on that thread since the
 previous sample. Summing weights gives an unbiased estimate of bytes allocated; counting
-samples does not, and is the classic mistake. When the sampled event is absent the
+samples does not. When the sampled event is absent the
 analysis falls back to `jdk.ObjectAllocationInNewTLAB` (weight: the TLAB size) and
 `jdk.ObjectAllocationOutsideTLAB` (weight: the allocation size), which is how JDK 11-15
 recordings and explicitly configured profiles report allocation.
@@ -77,7 +146,7 @@ recordings and explicitly configured profiles report allocation.
 the bytes the thread allocated since it was *last sampled*, and for a thread that was never
 sampled, or not since a recording hours earlier, that is its lifetime allocation. Left in, a
 main thread that allocated 150 MB of `MemberName` at start-up and nothing since is reported
-as allocating 150 MB during the recording; the tutorial's first draft showed exactly that.
+as allocating 150 MB during the recording (measured on the tutorial's demo).
 Dropping the sample loses at most the bytes between the previous sample and this one,
 nothing for a thread sampled hundreds of times a second and unknowable for one sampled
 once. A platform thread born in the file keeps its first sample: its lifetime began inside
@@ -90,6 +159,21 @@ start-up allocation became the recording's. The `Source` line says how many firs
 were left out, which is why the sample count is short of the events (the JSON has both). The
 TLAB events carry no such history and are used as they are.
 
+Which allocation events count toward the estimate:
+
+```mermaid
+flowchart TD
+    S["Allocation event"] --> T{"TLAB event?"}
+    T -->|yes| K1["Count its weight"]
+    T -->|"no: ObjectAllocationSample"| F{"First sample<br/>of its thread?"}
+    F -->|no| K2["Count its weight"]
+    F -->|yes| V{"Virtual thread?"}
+    V -->|yes| D1["Leave out;<br/>counted in the warning"]
+    V -->|no| B{"Born in the file?<br/>ThreadStart before its first<br/>counter reading and first sample"}
+    B -->|yes| K3["Count its weight"]
+    B -->|no| D2["Leave out;<br/>counted on the Source line"]
+```
+
 **Virtual threads lose theirs too, and the report says how much that was.** The JVM
 counts allocation per carrier, not per virtual thread, so the weight of a sample taken on
 a virtual thread is what its *carrier* allocated since the carrier was last sampled,
@@ -98,9 +182,9 @@ since it started, which is every carrier the first time the event is enabled, pu
 whole history on its first sample: on a JVM that had run virtual threads before the
 recording, 64 of them allocating 67 MB inside a recording were reported at 3.35 GB when
 their first samples were kept. The event names the virtual thread, not the carrier, so
-that sample cannot be told apart from an honest one. Dropping every virtual thread's
-first sample removes it whenever it lands on one, and the estimate stays below the truth
-at the price of most virtual-thread allocation: a virtual thread is typically sampled
+that sample cannot be told apart from one that holds only the virtual thread's bytes.
+Dropping every virtual thread's first sample removes it whenever it lands on one, and the
+estimate stays below the actual allocation at the cost of most virtual-thread allocation: a virtual thread is typically sampled
 once or never, and the same run was reported at 4.2 MB. `alloc` therefore prints a
 warning whenever a virtual thread lost a sample, with the count and the bytes left out
 (`61 first samples of virtual threads, 3.35 GB, not counted`); those bytes include the
@@ -119,8 +203,8 @@ carrier bytes it happened to be sampled on, not what it allocated.
 the JDK's own settings, is each thread's exact allocation counter. The difference between
 a thread's last counter and its first is what it allocated in between, and a thread whose
 `jdk.ThreadStart` is in the file had a counter of zero then; the report prints that next to
-the estimate, overall and per thread, so the reader knows how far the sampling is from the
-truth for the threads that matter. The two only compare over the same stretch, so the
+the estimate, overall and per thread, so the reader sees how far the sampling is from the
+exact count on those threads. The two only compare over the same stretch, so the
 estimate set against a counter is the thread's samples between those two points, which is
 why the collector keeps every platform thread's samples with their times (the samples are
 throttled, some 17 MB an hour at 300 a second; the unthrottled TLAB events, which run to
@@ -132,11 +216,12 @@ chunks read as an estimate 28 % high whose samples were right, and is 2 % low me
 over the stretches. A thread's row shows its counter only when that stretch holds 95 % of
 the row's estimate; beside the whole-file figure, one pool thread's counter read 0 against
 212 MB. A thread that started and ended between two counter events has no counter; the
-comparison is restricted to the threads that have one, so the two
-numbers compare like for like, and the percentage is only printed when those threads carry at least 1 % of the
-estimate: below that the two differ by start-up noise (the counters are read a few
+comparison is restricted to the threads that have one, so the two numbers compare like
+for like. The percentage is printed only when those threads carry at least 1 % of the
+estimate: below that the two differ by start-up effects (the counters are read a few
 milliseconds after sampling begins, and on the thread that starts the recording those
-milliseconds are JFR's own initialisation), and a percentage would only alarm. The share
+milliseconds are JFR's own initialisation), and the percentage would measure those
+effects, not the sampling. The share
 is the *estimate* on those threads, not their counters: a thread whose counter grew by a
 gigabyte while it was sampled for 1 MB of a 200 MB estimate is half a percent of the
 report, and so is any error measured on it.
@@ -153,15 +238,15 @@ platform threads is the comparison to read.
 The line also says what share of the estimate those threads carry, because that is what
 the percentage validates and nothing more. On a server whose work runs on pool threads
 that live and die inside the window, the counted threads can be a third of the estimate
-while the transient ones did the other two thirds; an unqualified "±2 %" reads as the
-error of the whole report, which it is not.
+while the transient ones did the other two thirds; an unqualified "±2 %" would read as the
+error of the whole report.
 
 **A site is a method, not a path to it.** One logical allocation reaches the sampler down
 many paths: the same method allocating on two of its own lines, the same line under a
 different depth of library frames, a string built by `substring` here and `copyOfRange`
 there. Folded by what they print, `BY SITE` on a loaded node showed `NodeId.parse` as four
-rows of about 2 % each — noise to any reader — when the method was 20.8 % of everything
-the JVM allocated. The key is now the **culprit method**: the innermost frame outside the
+rows of about 2 % each, when the method was 20.8 % of everything the JVM allocated. The
+key is therefore the **culprit method**: the innermost frame outside the
 JDK, without its line number. Every path through it is one row, the row says how many
 stacks it summed, and the stack printed under it is the biggest of them. The raw per-stack
 map is untouched underneath, and so is the per-stack comparison `--baseline` is built on.
@@ -189,12 +274,12 @@ cannot be guessed at, `BY SITE` prints the non-JDK package roots it saw, by byte
 report says what to pass it.
 
 **Support.** Every row also carries the number of samples behind it, **summed over every
-stack in the row** — a row whose bytes are ten stacks' and whose support is one of them
-said the report's most important row rested on 13 samples when it rested on 7 662. The
+stack in the row**. Counted per stack, a row whose bytes were ten stacks' showed the
+support of one of them: 13 samples, where the row rested on 7 662. The
 estimate weights each sample by the bytes it stands for, so two rows of equal size can
 rest on 2 000 samples and on 3, and only the count says which; a `--baseline` between two
-quiet windows once reported `+397 %` and `+469 %` on a base of 143 samples, which reads as
-a finding and is noise. The counts cost three more table probes per allocation event: on a
+quiet windows reported `+397 %` and `+469 %` on a base of 143 samples, within sampling
+error. The counts cost three more table probes per allocation event: on a
 1.3 MB recording of a loaded node the read went from 54.3 ms to 57.2 ms and the analysis
 from 0.62 ms to 1.00 ms, measured with `--timing`.
 
@@ -207,9 +292,9 @@ comparable; threads match by name, classes by name, sites by the same fold the s
 report is ranked by, so `--app` groups a diff exactly as it groups one recording. Matched
 per stack instead, one site that moved appeared once per path it had been sampled down: a
 diff of two loaded windows opened with the same six frames twice, at 302 MB/s and
-216 MB/s, and neither number was the change — the site had moved 628 MB/s. Each row also
+216 MB/s, and neither number was the change: the site had moved 628 MB/s. Each row also
 carries the samples behind both sides, because several hundred percent on a handful of
-them is noise. A key missing on one side is reported against zero. Sorting is by absolute
+them is within sampling error. A key missing on one side is reported against zero. Sorting is by absolute
 change in rate.
 
 A hidden class is named without the address the JVM gave it:
@@ -221,9 +306,9 @@ takes to none (and the rows that read `new` or `-100 %` from 77 to 43). The pric
 every lambda of one class is one row. A warning both recordings carry, such as the
 virtual-thread one, is said once with both counts.
 
-**Limits.** The estimate is statistical; at the JDK's default 150-300 samples per second
-it ranks threads and classes reliably and gets shares within a few percent, but it will
-not tell you that a site allocating 0.1 % of the total grew by half. Class names are
+**Limits.** The estimate is statistical. At the JDK's default 150-300 samples per second
+it ranks threads and classes and gets shares within a few percent; it cannot show that a
+site allocating 0.1 % of the total grew by half. Class names are
 JVM names in the file (`[B`) and are printed in source form (`byte[]`).
 
 ## 3. `locks`: contention
@@ -239,10 +324,26 @@ in `wait()` chose to wait for a notification; counting it would drown contention
 idle worker pools. Parks with no blocker object: those are `LockSupport.parkNanos`
 sleeps and pacing loops.
 
+How `locks` files each wait; the rules are explained in the paragraphs that follow:
+
+```mermaid
+flowchart TD
+    W["Wait event"] --> K{"Event type"}
+    K -->|"JavaMonitorWait"| X1["Excluded:<br/>a chosen wait"]
+    K -->|"ThreadPark,<br/>no blocker object"| X2["Excluded:<br/>a sleep or pacing loop"]
+    K -->|"JavaMonitorEnter, or<br/>ThreadPark with a blocker"| I{"A pool's idle frame, or an<br/>--idle frame, in the<br/>innermost ten frames?"}
+    I -->|yes| WW["WAITING FOR WORK"]
+    I -->|no| P{"Perch shape?<br/>one waiter, no holder seen,<br/>two parks or more,<br/>over half the window"}
+    P -->|yes| WS["WAITING FOR WORK<br/>recognised by shape"]
+    P -->|no| M{"Pieces of one lock<br/>the collector moved?"}
+    M -->|yes| MV["Contention, labelled<br/>MOVED BY THE COLLECTOR"]
+    M -->|no| C["Contention"]
+```
+
 **Waiting for work is not contention.** On a server most parks are workers sitting on
-their own empty queue. Ranked by duration they beat every real lock: in one 2m39s window
-of a loaded node, twelve idle pools filled both `LOCKS BY TOTAL WAIT` and `LONGEST
-WAITS`, and the monitor that mattered — 33.8 s across 1 028 waits — appeared in neither.
+their own empty queue. Ranked by duration they outrank every contended lock: in one 2m39s
+window of a loaded node, twelve idle pools filled both `LOCKS BY TOTAL WAIT` and `LONGEST
+WAITS`, and the one contended monitor (33.8 s across 1 028 waits) appeared in neither.
 So a park whose stack shows the *pool's own* idle frame goes to a `WAITING FOR WORK`
 section with its own total, and the contention sections are what is left.
 
@@ -250,9 +351,8 @@ The patterns name that frame and nothing else: `ThreadPoolExecutor.getTask`,
 `ForkJoinPool.awaitWork`, `DelayedWorkQueue.take`, the common pool's
 `DelayScheduler.loop` (its thread only hands due tasks to the pool, so it parks nowhere
 else), Netty's `SingleThreadEventExecutor.takeTask`, logback's
-`AsyncAppenderBase$Worker.run`. Not the
-queue class: a request thread waiting for a reply on a `SynchronousQueue` is a real wait
-and looks identical one frame up. Not the worker loop either: `runWorker` is on the
+`AsyncAppenderBase$Worker.run`. Not the queue class: a request thread waiting for a reply
+on a `SynchronousQueue` is contention and looks identical one frame up. Not the worker loop either: `runWorker` is on the
 stack while a task is running too. Not `ForkJoinPool.managedBlock`: on JDK 25 every
 `CompletableFuture.get` and `join` and every untimed `Condition.await` blocks through it,
 so it is under a caller waiting for a result as often as under a worker waiting for work;
@@ -276,8 +376,9 @@ and no wait is walked twice). The thread that held the lock longest inside the w
 summed when it appears more than once, is the holder; the others that held it are the
 `via`, the threads it was *handed on through*, in the order they held it, and the text
 names four of them and counts the rest (one loaded node had chains of 88 threads). A tie
-names the thread nearer the waiter. Two earlier rules named the wrong thread. Walking
-back to the first thread that had not itself waited named a thread that held the lock for
+names the thread nearer the waiter.
+
+Two simpler rules were measured and rejected. Walking back to the first thread that had not itself waited named a thread that held the lock for
 the first half-millisecond of a 300 ms wait, not the one that held it for the other
 299.5; stopping instead at the first intermediary that got the lock before the middle of
 the wait measured its hold from the end of its *longest* wait rather than the last one,
@@ -285,6 +386,26 @@ and, two hops back, counted every later thread's hold as its own. On that node t
 longest holder was named for 890 of 2 704 waits with more than one holder inside them;
 with the chain it is named for all of them. `ContentionReport` and `StallCollector` run
 the same `Holders`, so `locks` and `stalls` name the same thread.
+
+The demo's `lock` scenario shows why the event's own field is not enough. Both event loops
+queue on the registry while the housekeeper holds it; the housekeeper releases it to
+`event-loop-3-2`, which holds it for microseconds and releases it to `event-loop-3-1`. The
+event of `event-loop-3-1` names `event-loop-3-2` as the previous owner; the chain names the
+housekeeper:
+
+```mermaid
+sequenceDiagram
+    participant H as housekeeper
+    participant L2 as event-loop-3-2
+    participant L1 as event-loop-3-1
+    Note over H: holds SessionRegistry
+    L2->>H: blocks entering the monitor
+    L1->>H: blocks entering the monitor
+    H-->>L2: releases after about 170 ms
+    L2-->>L1: releases after microseconds
+    Note over L1: event: previousOwner = event-loop-3-2
+    Note over L1: jfrq: held by housekeeper,<br/>handed on through event-loop-3-2
+```
 
 `--thread`, `--min` and `--lock` apply *after* resolution, to what is listed, never to
 what is walked: the wait that names the real holder is usually a short one by a thread
@@ -299,8 +420,8 @@ waiting. Co-waiters for the same lock are not links; they are already folded int
 
 **Every row carries a stack.** `LOCKS BY TOTAL WAIT` ranks by total, `LONGEST WAITS`
 by duration, so a lock made of thousands of short waits tops the first and never appears
-in the second: its row was a name and an address with no way to act on it. Each row now
-takes the stack of its own longest wait, listed under `WHERE THEY WAITED`, and `--lock`
+in the second, which is where stacks were printed; its row named the lock but not where
+it was waited on. Each row takes the stack of its own longest wait, listed under `WHERE THEY WAITED`, and `--lock`
 filters the whole report down to one lock by class or by `class@address`.
 
 **`--by-site` ranks the stack, not the instance.** One queue per in-flight request is as
@@ -317,34 +438,32 @@ frames it prints and the HTML at its twelve, the same file gave the two reports 
 rows and different totals.
 
 **A thread's own perch, measured rather than named.** The idle list above recognises a
-pool's own frame, which works only for the runtimes someone thought to add. A service with
-its own worker loop is in nobody's list: on one recording, eight of the eight most
-contended locks were dispatcher threads parked on their own mailbox, and an operator who
-did not already know the codebase had no way to know to name that frame. A perch has a
-shape no list is needed to see — exactly one thread ever waits there, no thread was ever
-found holding it, and that thread is parked there for most of the recording. The margin is
-wide: on that file the mailboxes covered 76.7 % to 99.9 % of the window while the busiest
-real queue in it, a consumer genuinely waiting for data another thread had to produce,
-covered 9.8 %. Half the window is the line, with five times the margin either side.
+pool's own frame, and covers only the runtimes on the list. A service with its own worker
+loop is not on it: on one recording, the eight most contended locks were all dispatcher
+threads parked on their own mailbox, and naming that frame with `--idle` requires knowing
+the codebase. A perch has a shape that needs no list: exactly one thread ever waits there,
+no thread was ever found holding it, and that thread is parked there for most of the
+recording. On that file the mailboxes covered 76.7 % to 99.9 % of the window, while the
+busiest contended queue, a consumer waiting for data another thread had to produce,
+covered 9.8 %. The threshold is half the window, with a factor of five to either side.
 
 Two parks are required as well as the share, because one park covering the window is a
-thread that is *stuck*, which is the most important thing the report can say and must never
-be filed away as idleness; a lock with a holder is contention whatever its shape. What the
+thread that is *stuck*, and that must be reported, not filed as idleness; a lock with a
+holder is contention whatever its shape. What the
 measurement finds is a lock, but what it identifies is the loop above it, so the stack of
 each perch answers for every other lock waited on from the same place: one worker out of
 thirteen that was busy for two thirds of the recording parks on its own mailbox exactly
 like the other twelve, and a threshold deciding between them would leave that one lock,
-alone, at the top of the contention it is not part of. `--idle none` turns this off with
-the name list, since an escape hatch that leaves a rule running is not one. The loop is
+alone, at the top of the contention it is not part of. `--idle none` turns this off together
+with the name list, so one option disables every idle rule. The loop is
 compared as it prints, to eight frames, deep enough to reach below the park and the queue
-into the loop itself: two stacks that differ only in how a frame was compiled are one loop
-to a reader, so they are one loop here. A
-perch whose parks carry no stack names no loop, and answers for no other lock: every
-stackless lock prints the same nothing, and one of them may be a real wait. The report
+into the loop itself; two stacks that differ only in how a frame was compiled are one loop.
+A perch whose parks carry no stack names no loop, and answers for no other lock: every
+stackless lock prints the same empty stack, and one of them may be contention. The report
 says how many of the locks it lists under `WAITING FOR WORK` were recognised by shape; the
 count is of those rows, after the filters, and leaves out a lock the idle list named. On the
-recording that raised it, `Blocked` fell from 32m42s to 2m32s and the browse consumer that
-mattered took the top five rows; `stalls`, which asks the same question of its blocks, its
+recording that raised it, `Blocked` fell from 32m42s to 2m32s and the contended browse
+consumer took the top five rows; `stalls`, which asks the same question of its blocks, its
 silences and its sample runs, went from 832 stalls on those threads to none.
 
 **One stack per stack, not per lock.** A server that gives every worker its own mailbox
@@ -378,12 +497,11 @@ locks scored between 10<sup>-5</sup> (a monitor polling every 5 s, eight changes
 collections) and 10<sup>-19</sup>, and every thread waiting on a new object per request
 either had changes with no pause in them (20 of 31, 28 of 41) or scored 1.
 
-That is evidence, not proof, and a review built the case that defeats it: a consumer
-waiting on a new future per request, whose own work between two waits allocates enough to
-set off a young collection every time. Every change then has a pause in it by cause, not
-chance, and 40 futures on 40 addresses scored 10<sup>-4.9</sup>; folded into waiting for
-work, 11.9 s of a slow downstream became "no contention", the worst answer this command
-can give. A pause inside the new wait rather than between waits would stop that case and
+That is evidence, not proof. A counter-case, found in review: a consumer waiting on a new
+future per request, whose own work between two waits allocates enough to set off a young
+collection every time. Every change then has a pause in it by cause, not chance, and 40
+futures on 40 addresses scored 10<sup>-4.9</sup>; folded into waiting for work, 11.9 s of
+a slow downstream would have been reported as "no contention". A pause inside the new wait rather than between waits would stop that case and
 not the next (a backend that allocates while it produces each result). So the pieces are
 never set aside on this evidence. They are gathered per thread and loop (the park locks
 one thread alone waited on, from one loop, whose total has a perch's shape and whose
@@ -395,12 +513,12 @@ names each such thread in a warning with the same evidence. On the ten recording
 node `Blocked` stays about 7m54s and the label accounts for 5m54s of it, all but two 60 s
 waits (two waits on two addresses score 1: the recording cannot tell a moved lock from two
 objects there); on one of them 35 s more stays unlabelled, a monitor's poll whose address a
-logger's condition took later (section 9). The reader decides; the report says what the file shows. `WHERE THEY WAITED` shows
-the pieces of a split lock under one stack.
+logger's condition took later (section 9). The report states the evidence and leaves the
+judgement to the reader. `WHERE THEY WAITED` shows the pieces of a split lock under one
+stack.
 
 **Window semantics.** JFR writes a blocking event when the wait *ends*, so a file holds
-waits that began before its first chunk, and a `jfrq-live delta` window slices waits at
-both ends by construction. Every wait is therefore counted only for the part inside the
+waits that began before its first chunk, and a `jfrq-live delta` window cuts waits at both ends. Every wait is therefore counted only for the part inside the
 recording's span: a wait of three minutes in a window of two and a half contributes two
 and a half. Without that, one thread could be reported as blocked for 112 % of a window,
 and the totals said more time was spent waiting than the window contains. The clipping
@@ -428,7 +546,7 @@ comma-separated list of regular expressions, each of which must match a whole
 A frame `--idle` names is the thread's idle point for blocking events too: a sleep, an
 `Object.wait` or a park whose innermost ten frames show it is the loop with nothing to do
 and joins the waiting-for-work rule of section 4.5, since a loop that sleeps between polls
-would otherwise be stalled in its own sleep. The default patterns are not applied this way,
+would otherwise be reported as stalled in its own sleep. The default patterns are not applied this way,
 nor is any pattern that names the wait itself (`Unsafe.park`, `LockSupport.park*`,
 `Object.wait*`, `Thread.sleep*`): those frames are under every wait of their kind, and a
 sample there is the thread at rest only because the sampler cannot see what it waits for.
@@ -450,8 +568,8 @@ itself:
 Each of these has a threshold in the recording settings; a block shorter than the
 threshold is not in the file. `jfrq` warns when a threshold exceeds the gap. The JDK's
 `default` and `profile` settings (JDK 25) also *throttle* the socket and file events to
-100 or 300 per second across the JVM; a service doing thousands of short reads a second
-can then lose the one long read that mattered. `jfrq` warns when a throttle is in
+100 or 300 per second across the JVM; on a service doing thousands of short reads a
+second, a long read can then be dropped. `jfrq` warns when a throttle is in
 force, and the recording line in [RECORDING.md](RECORDING.md) switches it off.
 
 **Sample runs** (as good as the sampling density). Consecutive non-idle samples chain
@@ -472,8 +590,8 @@ samples, which is then that stall instead. A thread with no
 two consecutive Java samples has no Java cadence (`—`) and chains by the period: the
 spacing of its native samples is not a measure of running Java. The verdict is `BUSY`
 when one culprit frame (the innermost non-JDK frame) owns at least half the samples, and
-at least two of them, naming it and the share — "50 % of 2 samples" is one sample and a
-guess; `SATURATED` when no frame dominates and there are at least five samples, which is
+at least two of them, naming it and the share ("50 % of 2 samples" would rest on one
+sample); `SATURATED` when no frame dominates and there are at least five samples, which is
 a loop with too much work rather than one long task. If blocking events, together and
 whatever their kind, cover at least half the run (a synchronous read shows as native
 samples in `read0` *and* as `jdk.SocketRead` events), the events win and the verdict is
@@ -490,11 +608,11 @@ lock taken from several places is one answer. What that leaves unexplained is tr
 with lock waits grouped by stack, because an instance is an address and the collector moves
 the object a thread parks on: a pool worker idle on its own queue for 3m52s of a 26-minute
 node recording parked 122 times on three addresses of one `SynchronousQueue`, none of them
-half the silence, and was reported as the recording's worst stall, `UNEXPLAINED`, while its
+half the silence, and was reported as the recording's longest stall, `UNEXPLAINED`, while its
 parks covered 230.6 s of 232.9; by stack they are the worker at rest. Neither key alone
 does: by stack only, one monitor taken from two lines of a method split into halves that
 covered nothing; by lock class, an idle park on a `ConditionObject` stood for three busy
-waits on another and dropped a real stall. A stack group whose waits named several
+waits on another and dropped a stall. A stack group whose waits named several
 instances names the class (`178 × parked on dev.app.Queue`), and for monitors every thread
 that held one of them. Pauses group the same way, and
 a silence they explain is cut to them, from the start of the first to the end of the
@@ -508,8 +626,28 @@ event", beside the collection that explains it. A 300 MB heap under the serial c
 read as a single pause of more than a second; the detail now reads
 `128 × GC pause, 1.02 s stopped in total, longest 12.8 ms (GC Pause (gcId 439))`. If
 several watched threads have an unexplained silence at the same moment, the detail says
-so: that is the sampler, or a pause the recording did not capture, far more often than
-independent bad luck.
+so: a simultaneous silence on several threads is more likely the sampler, or a pause the
+recording did not capture, than independent stalls.
+
+The order in which a silence is explained:
+
+```mermaid
+flowchart TD
+    G["Two consecutive samples further apart<br/>than the thread's routine absence"] --> B{"One group of blocking<br/>events covers half?"}
+    B -->|yes| VB["That group's verdict:<br/>BLOCKED_MONITOR, PARKED,<br/>BLOCKING_IO, ..."]
+    B -->|no| P{"GC pauses<br/>cover half?"}
+    P -->|yes| VG["GC_PAUSE,<br/>cut to the pauses"]
+    P -->|no| S{"Safepoints<br/>cover half?"}
+    S -->|yes| VS["SAFEPOINT"]
+    S -->|no| K{"Lock waits grouped<br/>by stack cover half?"}
+    K -->|yes| VB
+    K -->|no| T{"Longer than<br/>3 × routine absence?"}
+    T -->|yes| U["UNEXPLAINED"]
+    T -->|no| Z["Not reported"]
+```
+
+Below `3 × routine absence` (section 4.3), an explanation counts only when it covers a
+whole `--gap` on its own.
 
 **The ends of a thread's life.** A call still in progress when the recording stopped is
 not in the file (section 6), so a thread stuck from the middle of the recording to its end
@@ -520,7 +658,7 @@ event, to the span's end or its end event — and the stretch before its first s
 after its last are silences like any other, labelled as reaching the thread's first or
 last moment in the recording; a thread never sampled is one silence, its whole life.
 Without those events a thread's birth or death cannot be told from a stall, and the ends
-are not judged. Two more conditions keep the ends honest. An unexplained silence needs a
+are not judged. Two more conditions apply at the ends. An unexplained silence needs a
 routine absence to be longer than, which a thread seen fewer than twice does not have, so
 for it only an explained one is reported. And the stretch after the last sample of a
 thread seen waiting for work where the sampler cannot see it (section 4.5) is not called
@@ -528,7 +666,7 @@ unexplained: its last park has most likely not ended yet.
 
 ### 4.3 Sampling cadence is measured, not assumed
 
-This is the part that decides whether a silence means anything.
+Whether a silence is evidence depends on how often the thread is sampled.
 
 The JFR sampler (`jfrThreadSampler.cpp`, unchanged in JDK 25) visits at most
 **five threads executing Java and one thread in native code per period**, round-robin
@@ -541,7 +679,20 @@ the machine used for the tutorial, consecutive native samples across *all* threa
 about 55 ms apart despite a configured 10 ms period, so the native slot is also slower
 than the period suggests.
 
-Threads executing Java are a different story: a CPU-bound loop is sampled at close to
+```mermaid
+flowchart LR
+    P["Each sampler period<br/>10 ms in profile"] --> J["Up to five threads<br/>executing Java"]
+    P --> N["One thread in native code,<br/>round-robin"]
+    N --> N1["event loop in epoll"]
+    N --> N2["client in a socket read"]
+    N --> N3["any other native call"]
+```
+
+With *k* threads in native code, each is sampled about every *k* periods: the demo's
+event loops shared the native slot with three other threads and were sampled every
+~37.5 ms at a 10 ms period.
+
+Threads executing Java are sampled differently: a CPU-bound loop is sampled at close to
 the configured period as long as fewer than five threads are in Java at once.
 
 `jfrq` therefore computes per thread, from the recording itself:
@@ -564,10 +715,10 @@ depend on it.
 
 **The verdict comes first.** On a live node, `stalls` on 24 event loops printed `0 found`,
 above three per-thread warnings, "21 more", and a table of zeros; the answer to "did the
-loops stall" was really "this recording cannot see a loop stall shorter than 1.75 s unless
-an event explains it", and nothing said so up front. So an `Unseen` line leads the report,
+loops stall" was "this recording cannot see a loop stall shorter than 1.75 s unless an
+event explains it", and the report did not say so first. So an `Unseen` line leads the report,
 before the warnings and the stalls, one per kind of limit, and an empty stall list points
-at it. The kind matters, because it decides the remedy:
+at it. The kind decides the remedy:
 
 - *The sampler's pace.* A thread where one slot can see it for at least half its life,
   whose routine absence is mostly that slot's round trip (at most twice it), is limited by
@@ -583,7 +734,7 @@ at it. The kind matters, because it decides the remedy:
   `3 × (absence − round trip × (1 − p / period))`. The JFR sampler takes no period shorter
   than 1 ms: on JDK 25, with twenty threads in native socket reads, 20 ms sampled each
   every ~454 ms, 10 ms every ~233 ms, 1 ms every ~25 ms, and 0.5 ms the same as 1 ms. The
-  prediction errs on the safe side: 10 ms predicted ~97 ms at 1 ms, and a recording at
+  prediction overestimates: 10 ms predicted ~97 ms at 1 ms, and a recording at
   1 ms measured 76.8 ms, because the part the model calls the thread's own is taken from
   the 90th percentile. On the node, 1 ms would take the loops from 1.75 s to ~123 ms.
 - *The thread's own absences.* Everything else with a blind spot: idle workers and timers
@@ -599,7 +750,7 @@ halt) and `jdk.ExecuteVMOperation` (the operation that ran while they were halte
 joined on `safepointId`; the operation names the pause, `VM operation ThreadDump`,
 `VM operation Deoptimize`, which is the part a reader can act on. `jdk.SafepointEnd`
 is used when present, but the JDK's own `default` and `profile` settings disable it,
-which is why the operation event is the one that matters: with the end event alone a
+which is why the operation event is required: with the end event alone a
 safepoint would be only its sync phase, and a 300 ms thread dump would explain nothing.
 An operation whose begin event fell under the recording's threshold stands alone. A
 safepoint that overlaps a GC pause is the GC's own and is dropped as a duplicate. Pauses
@@ -618,6 +769,15 @@ claims the time and the weaker keeps only what is left:
 2. Silences a JVM pause explains, cut to the pauses, which are exact too.
 3. Runs of samples, as good as the sampling, up to their last sample.
 4. Silences explained by blocks, and unexplained ones: the weakest evidence.
+
+```mermaid
+flowchart LR
+    E["1. Event stalls<br/>exact"] --> P["2. Silences a JVM pause<br/>explains: exact"]
+    P --> R["3. Runs of samples:<br/>as good as the sampling"]
+    R --> S["4. Silences explained by<br/>blocks, and unexplained"]
+```
+
+Each tier claims its time before the next; a later tier keeps only what is left.
 
 A silence or a run that the event stalls already cover by half between them is dropped
 whole: two one-minute waits inside a silence of 2m22s, each a stall of its own, otherwise
@@ -641,16 +801,17 @@ filter: watched alone, one of two threads sharing a queue looked like the queue'
 waiter, and one dispatcher out of thirteen went from 86 stalls to none when its twelve
 siblings were watched with it. A park with no blocker object never makes a perch: every
 `parkNanos` in the JVM shares that one "lock", and a retry loop's backoff would be filed
-away as its idle point. Weighing every thread's parks costs about 15 ms of reading (8 %)
-on a 5.7 MB recording with 55 thousand of them when `--thread` selects a few threads. The rule runs at all three doors: on the event, on a silence's
-explanation, and on the explanation of a run of samples. That last one matters because the
-sampler sees a park as native code rather than as the thread's idle point, so a worker's
+away as its idle point. Weighing every thread's parks costs about 15 ms of reading (8 %) on a
+5.7 MB recording with 55 thousand of them when `--thread` selects a few threads.
+
+The rule runs at three points: on the event, on a silence's explanation, and on the
+explanation of a run of samples. The third is needed because the sampler sees a park as native code rather than as the thread's idle point, so a worker's
 own waiting chains into runs and would otherwise come back as a stall after being kept out
 of the other two. A stack is matched there on what its frames say, not on the stack object:
-a blocking event and a sample taken in the same park are two stacks with one meaning. The block stays in the timeline,
-because it is still what explains the silence in the samples — dropping it outright
-would turn a 1m10s idle worker into a 1m10s `UNEXPLAINED` stall, which is a worse answer
-than the one being rejected. The same check therefore runs on the explanation of a
+a blocking event and a sample taken in the same park are two stacks with one meaning. The
+block stays in the timeline, because it is still what explains the silence in the
+samples: dropped outright, a 1m10s idle worker became a 1m10s `UNEXPLAINED` stall. The
+same check therefore runs on the explanation of a
 silence as well as on the event itself.
 
 **Timer loops are scheduled idle.** With `--thread '*'` on a live node, every one of the
@@ -664,13 +825,13 @@ clock placed on it at the chunk's start, and the two can disagree by a clock tic
 Windows a 150 ms `parkUntil` that ran its course was seen ending before its deadline, so an
 end within 16 ms of the deadline counts. A wait that ran out its own timeout was not held
 up by anyone. It is not idle
-by that alone, though: an event loop that sleeps is the bug this command exists to find,
-and a caller whose `get` with a timeout gave up waited the whole time for nothing. So the
+by that alone: an event loop that sleeps is a stall this command must report, and a
+caller whose `get` with a timeout gave up waited the whole time without a result. So the
 rule takes the shape `Perch` takes (section 3), per thread: waits from one place (the loop
 as its stack prints) that ran out their timeout at least twice and, those waits alone,
 for more than half the thread's life in the window. Every wait from that place is then the
 thread at rest, including one something woke early, since a timer thread is woken whenever
-a sooner task is scheduled, and it is kept out at all three doors, like a worker waiting
+a sooner task is scheduled, and it is kept out at all three points, like a worker waiting
 for work, with one warning that counts the waits and names the threads. On that node the
 rule set aside 2,930 waits, 20m41s, on five threads, exactly the count of those waits in
 the file, and the stall count fell from 3,147 to 206; across seven recordings of that
@@ -684,19 +845,19 @@ in the file whole, and counted whole it puts more time in the window than the wi
 holds. The gap is then applied to the clipped length — 700 ms of blocking with 20 ms of
 it inside the window is not a 50 ms stall — and a warning says how many stalls were cut.
 A busy run's tail, which is an estimate (one sampler period past its last sample), stops
-at the end of the recording for the same reason. It also gives way to a silence stall that starts inside it, so
-the two stay disjoint, and a run the cut leaves shorter than a gap is dropped: only the
+at the end of the recording for the same reason. It also gives way to a silence stall
+that starts inside it, so the two stay disjoint, and a run the cut leaves shorter than a gap is dropped: only the
 estimate made it a gap long, and the estimate is the part that gave way. Before that rule a
 randomised test found a 43 ms run kept against a 46 ms gap; `stalls --thread '*'` on the 15
 recordings of two earlier soak rounds listed 26 such runs, in 7 of them, of 40.4 to 49.9 ms
-against a 50 ms gap, which the rule removes and nothing else. Silences need no clipping: they are
-bounded by two samples, or by a sample and an end of the thread's life inside the span,
+against a 50 ms gap, which the rule removes and nothing else. Silences need no clipping:
+they are bounded by two samples, or by a sample and an end of the thread's life inside the span,
 all inside it by construction.
 
-**Unexplained gaps are ranked apart.** A gap with no event and too few samples is the
-longest number the report can produce and the one that says least: a 47.4 s `UNEXPLAINED`
-outranked an actionable 17.1 s park on the same page. The verdict is honest and stays;
-the ranking was the mistake, because a gap and a park are different kinds of claim. They
+**Unexplained gaps are ranked apart.** A gap with no event and too few samples is often
+the longest stall in a report and the one with the least evidence: a 47.4 s
+`UNEXPLAINED` outranked a 17.1 s park with a stack on the same page. The verdict stays;
+the ranking changes, because a gap and a park are different kinds of claim. They
 are listed under their own heading, after the stalls with an explanation, with the count
 of `jdk.SocketWrite` events in the file beside them — a recording that streamed gigabytes
 can hold sixteen, because an HTTP stack that buffers its own writes produces none, and a
@@ -707,12 +868,11 @@ still count in `BY VERDICT` and in the per-thread totals.
 file, not from a list of event types written into the tool: the line exists to answer
 "did the settings I asked for take effect", and a fixed list answers it only for the
 events someone thought of. Derived, it first printed 41 entries, most of them JDK
-defaults nobody chose; a threshold of zero suppresses nothing and so is not a threshold,
+defaults; a threshold of zero suppresses nothing and so is not a threshold,
 and the line now leaves those out and sorts by name, so two runs of the same file produce
 the same line and two reports diff. The zeroes are still in the per-type table below,
 where they are a fact about one event type rather than a claim about the recording. The
-thread count is the threads *seen in events*, which is
-why it moves with the window's activity rather than matching a thread dump, and it is
+thread count is the threads *seen in events*, which is why it moves with the window's activity rather than matching a thread dump, and it is
 labelled as such; the `THREADS` section folds them into families by replacing each run
 of digits with `N`, because that is what a pool varies per worker and what a `--thread`
 glob has to match.
@@ -731,7 +891,7 @@ stops and restarts its dynamic compiler threads under one id; only those between
 batches count, because a recording taken from boot starts threads before its first
 census; and a start is not a new life for a thread already alive, because `main`, in the
 first census of such a recording, gets a `jdk.ThreadStart` afterwards. On that node the
-two worrying families were virtual threads, which the census does not cover, and a pool
+two families that looked like leaks were virtual threads, which the census does not cover, and a pool
 steady at 4 alive while 60 workers started and 60 ended. The census covers Java platform
 threads only: a family with a thread no census row or start or end event names (a
 virtual thread, a GC worker, the VM thread) prints a dash, not a zero, since zero is a
@@ -746,29 +906,30 @@ Text goes to standard output in fixed-width tables meant for tickets and chat; e
 stall line ends with `[samples]` or `[silence]` unless it came from an event. A stall
 list prints each distinct stack once and later rows say `same stack as #n`: every stall
 keeps its own row, because they are separate occurrences and not one aggregate, but one
-lock convoying two event loops filled fifteen rows with the same seven lines — 138 lines
-of report where 54 say the same thing. Both renderers do it, each keyed on its own
+lock convoying two event loops filled fifteen rows with the same seven lines: 138 lines
+of report where 54 carry the same content. Both renderers do it, each keyed on its own
 rendering, since the text list elides at six frames and the HTML table at twelve. `--html`
 writes one self-contained file: no scripts, no external resources, inline SVG
 timelines with a box per stall (or per wait) and a tooltip with the detail. A timeline
 row draws at most 2,000 boxes, the longest ones: a recording with a 1 ms threshold can
-hold hundreds of thousands of waits, and a file of hundreds of megabytes helps nobody.
+hold hundreds of thousands of waits, which drawn in full make a file of hundreds of
+megabytes.
 `--json` writes one document for a program to read, with the field names as the contract
 (docs/JSON.md). Text, HTML and JSON come from the same report objects and take the same
-`--top`, so they never disagree.
+`--top`, so they carry the same numbers.
 
 The summary comes first. A `stalls --thread '*'` run on a live node was 235 lines, and
 its `PER THREAD` table listed all 134 threads alphabetically, most with no stall, after
-the stall list: the reader, human or agent, read the evidence before learning what it
-added up to. The text report now opens with `BY VERDICT` and `PER THREAD`, as the HTML
+the stall list: the reader, human or agent, read the evidence before its summary. The
+text report opens with `BY VERDICT` and `PER THREAD`, as the HTML
 page always did, and lists only the threads that stalled, most stalled first, bounded by
 `--top`, with one line counting the rest; what the others cannot show is the `Unseen`
 line's to say (section 4.3). The same run is 93 lines.
 
 Times are UTC, and say so: the report header prints an ISO instant, `jfrq-live` its clock
 times as `12:23:21.688Z`, and a dump's default file name is stamped in UTC. A recording is
-read on other machines and next to other tools' output, and a clock time without a zone
-is a guess; `jfrq-live` used to print local time beside a UTC header.
+read on other machines and next to other tools' output, where a clock time without a
+zone is ambiguous.
 
 ## 6. Damaged and unusual files
 
@@ -786,12 +947,12 @@ is a guess; `jfrq-live` used to print local time beside a UTC header.
 - **Still being written** (a live recording copied from under the JVM): refused. When
   complete chunks precede the open one, the message gives the size to truncate the file
   to; when the open chunk is the only one there is nothing to keep, and the message says
-  to dump the recording instead. The JDK parser would otherwise spin forever waiting
+  to dump the recording instead. The JDK parser would otherwise poll, without a timeout,
   for the chunk to finish; see section 1. Questioning a running JVM is what `jfrq-live`
   is for ([LIVE.md](LIVE.md)): it takes windowed dumps, which are finished files.
 - **Several recordings in one JVM:** the span is the file's own (section 1); the
   settings reported are the last chunk's, since settings can change between chunks.
-- **Files joined** (`cat a.jfr b.jfr`, which the JDK parser reads without a word): the
+- **Files joined** (`cat a.jfr b.jfr`, which the JDK parser reads without a warning): the
   JVM starts each chunk of a recording exactly where the previous one ended, so a chunk
   that starts more than a millisecond after that is a hole no run recorded, and one that
   starts before it comes from another run. Either is a warning on every report: the span
@@ -823,8 +984,8 @@ is a guess; `jfrq-live` used to print local time beside a UTC header.
 - `health`'s evacuation-failure finding needs a heap with no room left, which the test
   JVM does not have: the test starts a JVM of its own with a 48 MB heap held nearly full,
   records it, and checks the count of failed collections against the file's own `gcId`s.
-- JaCoCo enforces line coverage of 85 % on `core` and 80 % on `cli` and `live` in `./gradlew check`.
-  At the time of writing `core` is at 97 % and `cli` at 90 %.
+- JaCoCo enforces line coverage of 85 % on `core` and 80 % on `cli` and `live` in
+  `./gradlew check`.
 
 ## 8. Performance
 
@@ -863,7 +1024,7 @@ in order of effect:
    chunk's constant pools resolve to (`RecordedStackTrace`, `RecordedThread`,
    `RecordedClass`) are shared instances, so `Interner` remembers the first resolution
    by identity. That took `alloc` from 440 ms to 180 ms of reading, and `info` from
-   580 ms to 310 ms just from the thread lookup. Identity caches are bounded and
+   580 ms to 310 ms from the thread lookup alone. Identity caches are bounded and
    rebuilt when full, so a long recording cannot pin every chunk's pools.
 3. **Hash stacks once.** `Stack` is a class with a cached hash rather than a record, and
    interning makes equal stacks one instance, so aggregation maps compare by identity
@@ -876,21 +1037,21 @@ in order of effect:
    Convoy search walks heads in descending duration and stops once `top` are found.
    These do not show in the table above (the analysis is under 40 ms on this file); they
    keep it that way on files with hundreds of thousands of waits or stalls.
-6. **Build the HTML only when asked.** The report used to be rendered and discarded
-   when `--html` was absent; it is now built behind a supplier, lists at most
+6. **Build the HTML only when asked.** The report is built behind a supplier, so nothing
+   is rendered without `--html`; it lists at most
    `max(--top, 100)` stalls with stacks, and escapes text without a regex per cell.
 7. **Read two files at once.** `--baseline` parses both recordings on virtual threads;
    the parser is single-threaded per file.
 8. **Start faster.** The launcher runs the JVM with `-XX:+AutoCreateSharedArchive`, so
    the first run writes a dynamic AppCDS archive next to the jars and later runs map it
    instead of loading and verifying `jdk.jfr` and the tool again: 0.45 s to 0.11 s on a
-   small file. An unwritable install directory degrades silently to a normal start
-   (`-Xlog:cds*=off`). `-XX:TieredStopAtLevel=1` was tried and rejected: it saves a few
-   milliseconds on small files and costs 25 % on a full parse.
+   small file. An unwritable install directory falls back to a normal start without a
+   message (`-Xlog:cds*=off`). `-XX:TieredStopAtLevel=1` was measured and rejected: it
+   saves a few milliseconds on small files and costs 25 % on a full parse.
 
-### 8.1 The per-event path after the coding-guidelines pass (2026-09-18)
+### 8.1 The per-event path
 
-`CODING-GUIDELINES.md` was applied to everything that runs per event: the reader
+`CODING-GUIDELINES.md` applies to everything that runs per event: the reader
 resolves an `EventType` object once (by identity) to its name, its `int` tag, its
 counter and its sinks, so no string is hashed per event; the interner's value tables are
 probed with a frame's components and a stack's frame buffer, so a hit allocates nothing;
@@ -915,33 +1076,31 @@ and the median of 20 in-process iterations on the right:
 
 The warm numbers say where the floor is: the JDK parser. `info`, which parses every
 event and does nothing with it, costs 89 ms warm; the analyses add 15–30 ms on top of a
-filtered parse. The refactor's value is the allocation it removed from that 15–30 ms
-(and the cold-start time, which class loading and JIT of a smaller working set improve),
-not a change in the order of magnitude. Text and HTML output are byte-identical before
+filtered parse. Applying the guidelines removed allocation from that 15–30 ms and
+shortened the cold start (less class loading and JIT for a smaller working set); it did
+not change the order of magnitude. Text and HTML output are byte-identical before
 and after on every command; the one exception is the order of rows with an identical
-delta in `alloc --baseline`, which was hash-map order before and is hash-map order now.
+delta in `alloc --baseline`, which is hash-map order in both.
 
-Taking the span from the chunk headers alone (2026-09-24, section 1) also removed the
+Taking the span from the chunk headers alone (section 1) also removed the
 reader's own end-time read on every event, one `Instant` each: `info` on a 33 MB demo
 recording went from 235 ms to 213 ms of `parse` (median of four alternating runs).
 
-On a loaded node's recording whose `locks` report lists 13 000 waits (three times the
-4 000 it listed before the 2026-09-24 changes to what counts as waiting for work moved
-9 000 parks back into contention), `render` went from 52 ms to 68 ms: every section is computed
-from the waits, and two were computed twice, the ranked locks (for the table and for its
+On a loaded node's recording whose `locks` report lists 13 000 waits, `render` took
+68 ms: every section is computed from the waits, and two were computed twice, the ranked locks (for the table and for its
 stacks) and the waits sorted longest first (for the convoys and for `LONGEST WAITS`).
-`ContentionReport` now computes each once and sums a lock's totals in one map lookup per
+`ContentionReport` computes each once and sums a lock's totals in one map lookup per
 wait instead of four: 42 ms (medians of fifteen alternating runs). The holder chain of
 section 3 is indexed by lock, then thread, in end order, so each step is one binary
 search; on a node whose chains reach 88 threads (56 000 steps over 2 900 monitor waits)
 `locks` `analyse` went from 159 ms to 138 ms and `stalls` `analyse` from 72 ms to 80–88 ms.
 
-Field reads were the next cost once `stalls` read every thread's parks (2026-09-24). Each
-optional field was read as `hasField` then a getter, and the JDK's typed getters
+Field reads were the next cost once `stalls` read every thread's parks. Each optional
+field was read as `hasField` then a getter, and the JDK's typed getters
 (`getThread`, `getClass`, `getString`, `getStackTrace`) check the declared type with one
 more by-name scan before the one that reads, so a lock's class name cost three linear
 scans of the event's descriptors on every park and monitor event. The fields the
-analyses read are now `int` tags (`Fields`); which of them an event type has is one
+analyses read are `int` tags (`Fields`); which of them an event type has is one
 `long` mask, resolved with `hasField` on the first event of each `EventType` object and
 then by identity (the interner checks the last type first, so every sink's lookups on
 one event hit that entry). A present field is read with one `getValue` scan and an
@@ -961,11 +1120,11 @@ in-process time of the last twenty of thirty runs (warm, whole command), same JV
 Output is byte-identical before and after on `stalls`, `locks`, `alloc` and `info` of
 both files.
 
-Labelling the pieces of a moved lock (section 3, 2026-09-25) costs `locks` its read of
+Labelling the pieces of a moved lock (section 3) costs `locks` its read of
 `jdk.GCPhasePause` and both commands a pass over every park lock one thread alone waited
 on. Median of three alternating cold runs on a 19.8 MB, 22-minute recording of a loaded
 node, `--thread '*'`: `locks` analyse 121 → 129 ms and `stalls` analyse 149 → 164 ms;
-parse within noise for both (58 pause events against 277 thousand parks).
+parse within run-to-run variation for both (58 pause events against 277 thousand parks).
 
 ## 9. Known limits, in one place
 
@@ -1028,8 +1187,9 @@ parse within noise for both (58 pause events against 277 thousand parks).
   parks above it, so its idle time can fall far short of a perch's half window. On a broker
   of a three-node cluster, the JGroups bundler thread's recorded waits on its own condition
   came to 3 102 parks and 1m18s, 7.0 % of an 18-minute window at a 10 ms threshold, below
-  the 9.8 % of the busiest real queue measured in section 3; no shape tells the two apart. A rule for several waiters on one condition, each parked over half the
-  window, was measured on fifteen recordings before it was written: every lock it would have
+  the 9.8 % of the busiest contended queue measured in section 3; no shape tells the two
+  apart. A rule for several waiters on one condition, each parked over half the window,
+  was measured on fifteen recordings before it was written: every lock it would have
   matched was a `ThreadPoolExecutor.getTask` pool the idle list already names, so it was not
   added. `--idle` with the loop's frame, or a 1 ms threshold, is the remedy.
 - `jdk.ThreadCPULoad` covers Java threads only (the compilers' threads among them): the
@@ -1038,8 +1198,8 @@ parse within noise for both (58 pause events against 277 thousand parks).
   so a recording shorter than two periods (20 s at the JDK settings' 10 s) shows little for
   the threads that were already running; an attached thread's readings up to its first one
   below one core are left out too (section 11), apart from the VM's own `main`'s; the line
-  under the table says how many readings were left out. An evaluation at which a single other thread had a reading is not
-  recognised as one, and a reading after it is weighed from the instant before, which
+  under the table says how many readings were left out. An evaluation at which a single
+  other thread had a reading is not recognised as one, and a reading after it is weighed from the instant before, which
   overstates it. Whether `jdk.ThreadStart` was on is the last chunk's setting: a recording
   that turned it on partway through weighs a thread started before that, and with no start
   in the file, as alive since the recording began; 100 threads of 50 ms each, 60 of them
@@ -1062,13 +1222,23 @@ once-a-second statistics (`jdk.CPULoad`, `jdk.JavaThreadStatistics`,
 (`jdk.JavaExceptionThrow`, `jdk.JavaErrorThrow`). Both JDK 25 settings files enable all of
 them. On the 39-minute soak recording it takes 274 ms, against 327 ms for `info`.
 
+```mermaid
+flowchart LR
+    G["Collector events<br/>GarbageCollection, EvacuationFailed,<br/>GCHeapSummary, GCConfiguration"] --> FI["Findings<br/>ranked, first and last time"]
+    G --> TR["Trends<br/>start, end, range, floors"]
+    ST["Once-a-second statistics<br/>CPULoad, ResidentSetSize,<br/>JavaThreadStatistics"] --> TR
+    EX["ExceptionStatistics,<br/>JavaExceptionThrow, JavaErrorThrow"] --> TC["Throwables<br/>exact total, by class and site"]
+    CPU["ThreadCPULoad"] --> TCPU["The threads' own CPU,<br/>checked against JVM CPU on macOS"]
+    NMT["NativeMemoryUsage<br/>with NMT on"] --> NM["Native memory<br/>by category"]
+```
+
 **Findings are only what the JVM reported.** Each is one of a fixed list, ranked in this
 order: an `OutOfMemoryError` created; a collection that failed to evacuate; a full
 collection (`G1Full`, `SerialOld`, `ParallelOld`); pause time over the JVM's own goal of
 `1 / (1 + GCTimeRatio)` of the time (7.7 % for G1's default 12); a pause over
 `MaxGCPauseMillis`; a collection caused by a humongous allocation, by the metaspace
 threshold, or by `System.gc()`. Each carries its count and when it first and last
-happened. The times do work a rule would otherwise do badly: five metaspace collections
+happened. The times carry the distinction a rule could not: five metaspace collections
 in the first 1.2 s are a JVM starting, and the same five spread over an hour are classes
 loaded faster than they are unloaded. `GCConfiguration` reports a pause target only when
 one was set; it was unset in every recording examined, so the pause finding is usually
@@ -1080,10 +1250,10 @@ metaspace, an array over the size limit) and every `StackOverflowError` without 
 one: a JVM driven out of heap three times, past the array limit and out of direct memory
 recorded only the last, which `java.nio` constructs in Java. So the finding reports
 direct-memory exhaustion, with its message, and says what it cannot see; there is no
-stack-overflow finding, since it would only ever report a `new StackOverflowError()` in
-someone's code. The heap's warning is an evacuation failure instead: G1 found no room to
-copy live objects and left them in place. It is counted once per collection (`gcId`), because one collection can report
-it more than once. In a 48 MB heap held nearly full, 379 of 779 failed collections
+stack-overflow finding, since it could only report a `new StackOverflowError()` in
+application code. The heap's warning is an evacuation failure instead: G1 found no room
+to copy live objects and left them in place. It is counted once per collection (`gcId`),
+because one collection can report it more than once. In a 48 MB heap held nearly full, 379 of 779 failed collections
 reported it twice.
 
 A cause is counted once per trigger. G1 reports its concurrent marking cycle (`G1Old`)
@@ -1094,11 +1264,11 @@ counts as a collection and adds its pauses (remark and cleanup), but not a cause
 
 **Trends are numbers without a verdict.** Heap after GC, resident set, live threads and
 JVM and machine CPU each get their start, end, range, mean, and the floor (the lowest
-value) of their first and last thirds. A heap that leaks has a floor that climbs; one
-that is merely busy has peaks that come and go. A "rising" rule on those floors was tried
-and rejected as noisy: the 39-minute soak recording starts with the JVM, and its heap
-floor climbs from 18 MB to 61 MB as the application warms up. Whether 3 MB of resident growth in four minutes matters
-is the reader's call.
+value) of their first and last thirds. A heap that leaks has a floor that climbs; a busy
+heap without a leak has peaks that come and go. A "rising" rule on those floors was
+measured and rejected: the 39-minute soak recording starts with the JVM, and its heap
+floor climbs from 18 MB to 61 MB as the application warms up. Whether 3 MB of resident
+growth in four minutes matters is left to the reader.
 
 **Throwables are counted exactly and ranked from a sample.** `jdk.ExceptionStatistics`
 carries the JVM's running total of throwables created. The difference between its first
@@ -1109,23 +1279,26 @@ again from `Error`'s (`OutOfMemoryError` excepted), each time adding one to the 
 total and emitting a `jdk.JavaExceptionThrow`; the second also emits the
 `jdk.JavaErrorThrow`. So an event with `Error.<init>` on top is skipped, and the total loses
 one per `jdk.JavaErrorThrow` inside its stretch. The test checks the corrected total
-against the events inside the stretch, exactly. A `java.lang.NoSuchMethodError` whose message names a
-`Holder` class in `java.lang.invoke` (`Invokers$Holder.linkToTargetMethod(...)`) is not a
+against the events inside the stretch, exactly.
+
+A `java.lang.NoSuchMethodError` whose message names a `Holder` class in `java.lang.invoke` (`Invokers$Holder.linkToTargetMethod(...)`) is not a
 fault: the JDK links a method handle by looking for a form generated ahead of time,
 creates that error when there is none, catches it, and generates the form. JFR records the
 creation, so any service that uses lambdas or method handles shows a few, at start-up or
 when a call shape is first used (`MemberName.Factory.resolveOrNull` in JDK 25); the demo
 shows seven in its first half second, five of them under Netty's cleaner. A count of them
-is not a finding. `jdk.JavaExceptionThrow` fires in the `Throwable` constructor, so it counts
-creations: an object made only for its stack trace counts, and a rethrow does not. It is
+is not a finding.
+
+`jdk.JavaExceptionThrow` fires in the `Throwable` constructor, so it counts creations: an object made only for its stack trace counts, and a rethrow does not. It is
 throttled (100/s in `default`, 300/s in `profile`), so the class and site shares are of
 the events, and a class's rate is the exact total's rate times its share. That rate is an
 average over the window, which a start-up burst and a steady trickle can share: 341
 `ClassNotFoundException`s from +5.1 s to +605.6 s read as 0.3/s, half of them made by
 +6.0 s. So each class also prints when its first, median and last were made; the median is
 near the first for a burst and near the middle for a steady rate, whatever straggler comes
-last, which the first and last alone cannot say. A site is the
-code that made the throwable. The top of every such stack is its own construction:
+last, which the first and last alone cannot show.
+
+A site is the code that made the throwable. The top of every such stack is its own construction:
 `Throwable.<init>`, the superclass constructors (an application's own base exception
 among them), the class's constructor, and sometimes a static factory of the class. The
 site is the first frame outside the JDK below all that, and the stack shown starts there.
@@ -1142,16 +1315,18 @@ figure divides by the same count on macOS, and by the host's CPUs on Linux (it r
 `/proc/stat`); its machine figure is the host's on both (JDK 25 sources). On macOS the two
 compare: an Edge run with `-XX:ActiveProcessorCount=2` on a 12-core machine read 100.9 % for
 the JVM and 103.6 % for its threads. On Linux a JVM held to 2 of 12 CPUs reads a sixth of
-what its threads read with nothing wrong. A reading times the stretch it covers is the thread's CPU in it, so their sum
+what its threads read, with both figures correct.
+
+A reading times the stretch it covers is the thread's CPU in it, so their sum
 over the window, divided by the window, is the Java threads' share of the JVM's CPUs; the
 rule and what it leaves out are section 11's. A process uses at least the CPU its threads
-use, so a `JVM CPU` trend (`jdk.CPULoad`) below it is wrong where the two divide by the same
-count, and `health` puts a warning above everything else when, on a recording whose
+use, so a `JVM CPU` trend (`jdk.CPULoad`) below it is incorrect where the two divide by
+the same count, and `health` puts a warning above everything else when, on a recording whose
 `jdk.OSInformation` names Darwin, the threads' figure exceeds the JVM's by half again plus a
 point. Elsewhere it does not compare them: on Linux the counts differ whenever the JVM is
 held to fewer CPUs than the host, and no other system's source was checked.
-The margin covers two figures read over slightly different stretches; the case it exists
-for is far outside it. JDK 21.0.3 broker JVMs on macOS, in 67 recordings of one soak (64
+The margin covers two figures read over slightly different stretches; the observed fault
+is far outside it. JDK 21.0.3 broker JVMs on macOS, in 67 recordings of one soak (64
 finished files and the readable chunks of the nodes it killed),
 averaged 0.02 % to 0.45 % in `jdk.CPULoad`, no reading above 1.02 %, while `ps` showed them
 at 150 % to 236 % of a core and their threads' readings summed to 0.8 % to 16.9 %; the
@@ -1177,7 +1352,7 @@ surviving objects were allocated, not what keeps them. On an Edge whose heap fil
 limit, the samples pointed at the code that creates messages; the class histogram showed
 510 000 of them held by a task queue. A rise the trends round away is not reported: on a
 steady Netty service the floors printed 748 MB and 748 MB, 204 KB apart, and a note under
-them that the floor rose read as a contradiction of the table.
+them that the floor rose contradicted the printed figures.
 
 **A throwable event that was off is said, with the setting.** When the settings show
 `jdk.JavaExceptionThrow` disabled (JDK 21's `profile` leaves it off; JDK 25's turns it on),
@@ -1194,8 +1369,9 @@ is the file name, or as many directories above it as it takes to tell the record
 (`n1/run/node.jfr`), or its whole path when the same file is given twice, which is a usage
 error. The JSON has a `reports` array, each element a `health` document's `recording` and
 fields without the envelope (`tool`, `version`, `schema`, `command`), which the comparison
-document carries once. A killed JVM
-leaves its repository directory of chunks rather than a recording. Given that directory, or
+document carries once.
+
+A killed JVM leaves its repository directory of chunks rather than a recording. Given that directory, or
 the `repository=` directory that holds one per JVM (named by start time and pid), `jfrq`
 points at `jfr assemble`; directories are recognised by the names the JVM gives chunks
 (`2026_10_01_13_37_14.jfr`), so a directory of finished recordings is not mistaken for one.
@@ -1230,8 +1406,8 @@ on one loaded broker 22 of 104 periods of 10 s ran over 10.5 s, up to 22.7 s. We
 reading as a period overstated the threads that end between periods: six threads that each
 ran a second read 5.6 % of a 12-core machine for 0.6 %. With every reading weighed by its own
 stretch, the Java threads of the JDK 25 Edge summed to 0.93 to 1.03 times the JVM's own
-figure in 15 of 22 recordings, and to less in the rest (section 10). One stretch the file cannot bound: an evaluation at which a single
-other thread had a reading is not seen, and a reading after it is weighed from the shared
+figure in 15 of 22 recordings, and to less in the rest (section 10). One stretch the file cannot
+bound: an evaluation at which a single other thread had a reading is not seen, and a reading after it is weighed from the shared
 instant before, which overstates it.
 
 A thread whose start is in the file has its first reading counted from that start, unless
@@ -1242,8 +1418,8 @@ carries the rest into the thread's next reading (`jfrThreadCPULoadEvent.cpp`, JD
 CPU comes out at one core a reading until it is spent. A RocksDB callback thread reads a
 whole core, the cap, over the 0.003 ms to 2.9 ms since its attach (0.005 ms to 0.08 ms for 90 %
 of 777 on one broker); weighed from the periodic instant before them, those readings came to
-38.4 % on a broker whose threads used 8.0 %, and weighed from the attach to almost nothing,
-which looked right. It is not, for a thread that stays attached past an evaluation: when
+38.4 % on a broker whose threads used 8.0 %, and weighed from the attach to almost nothing.
+Weighing from the attach fails for a thread that stays attached past an evaluation: when
 `main` returns, the `java` launcher attaches the same native thread again as `DestroyJavaVM`,
 which only waits. On a live JDK 21 broker its first reading, 2.544 % of 12 CPUs 10.03 s after
 the attach, was the 3.06 s of CPU `main` had used, counted a second time; on another broker
@@ -1254,8 +1430,9 @@ exactly 1/N, so it is the largest reading in the file when that is 1/N; when it 
 reading was capped, nothing was carried, and only the first reading after an attach is left
 out. A thread spinning a whole core from its attach on reads just under the cap (an attached
 spinner on 12 CPUs read 8.296 % and 8.307 % in its first two readings), so its own CPU ends the
-leaving out within a reading or two. The VM's own `main` is
-the exception: HotSpot attaches the thread that creates the VM under that name, and its native
+leaving out within a reading or two.
+
+The VM's own `main` is the exception: HotSpot attaches the thread that creates the VM under that name, and its native
 thread ran only the launcher before, so its first reading is its own start-up work (3 s of
 spinning in `main` read 8.3 %, the JVM's own figure, where leaving it out read 0.0 %). A reading
 with no start of its thread, no earlier reading of it and no shared instant before it in the
@@ -1269,9 +1446,8 @@ are in different windows) and when, and groups them by creator: the innermost fr
 the JDK in the starting thread's stack, the rule `alloc --sites` uses, since `Thread.start`
 and a pool's `addWorker` are the same for every pool. The stack shown starts at that frame.
 On an Edge under overload, its cached pool's threads started 470 times in 100 ms, and 1 890 of
-1 891 starts came from `MoreExecutors$ListeningDecorator.execute`, a future listener dispatched to a pool that
-makes a thread whenever none is idle.
-
+1 891 starts came from `MoreExecutors$ListeningDecorator.execute`, a future listener
+dispatched to a pool that makes a thread whenever none is idle.
 
 ## 12. Source layout
 

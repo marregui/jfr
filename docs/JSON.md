@@ -1,22 +1,25 @@
 # JSON output
 
 `--json` makes any `jfrq` command print one JSON document on standard output instead of
-the text report. It is built from the same report objects as the text and the HTML, and
-`--top N` bounds its lists the same way, so the three never disagree; every list that was
-cut has a count beside it (`…Found`), except `convoys`, whose search stops at `--top`, and
-`longest`, whose count is `waits`. `--html` still writes its file. Under `jfrq-live`, a question
-with `--json` after `--` gets standard output to itself: the dump's own lines (`Dumped`,
-`Window`, `Cursor`) go to standard error. Both tools write UTF-8 on every platform, Windows
-included, whose default would be a code page such as cp1252; the text reports too.
+the text report.
+
+- It is built from the same report objects as the text and the HTML, and `--top N` bounds
+  its lists the same way, so the three carry the same numbers.
+- Every list `--top` cut has a count beside it (`…Found`). The exceptions are `convoys`,
+  whose search stops at `--top`, and `longest`, whose count is `waits`.
+- `--html` still writes its file.
+- Under `jfrq-live`, a question with `--json` after `--` has standard output to itself:
+  the dump's own lines (`Dumped`, `Window`, `Cursor`) go to standard error.
+- Both tools write UTF-8 on every platform, text reports included. On Windows the default
+  would otherwise be a code page such as cp1252.
 
 ## Conventions
 
 - **Schema.** Every document starts with `tool` (`"jfrq"`), `version` (the tool's),
   `schema` (an integer, now `1`) and `command`. A field may be added without changing
   `schema`; renaming or removing one, or changing what it means, changes `schema`. A fix
-  that makes a field measure what this document already said it does is not a change of
-  meaning: `alloc`'s counter comparison became the estimate over each counter's own stretch,
-  as the `counted` row describes, where it had been the whole file's.
+  that makes a field measure what this document already says it measures does not change
+  `schema`.
 - **Units are in the names.** `…Nanos` is a duration or offset in nanoseconds, `bytes` and
   `…Bytes` are bytes, `bytesPerSecond…` is a rate, `share` is a fraction of 1, `ratio` is a
   relative change (`0.5` is +50 %).
@@ -61,8 +64,8 @@ included, whose default would be a code page such as cp1252; the text reports to
 | `settingsKnown` | whether the file carries its settings (`jdk.ActiveSetting`) |
 | `thresholded`, `throttled` | the event types whose threshold suppresses something, and the throttled ones |
 | `eventTypes[]` | `type`, `count`, `enabled`, `thresholdNanos`, `period` (as recorded, e.g. `"10 ms"`, `"everyChunk"`), `periodNanos`, `throttle` |
-| `threadFamilies[]` | `family` (`pool-N-thread-N`), `glob` (a `--thread` value that matches every thread of the family; a family of one gets its name escaped, which matches only it, while a wildcard can also reach another family's thread: `Netty-worker-*` matches `Netty-worker-main`), `threads`, `seen`, `virtual` (how many are virtual threads: no census covers them, so their life counts are `null`), `aliveAtStart`, `started`, `ended`, `aliveAtEnd`, `attached` (how many native code attached to the JVM, whose starts carry no stack and no parent thread; `null` when the starts do not say), `cpuShare` (the family's share of the JVM's CPUs across the window from `jdk.ThreadCPULoad` (the JVM's CPUs are its active processor count: the machine's, unless `-XX:ActiveProcessorCount`, a container limit or a CPU affinity mask sets fewer), the readings `threadCpu.readingsLeftOut` counts left out; `null` when the recording has no readings or the family is outside them), `example` |
-| `threadCpu` | `share` (every Java thread's, the same rule), `readings` (the readings counted), `readingsLeftOut` (readings with no start and no earlier reading of their thread in the file, and either no shared instant before them (a thread alive before the recording, at the first evaluation) or a recording without `jdk.ThreadStart`, since the stretch such a reading covers is not in the file; and the readings of a thread native code attached, up to and including its first below one core, since they hold CPU the native thread used before the attach; the VM's own `main` excepted); `null` values without readings |
+| `threadFamilies[]` | `family` (`pool-N-thread-N`), `glob` (a `--thread` value that matches every thread of the family; a family of one gets its name escaped, which matches only it, while a wildcard can also reach another family's thread: `Netty-worker-*` matches `Netty-worker-main`), `threads`, `seen`, `virtual` (how many are virtual threads: no census covers them, so their life counts are `null`), `aliveAtStart`, `started`, `ended`, `aliveAtEnd`, `attached` (how many native code attached to the JVM, whose starts carry no stack and no parent thread; `null` when the starts do not say), `cpuShare` (the family's share of the JVM's CPUs across the window, from `jdk.ThreadCPULoad`, without the readings `threadCpu.readingsLeftOut` counts; `null` when the recording has no readings or the family is outside them. The JVM's CPUs are its active processor count: the machine's, unless `-XX:ActiveProcessorCount`, a container limit or a CPU affinity mask sets fewer), `example` |
+| `threadCpu` | `share` (every Java thread's, the same rule), `readings` (the readings counted), `readingsLeftOut` (two kinds, the VM's own `main` excepted. First, a reading whose stretch is not in the file: its thread has no start and no earlier reading in the file, and either the reading is at the first evaluation of a thread alive before the recording, or the recording has no `jdk.ThreadStart`. Second, the readings of a thread native code attached, up to and including its first below one core: they hold CPU the native thread used before the attach); `null` values without readings |
 | `starts` | `null` without `--thread`; with it: `glob`, `threads`, `starts`, `attached`, `first`, `firstOffsetNanos`, `last`, `lastOffsetNanos`, `peaks[]` (`windowNanos` of 100 ms and of 1 s, the most starts `count` in one window of that width, and when the first such window began: `start`, `offsetNanos`), `creatorsFound`, `creators[]` (`site`: the innermost frame outside the JDK in the starting thread's stack, or `<attached from native code>`, or `<no stack>`; `starts`, `share`, `parents`: the threads that started them; `stack`, from the site down) |
 
 ## `stalls`
@@ -134,4 +137,5 @@ With `--baseline`, `recording` is the current file and the document instead has
 estimate fields), and `change`, `threads[]`, `classes[]` and, with `--sites`, `sites[]`
 (each with its `…Found` count), each row with `bytesPerSecondBefore`, `bytesPerSecondAfter`, `bytesPerSecondChange` and
 `ratio` (`null` when the baseline had nothing), plus `samplesBefore` and `samplesAfter`
-where they apply: a change of several hundred percent on a handful of samples is noise.
+where they apply: a change of several hundred percent resting on a handful of samples is
+within sampling error.

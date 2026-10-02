@@ -1,12 +1,11 @@
 # Asking a running JVM: `jfrq-live`
 
 `jfrq` reads a finished file. A JVM that is recording has no finished file: the recording
-it writes ends in a chunk that is still open, and the JDK parser waits on that chunk
-forever, so `jfrq` refuses it ([DESIGN.md](DESIGN.md), section 6). To watch something
-evolve while the application runs, each question is asked of a dump instead, and
-`jfrq-live` is the loop that takes the dumps: it attaches to the JVM, asks its flight
-recorder for a window of data, writes the window to a file, checks what the file holds
-against what was asked, and runs the `jfrq` question on it.
+ends in a chunk that is still open, the JDK parser blocks on that chunk indefinitely, and
+`jfrq` refuses it ([DESIGN.md](DESIGN.md), section 6). To follow an application while it
+runs, each question is asked of a dump. `jfrq-live` takes the dumps: it attaches to the
+JVM, asks its flight recorder for a window of data, writes the window to a file, checks
+what the file holds against what was asked, and runs the `jfrq` question on it.
 
 ```
 jfrq-live 4242 start --max-age 10m                            # a recording in the JVM, bounded
@@ -24,7 +23,7 @@ The module is `live/`; `./gradlew installDist` puts the launcher at
 ## 1. The loop
 
 Every command takes the JVM's pid first. A `jfrq` command after `--` is run on the dump
-with the file inserted for you, so `-- stalls --thread 'x'` becomes
+with the dump's path inserted, so `-- stalls --thread 'x'` becomes
 `jfrq stalls <dump> --thread 'x'`.
 
 | Command | What it does | Cursor |
@@ -65,11 +64,10 @@ that standard output is the JSON document alone.
 starts from; the events are not parsed): size, chunks, span. `Window` is what was asked. When they differ by more than a second a line
 says why (section 4). `Cursor` is where the next `delta` starts.
 
-`start` prints what it configured — the profile it started from and every threshold,
-throttle and sample period it overlaid — because the operator is at the keyboard at that
-moment and the only other way to check is `jfrq info` on the first dump, one dump later.
-A `--settings FILE.jfc` is taken as it is and the line says so rather than listing an
-overlay that was not applied.
+`start` prints what it configured: the profile it started from and every threshold,
+throttle and sample period it overlaid. Without it, the settings could be checked only
+with `jfrq info` on the first dump. A `--settings FILE.jfc` is taken as it is, and the
+line says so instead of listing an overlay.
 
 ## 2. How a dump is taken
 
@@ -82,17 +80,19 @@ This is what `jcmd <pid> JFR.dump` does, driven over JMX instead of a diagnostic
 2. **Stream the clone's chunks that overlap the window** into the file, in 1 MB blocks
    over the local JMX connector. The JVM selects whole chunks: every chunk whose
    `[start, end]` touches `[begin, end]` of the window. Events are never cut.
-3. **Close the clone.** Nothing is left behind in the JVM, and a dump cut short by
-   Ctrl-C or `SIGTERM` leaves nothing either: a shutdown hook, in place from before the
-   clone exists until it is closed, removes the partial `.part` file and closes the clone.
-   The hook waits for the JVM at most five seconds, so a target that does not answer
-   (stopped with `SIGSTOP`, hung) cannot keep `jfrq-live` from exiting; the clone it still
-   holds is then named on standard error with the command that closes it. A stop that lands
-   while the JVM is still making the clone waits for its answer the same way, then closes
-   the clone; if no answer comes, the line names the recording being cloned instead. Only `SIGKILL`,
-   or a JVM that does not answer, can leave a stopped clone, which pins its chunks until
-   the JVM exits; `status` lists it and `stop --recording <id>` closes it (a recording that
-   is not running is closed, not stopped).
+3. **Close the clone.** Nothing is left behind in the JVM. A dump interrupted by Ctrl-C
+   or `SIGTERM` leaves nothing either:
+   - A shutdown hook, in place from before the clone exists until it is closed, removes
+     the partial `.part` file and closes the clone.
+   - The hook waits for the JVM at most five seconds, so a target that does not answer
+     (stopped with `SIGSTOP`, hung) cannot keep `jfrq-live` from exiting. The clone it
+     still holds is then named on standard error with the command that closes it.
+   - An interrupt while the JVM is still making the clone waits for its answer the same
+     way, then closes the clone; if no answer comes, the line names the recording being
+     cloned instead.
+   - Only `SIGKILL`, or a JVM that does not answer, can leave a stopped clone, which pins
+     its chunks until the JVM exits. `status` lists it and `stop --recording <id>` closes
+     it (a recording that is not running is closed, not stopped).
 
 The stop instant `T` is the clone's stop time, which the JVM reports in milliseconds,
 and it is the exact end of the last chunk in the file. `full` and `delta` record it.
@@ -118,7 +118,7 @@ Without a bound a recording keeps every chunk since it started. Each `full` dump
 bigger than the last, and a JVM left recording overnight has hours of chunks on disk.
 `jfrq-live` prints a `WARNING` on `start` and on every `full` dump while the recording
 is unbounded, judged by the bounds the JVM reports, so `start --max-age 0` warns as a
-`start` without bounds does. `bound` fixes it without restarting anything:
+`start` without bounds does. `bound` sets a bound without restarting the recording:
 
 ```
 jfrq-live 4242 bound --max-age 10m
@@ -139,9 +139,8 @@ Sizes are decimal (`200MB` is 200 000 000 bytes), as every size `jfrq` prints;
 `bound --max-age 0` on a recording that has no `max-size` makes it unbounded again. The
 JVM keeps the age bound in whole seconds: an age under a second is a usage error (the JVM
 would take it as zero, which means no bound), and a fraction is rounded up to the next
-second with a note saying so. Ten minutes of `max-age` is enough for a loop whose deltas
-are a minute apart and leaves a `full` dump that answers "what happened
-recently" without being a gigabyte.
+second with a note saying so. With deltas a minute apart, `--max-age 10m` leaves nine
+minutes of margin for each delta and limits a `full` dump to the last ten minutes.
 
 ## 4. The span check
 
@@ -169,7 +168,7 @@ begin=2026-09-21T12:23:31.078Z       # the last window, for `again`; after a ful
 end=2026-09-21T12:23:49.944Z
 ```
 
-Times are UTC instants; the tool prints them in local time. Deleting the file resets the
+Times are UTC instants, as everything the tool prints. Deleting the file resets the
 loop; so does restarting the JVM. A file that cannot be parsed is reported as damaged,
 with the advice to delete it.
 
@@ -189,8 +188,8 @@ reading the cursor to advancing it, and the second one says it is waiting.
   lookup on its side by naming its RMI endpoint `127.0.0.1`, but cannot do so for the
   target. The local connector talks over loopback whatever the name says.
 - **No running recording**: `full` and `delta` need one. `start` one, or run the JVM
-  with `-XX:StartFlightRecording` (the [RECORDING.md](RECORDING.md) line is the right
-  settings; add `maxage=10m`).
+  with `-XX:StartFlightRecording` (with the settings in [RECORDING.md](RECORDING.md),
+  plus `maxage=10m`).
 - **Several running recordings**: name one with `--recording`. A JVM often has a
   continuous recording next to an on-demand one; `status` lists them.
 - **In-memory recordings** (`disk=false`) have no chunks for a clone to hand over, so a
