@@ -2,7 +2,7 @@
 
 `jfrq` reads a finished file. A JVM that is recording has no finished file: the recording
 ends in a chunk that is still open, the JDK parser blocks on that chunk indefinitely, and
-`jfrq` refuses it ([DESIGN.md](DESIGN.md), section 6). To follow an application while it
+`jfrq` refuses it ([design, section 3](design/README.md#3-damaged-and-unusual-files)). To follow an application while it
 runs, each question is asked of a dump. `jfrq-live` takes the dumps: it attaches to the
 JVM, asks its flight recorder for a window of data, writes the window to a file, checks
 what the file holds against what was asked, and runs the `jfrq` question on it.

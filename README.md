@@ -97,6 +97,8 @@ jfrq-live 4242 delta -- stalls --thread 'event-loop-*'
 
 ## Documentation
 
+The index is [docs/README.md](docs/README.md).
+
 | Document | Contents |
 |---|---|
 | [TUTORIAL.md](docs/TUTORIAL.md) | Four injected event-loop pathologies, recorded and diagnosed step by step (about fifteen minutes) |
@@ -104,7 +106,7 @@ jfrq-live 4242 delta -- stalls --thread 'event-loop-*'
 | [RECORDING.md](docs/RECORDING.md) | What JFR records, and the settings that give `jfrq` a complete answer |
 | [LIVE.md](docs/LIVE.md) | `jfrq-live`: dumps, the cursor, deltas, bounds |
 | [JSON.md](docs/JSON.md) | The `--json` schema |
-| [DESIGN.md](docs/DESIGN.md) | How each detector works, the JFR events it reads, and what it cannot see |
+| [design/](docs/design/README.md) | The overall design, with one document per command: how each detector works, the JFR events it reads, and what it cannot see |
 
 ## Status
 

@@ -38,7 +38,7 @@ import jdk.management.jfr.RecordingInfo;
 
 /**
  * {@code jfrq-live}: the loop that works on a running JVM. A live recording cannot be read
- * in place (its last chunk is open; see {@code docs/DESIGN.md} section 6), so each
+ * in place (its last chunk is open; see {@code docs/design/README.md} section 3), so each
  * question is asked of a dump: {@code full} for everything the recording holds,
  * {@code delta} for what happened since the previous dump, {@code again} for the previous
  * window once more. A cursor file per JVM remembers where the last dump stopped. Every

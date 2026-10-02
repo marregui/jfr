@@ -1030,5 +1030,5 @@ change, not a local edit.
 - G-11.4: one printed, replayable seed per randomised test rather than two; test order is
   JUnit's default.
 
-Measure with `--timing` before and after each further step; `docs/DESIGN.md` §8 holds the
+Measure with `--timing` before and after each further step; `docs/design/README.md` §5 holds the
 numbers.

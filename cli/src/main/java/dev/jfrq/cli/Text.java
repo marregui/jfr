@@ -331,7 +331,7 @@ final class Text {
                 sb.append("""
 
                         Every thread was sampled once, and a thread's first sample carries its history from before \
-                        the recording, so none is in the estimate (docs/DESIGN.md, section 2). Record for longer, \
+                        the recording, so none is in the estimate (docs/design/alloc.md). Record for longer, \
                         or read the JVM's counters below.
                         """);
             }

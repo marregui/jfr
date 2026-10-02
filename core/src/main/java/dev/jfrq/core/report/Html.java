@@ -391,7 +391,7 @@ public final class Html {
                 p.para("No allocation events. Record with the 'profile' settings, or enable jdk.ObjectAllocationSample.");
             } else {
                 p.para("Every thread was sampled once, and a thread's first sample carries its history from before "
-                        + "the recording, so none is in the estimate (docs/DESIGN.md, section 2). Record for longer, "
+                        + "the recording, so none is in the estimate (docs/design/alloc.md). Record for longer, "
                         + "or read the JVM's counters below.");
             }
             if (report.hasCounters()) {

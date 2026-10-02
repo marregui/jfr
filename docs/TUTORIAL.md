@@ -375,7 +375,7 @@ threads lose their first sample too, and there it costs more: the JVM counts all
 per carrier, so a virtual thread's first sample can carry its carrier's history from
 before the recording, and since most virtual threads are sampled once, most of their
 allocation is left out. The report says so on a `WARNING` line with the number of samples
-and bytes dropped (docs/DESIGN.md, section 2).
+and bytes dropped ([design/alloc.md](design/alloc.md)).
 
 `--baseline` compares two recordings, which is how a change is measured:
 

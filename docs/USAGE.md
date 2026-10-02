@@ -2,7 +2,7 @@
 
 Every command, option and output rule of `jfrq`. [RECORDING.md](RECORDING.md) covers how
 to make a recording; [LIVE.md](LIVE.md) covers `jfrq-live`; [JSON.md](JSON.md) lists the
-`--json` fields; [DESIGN.md](DESIGN.md) explains how each answer is reached.
+`--json` fields; [design/](design/README.md) explains how each answer is reached.
 
 ## 1. Requirements
 
@@ -50,7 +50,7 @@ lists), `--html FILE`, `--json`, `--timing`, `--version`, `--help`.
 
 Every command prints plain text for a terminal or a ticket, and writes a self-contained
 HTML report with `--html`. A 40 MB recording is answered in about a quarter of a second;
-`--timing` shows where the time went ([DESIGN.md](DESIGN.md), section 8).
+`--timing` shows where the time went ([design, section 5](design/README.md#5-performance)).
 
 `--json` prints the answer as one JSON document instead of text, for a program or an
 agent to read: stable field names with the unit in the name, instants in UTC, `null` where

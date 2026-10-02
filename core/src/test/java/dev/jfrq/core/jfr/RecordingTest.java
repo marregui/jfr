@@ -327,7 +327,7 @@ class RecordingTest {
         final Object lock = new Object();
         // Sleep and the monitor block are events, so they are exact. BUSY is the one verdict here
         // that rests on samples alone: a loaded machine can leave the whole burn unsampled, and the
-        // same window then reads as an unexplained silence (docs/DESIGN.md section 4.3). Record
+        // same window then reads as an unexplained silence (docs/design/stalls.md section 3). Record
         // again rather than assert on one roll of the dice; three starved recordings is a failure.
         Path file = null;
         StallReport report = null;

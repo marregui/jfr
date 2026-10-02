@@ -183,7 +183,7 @@ public record AllocationReport(
         return "allocation on virtual threads is under-counted, and can still be over-counted: " + counts
                 + ", not counted, because a sample is weighed by its carrier's allocation since the carrier was last "
                 + "sampled, which can reach back before the recording; a virtual thread that moved to a carrier not "
-                + "yet sampled carries that history on a later sample (docs/DESIGN.md, section 2)";
+                + "yet sampled carries that history on a later sample (docs/design/alloc.md)";
     }
 
     public double seconds() {
