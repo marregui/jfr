@@ -4,6 +4,9 @@
 package dev.jfrq.core.util;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 
 import dev.jfrq.core.coll.Nulls;
@@ -154,6 +157,25 @@ public final class Durations {
     /** Formats an offset from the recording start as {@code +3.412s}. */
     public static String offset(final long nanos) {
         return String.format(Locale.ROOT, "%+.3fs", nanos / 1_000_000_000.0);
+    }
+
+    private static final DateTimeFormatter CLOCK = DateTimeFormatter.ofPattern("HH:mm:ss.SSS'Z'", Locale.ROOT)
+            .withZone(ZoneOffset.UTC);
+
+    /**
+     * An instant as the time of day in UTC, {@code 11:37:15.286Z}: what a log line beside the
+     * recording carries, so an event can be found in it without converting an offset by hand.
+     */
+    public static String clock(final long epochNanos) {
+        return CLOCK.format(Instant.ofEpochSecond(0, epochNanos));
+    }
+
+    /**
+     * When something happened, as both an offset from the recording's start and the time of day
+     * in UTC: {@code +13.682s 11:37:15.286Z}.
+     */
+    public static String at(final long epochNanos, final long startNanos) {
+        return offset(epochNanos - startNanos) + ' ' + clock(epochNanos);
     }
 
     /**

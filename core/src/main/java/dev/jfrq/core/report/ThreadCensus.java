@@ -3,8 +3,10 @@
 
 package dev.jfrq.core.report;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -12,6 +14,7 @@ import dev.jfrq.core.coll.LongList;
 import dev.jfrq.core.coll.Nulls;
 import dev.jfrq.core.coll.ObjLongHashMap;
 import dev.jfrq.core.coll.ObjList;
+import dev.jfrq.core.health.ThreadCpu;
 import dev.jfrq.core.jfr.EventKinds;
 import dev.jfrq.core.jfr.Events;
 import dev.jfrq.core.jfr.Fields;
@@ -19,6 +22,7 @@ import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.jfr.Transient;
 import dev.jfrq.core.model.Interner;
+import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.util.Sorts;
 import jdk.jfr.consumer.RecordedEvent;
@@ -51,8 +55,18 @@ import jdk.jfr.consumer.RecordedEvent;
  * any of the three named, anywhere in the file, and {@link RecordingSummary#threadFamilies}
  * gives no counts for a family with a thread outside it.
  *
+ * <p>A start also says who made the thread: the starting thread ({@code parentThread}) and
+ * its stack. A thread that native code attached to the JVM (JNI {@code AttachCurrentThread},
+ * an FFM upcall from a thread the JVM did not make) has neither, and that is the only mark the
+ * file gives it: a library that attaches for every callback, as RocksDB's Java event listener
+ * does, starts thousands of {@code Thread-N} that look like any other thread by name. The
+ * {@code java} launcher attaches {@code main} the same way. The starts are kept, with their
+ * stacks, for {@link RecordingSummary#starts}.
+ *
+ * <p>Each Java thread's CPU comes from {@code jdk.ThreadCPULoad} ({@link ThreadCpu}).
+ *
  * <p>For {@code info}, which reads every event: the sink asks for everything and keeps
- * the three kinds it needs, so adding it does not narrow the pass.
+ * the kinds it needs, so adding it does not narrow the pass.
  */
 public final class ThreadCensus implements JfrReader.Sink {
 
@@ -60,6 +74,14 @@ public final class ThreadCensus implements JfrReader.Sink {
     private final LongList lifeTimes = new LongList(128);
     private final ObjList<ThreadRef> lifeThreads = new ObjList<>(128);
     private final LongList lifeEnds = new LongList(128);
+    /** Per start (a zero in {@link #lifeEnds}): the thread that started it, or {@code null}, and its stack. */
+    private final ObjList<ThreadRef> lifeParents = new ObjList<>(128);
+    private final ObjList<Stack> lifeStacks = new ObjList<>(128);
+    /** Per start: 1 when native code attached the thread, 0 when it was started or it cannot be told. */
+    private final LongList lifeAttached = new LongList(128);
+    private final ThreadCpu cpu = new ThreadCpu();
+    /** Whether any start named its parent, or was an attach: only then can the file tell an attach apart. */
+    private boolean sawParent;
     /** Census rows, flat until the end: when, and which thread. */
     private final LongList rowTimes = new LongList(256);
     private final ObjList<ThreadRef> rowThreads = new ObjList<>(256);
@@ -78,11 +100,17 @@ public final class ThreadCensus implements JfrReader.Sink {
      * @param covered      every thread a census row or a start or end event names, anywhere in
      *                     the file: the threads the counts can speak for; {@code null} without
      *                     a census, when no event can say which threads it would have named
+     * @param attached     the threads native code attached to the JVM, from their starts anywhere in
+     *                     the file; {@code null} when no start was recorded with its parent thread
+     * @param startEvents  every start in the file, in time order
+     * @param cpu          each Java thread's CPU, from {@code jdk.ThreadCPULoad}
      */
     public record Result(Set<ThreadRef> aliveAtStart, Map<ThreadRef, Long> started, Map<ThreadRef, Long> ended,
-                         Set<ThreadRef> aliveAtEnd, Set<ThreadRef> covered) {
+                         Set<ThreadRef> aliveAtEnd, Set<ThreadRef> covered, Set<ThreadRef> attached,
+                         List<Start> startEvents, ThreadCpu.Result cpu) {
         /** Nothing known: a recording without the census or the lifetime events. */
-        public static final Result UNKNOWN = new Result(null, null, null, null, null);
+        public static final Result UNKNOWN = new Result(null, null, null, null, null, null, List.of(),
+                ThreadCpu.Result.UNKNOWN);
 
         public Result {
             aliveAtStart = aliveAtStart == null ? null : Set.copyOf(aliveAtStart);
@@ -90,6 +118,14 @@ public final class ThreadCensus implements JfrReader.Sink {
             ended = ended == null ? null : Map.copyOf(ended);
             aliveAtEnd = aliveAtEnd == null ? null : Set.copyOf(aliveAtEnd);
             covered = covered == null ? null : Set.copyOf(covered);
+            attached = attached == null ? null : Set.copyOf(attached);
+            startEvents = List.copyOf(startEvents);
+        }
+
+        /** The census and lives alone, as a file without starts' parents or CPU readings gives them. */
+        public Result(final Set<ThreadRef> aliveAtStart, final Map<ThreadRef, Long> started,
+                      final Map<ThreadRef, Long> ended, final Set<ThreadRef> aliveAtEnd, final Set<ThreadRef> covered) {
+            this(aliveAtStart, started, ended, aliveAtEnd, covered, null, List.of(), ThreadCpu.Result.UNKNOWN);
         }
 
         /** Every start in the recording, or {@link Nulls#LONG_NULL} when it cannot say. */
@@ -114,6 +150,16 @@ public final class ThreadCensus implements JfrReader.Sink {
         }
     }
 
+    /**
+     * One {@code jdk.ThreadStart}.
+     *
+     * @param parent   the thread that started it; {@code null} when the event names none
+     * @param stack    the starting thread's stack; empty when the event has none
+     * @param isAttached whether native code attached the thread rather than Java code starting it
+     */
+    public record Start(long time, ThreadRef thread, ThreadRef parent, Stack stack, boolean isAttached) {
+    }
+
     @Override
     public Set<String> eventTypes() {
         return Set.of();
@@ -132,10 +178,27 @@ public final class ThreadCensus implements JfrReader.Sink {
     @Override
     public void accept(@Transient final RecordedEvent e, final int kind) {
         switch (kind) {
-            case EventKinds.THREAD_START, EventKinds.THREAD_END -> {
+            case EventKinds.THREAD_START -> {
                 final ThreadRef thread = Events.thread(e, Fields.THREAD, interner);
                 if (thread != null) {
-                    life(Events.startNanos(e), thread, kind == EventKinds.THREAD_END);
+                    final ThreadRef parent = Events.thread(e, Fields.PARENT_THREAD, interner);
+                    final Stack stack = Events.stack(e, interner);
+                    final boolean attach = Events.isAttach(e, parent, stack, interner);
+                    start(Events.startNanos(e), thread, parent, stack, attach);
+                    cpu.start(thread, Events.startNanos(e), attach);
+                }
+            }
+            case EventKinds.THREAD_END -> {
+                final ThreadRef thread = Events.thread(e, Fields.THREAD, interner);
+                if (thread != null) {
+                    life(Events.startNanos(e), thread, true);
+                }
+            }
+            case EventKinds.THREAD_CPU_LOAD -> {
+                final ThreadRef thread = Events.thread(e, Fields.EVENT_THREAD, interner);
+                if (thread != null) {
+                    cpu.add(thread, Events.startNanos(e), Events.doubleOr(e, Fields.USER, 0, interner)
+                            + Events.doubleOr(e, Fields.SYSTEM, 0, interner));
                 }
             }
             case EventKinds.THREAD_ALLOCATION_STATISTICS -> {
@@ -155,11 +218,26 @@ public final class ThreadCensus implements JfrReader.Sink {
         rowThreads.add(thread);
     }
 
-    /** One start, or one end, of {@code thread}. */
+    /** One start, or one end, of {@code thread}; a start with no parent known and no stack, never an attach. */
     void life(final long time, final ThreadRef thread, final boolean end) {
         lifeTimes.add(time);
         lifeThreads.add(thread);
         lifeEnds.add(end ? 1 : 0);
+        lifeParents.add(null);
+        lifeStacks.add(Stack.EMPTY);
+        lifeAttached.add(0);
+    }
+
+    /** One start of {@code thread}, by {@code parent} from {@code stack}, or attached by native code. */
+    void start(final long time, final ThreadRef thread, final ThreadRef parent, final Stack stack,
+               final boolean attached) {
+        lifeTimes.add(time);
+        lifeThreads.add(thread);
+        lifeEnds.add(0);
+        lifeParents.add(parent);
+        lifeStacks.add(stack);
+        lifeAttached.add(attached ? 1 : 0);
+        sawParent |= parent != null || attached;
     }
 
     @Override
@@ -199,14 +277,27 @@ public final class ThreadCensus implements JfrReader.Sink {
                 covered.add(lifeThreads.getQuick(i));
             }
         }
-        if (!lifetimes) {
-            result = new Result(atStart, null, null, atEnd, covered);
-            return;
-        }
         // In time order, since delivery is file order: whether a start is a new life depends on
         // what came before it. A thread that starts at a census instant is already in it; one
         // that ends there still is.
         final int[] order = Sorts.order(lifeTimes);
+        final List<Start> starts = new ArrayList<>();
+        final Set<ThreadRef> attached = sawParent ? new HashSet<>() : null;
+        for (final int i : order) {
+            if (lifeEnds.getQuick(i) == 0) {
+                final boolean byNative = lifeAttached.getQuick(i) != 0;
+                starts.add(new Start(lifeTimes.getQuick(i), lifeThreads.getQuick(i), lifeParents.getQuick(i),
+                        lifeStacks.getQuick(i), byNative));
+                if (byNative) {
+                    attached.add(lifeThreads.getQuick(i));
+                }
+            }
+        }
+        final ThreadCpu.Result threadCpu = cpu.result(info);
+        if (!lifetimes) {
+            result = new Result(atStart, null, null, atEnd, covered, attached, starts, threadCpu);
+            return;
+        }
         final Set<ThreadRef> alive = atStart == null ? new HashSet<>() : new HashSet<>(atStart);
         final ObjLongHashMap<ThreadRef> started = new ObjLongHashMap<>(64);
         final ObjLongHashMap<ThreadRef> ended = new ObjLongHashMap<>(64);
@@ -222,7 +313,7 @@ public final class ThreadCensus implements JfrReader.Sink {
                 started.increment(thread, 1);
             }
         }
-        result = new Result(atStart, toMap(started), toMap(ended), atEnd, covered);
+        result = new Result(atStart, toMap(started), toMap(ended), atEnd, covered, attached, starts, threadCpu);
     }
 
     /** Enabled in the settings, or present when the file carries no settings to ask. */

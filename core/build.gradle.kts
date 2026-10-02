@@ -29,6 +29,9 @@ tasks.test {
     useJUnitPlatform()
     // The JFR-backed tests start in-process recordings; give them a predictable heap.
     maxHeapSize = "1g"
+    // NativeThreads attaches a thread from native code through an FFM upcall; without this the JVM
+    // prints a warning for the restricted method the first time.
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
     // HashTablesTest replays a failing run from its seed: ./gradlew :core:test -Djfrq.test.seed=<seed>
     providers.systemProperty("jfrq.test.seed").orNull?.let { systemProperty("jfrq.test.seed", it) }
     testLogging {

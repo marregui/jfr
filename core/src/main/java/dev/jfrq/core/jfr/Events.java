@@ -75,6 +75,17 @@ public final class Events {
     }
 
     /**
+     * Whether a {@code jdk.ThreadStart} is native code attaching its thread to the JVM: it names
+     * no starting thread and has no stack, given as {@code parent} and {@code stack}. False in a
+     * file without the {@code parentThread} field, which cannot tell: an older JDK's start is
+     * not an attach.
+     */
+    public static boolean isAttach(@Transient final RecordedEvent e, final ThreadRef parent, final Stack stack,
+                                   final Interner interner) {
+        return has(e, Fields.PARENT_THREAD, interner) && parent == null && stack.isEmpty();
+    }
+
+    /**
      * The JVM name of a class-valued field ({@code [B}, {@code java.lang.Object}) resolved
      * through the interner's identity cache, or {@code null}.
      */

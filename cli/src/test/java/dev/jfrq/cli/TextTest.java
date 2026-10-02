@@ -17,6 +17,9 @@ import dev.jfrq.core.alloc.AllocationDiff;
 import dev.jfrq.core.alloc.AllocationReport;
 import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.coll.LongList;
+import dev.jfrq.core.coll.Nulls;
+import dev.jfrq.core.health.HealthReport;
+import dev.jfrq.core.health.ThreadCpu;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
@@ -27,12 +30,14 @@ import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.report.Html;
 import dev.jfrq.core.report.Json;
 import dev.jfrq.core.report.JsonParser;
+import dev.jfrq.core.report.RecordingSummary;
 import dev.jfrq.core.report.ThreadCensus;
 import dev.jfrq.core.stalls.IdleMatcher;
 import dev.jfrq.core.stalls.Stall;
 import dev.jfrq.core.stalls.StallReport;
 import dev.jfrq.core.stalls.Timeline.Pause;
 import dev.jfrq.core.stalls.Timeline.PauseKind;
+import dev.jfrq.core.util.Glob;
 import org.junit.jupiter.api.Test;
 
 /** The renderers on hand-built reports, where a recording cannot produce the case on demand. */
@@ -85,6 +90,20 @@ class TextTest {
         assertTrue(text.contains("Blocked    900 ms across 1 wait\n"), text);
         assertTrue(text.contains("90.0%"), text);
         assertFalse(text.contains("1.50 s"), text);
+    }
+
+    @Test
+    void aConvoyIsDatedByItsOffsetAndItsTimeOfDay() {
+        // logback-4 waits on the registry the housekeeper holds, while the housekeeper waits on the
+        // store: a convoy whose head began 200 ms into the window, at 00:00:01.200Z.
+        final Wait.LockKey store = new Wait.LockKey("dev.app.Store", 0xdef, Wait.Kind.MONITOR_ENTER);
+        final Wait head = blocked(1_200, 1_500);
+        final Wait link = new Wait(new Interval(1_250 * MS, 1_400 * MS), HOLDER, store,
+                new ThreadRef(3, "flusher"), Stack.EMPTY);
+        final String convoys = section(Text.locks(new ContentionReport(window(), List.of(head, link)), 15, false),
+                "CONVOYS");
+        assertTrue(convoys.contains("  +0.200s 00:00:01.200Z  logback-4 waited 300 ms for dev.app.Registry"), convoys);
+        assertTrue(convoys.contains("-> housekeeper waited 150 ms for dev.app.Store"), convoys);
     }
 
     @Test
@@ -515,5 +534,91 @@ class TextTest {
         // Nothing to label, nothing printed.
         assertFalse(Text.locks(new ContentionReport(window(), List.of(blocked(400, 1_900))), 15, false)
                 .contains("MOVED BY THE COLLECTOR"));
+    }
+
+    static final long S = 1_000_000_000L;
+
+    static HealthReport.Series bytes(final String name, final double start, final double end) {
+        return new HealthReport.Series(name, HealthReport.Series.Unit.BYTES, 9, start, end, start, end, end, start, end);
+    }
+
+    /** A report with every section {@code health} gained, and {@code categories} NMT categories. */
+    static HealthReport health(final String file, final int categories, final boolean throwsOff) {
+        final List<HealthReport.Series> nmt = new ArrayList<>();
+        nmt.add(bytes("Total", 1_200e6, 1_800e6));
+        for (int i = 0; i < categories; i++) {
+            nmt.add(bytes("Category " + i, 100e6 - i, 200e6 - i));
+        }
+        final RecordingInfo info = new RecordingInfo(Path.of("runs", file), new Interval(10 * S, 110 * S), 1, Map.of(),
+                throwsOff ? Map.of("jdk.JavaExceptionThrow", Map.of("enabled", "false")) : Map.of(), Set.of(),
+                List.of("a file warning"));
+        return new HealthReport(info, List.of(), new HealthReport.Gc(Map.of("G1New", 4L),
+                Map.of("G1 Evacuation Pause", 4L), 0, S / 50, 30 * MS, 12, Nulls.LONG_NULL, Nulls.LONG_NULL),
+                List.of(bytes(HealthReport.HEAP_AFTER_GC, 20e6, 400e6)), new HealthReport.Threads(7, 30),
+                new HealthReport.Throwables(500, 50 * S, 0, null, List.of(), List.of(), Map.of()),
+                new ThreadCpu.Result(Map.of(), 0.086, 100, 10), nmt, List.of("the JVM's figure is wrong"));
+    }
+
+    @Test
+    void healthSaysItsWarningsFirstAndItsNativeMemoryAndThreadCpu() {
+        final String text = Text.health(health("n1.jfr", 3, true), 2);
+        final int warning = text.indexOf("WARNING    the JVM's figure is wrong\n");
+        assertTrue(warning > 0 && warning < text.indexOf("\nFINDINGS"), text);
+        assertTrue(text.contains("  Java threads used 8.6% of the JVM's CPUs"), text);
+        assertTrue(text.contains("  The floor of heap after GC rose by 380 MB."), text);
+        assertTrue(text.contains("\nNATIVE MEMORY (committed, by NMT category"), text);
+        assertTrue(text.contains("  Category 1 ") && !text.contains("  Category 2 "), text);
+        assertTrue(text.contains("  ... 1 more categories\n"), text);
+        assertTrue(text.contains("the event was off in this recording. To record the throwables created, add "
+                + HealthReport.ENABLE_THROWS), text);
+        // Without NMT there is no section at all.
+        assertFalse(Text.health(health("n1.jfr", 0, false), 2).contains("... 0 more"));
+        assertFalse(Text.health(health("n1.jfr", 0, false), 2).contains(HealthReport.ENABLE_THROWS));
+    }
+
+    @Test
+    void healthOfSeveralRecordingsNamesEachOneAndItsWarnings() {
+        final String text = Text.healthCompared(List.of(health("n1.jfr", 0, false), health("n2.jfr", 0, false)));
+        assertTrue(text.startsWith("HEALTH OF 2 RECORDINGS (one row each"), text);
+        assertTrue(text.contains("\n  n1.jfr  "), text);
+        assertTrue(text.contains("\nn2.jfr\n  WARNING  a file warning\n  WARNING  the JVM's figure is wrong\n"
+                + "  no findings\n"), text);
+        assertTrue(text.contains("18.0 MB → 400 MB") || text.contains("20.0 MB → 400 MB"), text);
+    }
+
+    @Test
+    void infoListsTheCreatorsItShowsAndCountsTheRest() {
+        final ThreadRef parent = new ThreadRef(9, "submitter");
+        final List<ThreadCensus.Start> starts = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            starts.add(new ThreadCensus.Start((20 + i) * S, new ThreadRef(i, "w-" + i), parent, new Stack(List.of(
+                    new Frame("com.example.Site" + i, "start", 1, false)), false), false));
+        }
+        final ThreadRef w0 = starts.getFirst().thread();
+        final ThreadCensus.Result census = new ThreadCensus.Result(Set.of(), Map.of(w0, 1L), Map.of(), Set.of(w0),
+                Set.of(w0), Set.of(w0), starts, new ThreadCpu.Result(Map.of(w0, 0.5), 0.5, 4, 1));
+        final RecordingInfo info = new RecordingInfo(Path.of("rec.jfr"), new Interval(10 * S, 110 * S), 1, Map.of(),
+                Map.of(), Set.of(w0), List.of());
+        final String text = Text.info(info, census, RecordingSummary.starts(census, Glob.of("w-*"), 2));
+        assertTrue(text.contains("  CREATED BY (" + RecordingSummary.CREATOR_RULE + "), showing 2 of 3\n"), text);
+        assertTrue(text.contains("        started from submitter\n"), text);
+        assertTrue(text.contains("  Attached: threads native code attached"), text);
+        assertTrue(text.contains("  CPU: the share of the JVM's CPUs (the machine's, unless -XX:ActiveProcessorCount"), text);
+        assertTrue(text.contains("50.0%"), text);
+    }
+
+    @Test
+    void anAttachedCreatorHasNoStartingThreadAndNoStack() {
+        // Native code attaching a thread names no parent and no stack: the row stands alone.
+        final ThreadRef t = new ThreadRef(1, "Thread-1");
+        final List<ThreadCensus.Start> starts = List.of(new ThreadCensus.Start(20 * S, t, null, Stack.EMPTY, true));
+        final ThreadCensus.Result census = new ThreadCensus.Result(Set.of(), Map.of(t, 1L), Map.of(), Set.of(t),
+                Set.of(t), Set.of(t), starts, ThreadCpu.Result.UNKNOWN);
+        final RecordingInfo info = new RecordingInfo(Path.of("rec.jfr"), new Interval(10 * S, 110 * S), 1, Map.of(),
+                Map.of(), Set.of(t), List.of());
+        final String created = section(Text.info(info, census, RecordingSummary.starts(census, Glob.of("Thread-*"), 5)),
+                "  CREATED BY");
+        assertTrue(created.endsWith("   1       1  100.0%  " + RecordingSummary.ATTACHED + "\n"), created);
+        assertFalse(created.contains("started from"), created);
     }
 }

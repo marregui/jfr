@@ -8,6 +8,7 @@ import java.io.PrintStream;
 import java.io.Serial;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
@@ -25,6 +26,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 
 import dev.jfrq.core.alloc.AllocationCollector;
 import dev.jfrq.core.alloc.AllocationDiff;
@@ -37,6 +39,7 @@ import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionCollector;
 import dev.jfrq.core.report.Html;
 import dev.jfrq.core.report.Json;
+import dev.jfrq.core.report.RecordingSummary;
 import dev.jfrq.core.report.ThreadCensus;
 import dev.jfrq.core.stalls.IdleMatcher;
 import dev.jfrq.core.stalls.StallCollector;
@@ -47,11 +50,11 @@ import dev.jfrq.core.util.Glob;
  * {@code jfrq}: ask a JFR recording one question and get the answer.
  *
  * <pre>
- *   jfrq info   recording.jfr [--html out.html] [--json]
+ *   jfrq info   recording.jfr [--thread GLOB [--top N]] [--html out.html] [--json]
  *   jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html] [--json]
  *   jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html] [--json]
  *   jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html] [--json]
- *   jfrq health recording.jfr [--top N] [--html out.html] [--json]
+ *   jfrq health recording.jfr [more.jfr ...] [--top N] [--html out.html] [--json]
  * </pre>
  */
 public final class Main {
@@ -64,21 +67,26 @@ public final class Main {
             usage: jfrq <command> <recording.jfr> [options]
 
             commands:
-              info    what is in the recording: span, threads, event counts, active thresholds
+              info    what is in the recording: span, threads (with their CPU, and which native
+                      code attached), event counts, active thresholds
               alloc   allocation pressure by thread, class and site; --baseline diffs two recordings
               locks   lock contention: which locks, who waited, who held them, convoys
               stalls  when a thread did not return to its idle point, and why
               health  what the JVM reported about itself (failed evacuations, full GCs, GC over
                       its own goals), how heap, memory, threads and CPU moved, which throwables
-                      were created where
+                      were created where; given several recordings, one table comparing them
 
             common options:
-              --top N        rows per table (default 15; not for info)
+              --top N        rows per table (default 15; for info, the creators --thread lists)
               --html FILE    also write a self-contained HTML report (never over a recording read)
               --json         print the answer as one JSON document instead of text: stable
                              field names, units in the names, UTC instants (docs/JSON.md)
               --timing       print how long reading and analysing took, to stderr
               --version, --help
+
+            info:
+              --thread GLOB  also say how the matching threads were started: how many, the most
+                             in 100 ms and in 1 s, and the code that started them
 
             alloc:
               --baseline F   compare against recording F (rates, so lengths may differ)
@@ -132,7 +140,7 @@ public final class Main {
         final Set<String> valued = new HashSet<>(COMMON_VALUED);
         final Set<String> flags = new HashSet<>(COMMON_FLAGS);
         switch (command) {
-            case "info" -> valued.remove("top");
+            case "info" -> valued.add("thread");
             case "alloc" -> {
                 valued.addAll(Set.of("baseline", "app"));
                 flags.add("sites");
@@ -202,11 +210,12 @@ public final class Main {
      * will, with {@code recording} standing in as the file. {@code jfrq-live} calls this
      * before it attaches, so a typo after {@code --} costs nothing: no dump, no cursor moved.
      * One check is added, since {@code recording} is a file about to be written: a
-     * {@code --baseline} naming it is a usage error.
+     * {@code --baseline} naming it, or another recording given to {@code health} that is it, is a
+     * usage error.
      *
      * @param question the command and its options, without the recording
      * @throws Args.UsageException what {@code run} would report with exit status 2, or a
-     *                             baseline that is {@code recording}
+     *                             baseline or another recording that is {@code recording}
      * @throws IOException         a file an option names cannot be used ({@code run} exits with 1)
      */
     public static void check(final String[] question, final Path recording) throws IOException {
@@ -215,7 +224,14 @@ public final class Main {
         argv[1] = recording.toString();
         System.arraycopy(question, 1, argv, 2, question.length - 1);
         final Args args = parse(argv[0], Arrays.copyOfRange(argv, 1, argv.length));
-        resolve(argv[0], args, recordingPath(args));
+        // Before the rest: a recording that is the dump target would otherwise read as given twice.
+        for (int i = 1; i < args.positional().size(); i++) {
+            if (sameFile(Path.of(args.positional().get(i)), recording)) {
+                throw new Args.UsageException(args.positional().get(i)
+                        + " is the file the dump is written to; the dump would replace it");
+            }
+        }
+        resolve(argv[0], args, recordingPath(argv[0], args));
         // Unlike a recording given to run, this one is about to be written: over a baseline it
         // would replace the file it is compared with before either is read.
         final Optional<String> baseline = args.option("baseline");
@@ -285,7 +301,7 @@ public final class Main {
             json = args.flag("json");
             // Every option is resolved and checked before the recording is opened (G-9.4): a bad
             // --html target is found in a millisecond, not after the whole analysis.
-            final Question question = resolve(command, args, recordingPath(args));
+            final Question question = resolve(command, args, recordingPath(command, args));
             existing(question.recording());
             phase(null);
             return switch (question) {
@@ -318,7 +334,8 @@ public final class Main {
         Path recording();
     }
 
-    private record Info(Path recording, Path html) implements Question {
+    /** {@code threads} is {@code null} without {@code --thread}. */
+    private record Info(Path recording, int top, Glob threads, Path html) implements Question {
     }
 
     private record Alloc(Path recording, Path baseline, int top, boolean sites, SiteKey key, Path html)
@@ -333,16 +350,17 @@ public final class Main {
             IdleMatcher workWaits, Path html) implements Question {
     }
 
-    private record Health(Path recording, int top, Path html) implements Question {
+    /** {@code others} are the recordings after the first, compared with it; empty for one. */
+    private record Health(Path recording, List<Path> others, int top, Path html) implements Question {
     }
 
     private static Question resolve(final String command, final Args args, final Path recording) throws IOException {
         return switch (command) {
-            case "info" -> new Info(recording, htmlTarget(args, recording, null));
+            case "info" -> info(args, recording);
             case "alloc" -> alloc(args, recording);
             case "locks" -> locks(args, recording);
             case "stalls" -> stalls(args, recording);
-            case "health" -> new Health(recording, args.top(), htmlTarget(args, recording, null));
+            case "health" -> health(args, recording);
             default -> throw new IllegalStateException(command);
         };
     }
@@ -357,7 +375,35 @@ public final class Main {
         return new Alloc(recording, baseline, top, sites, key, htmlTarget(args, recording, baseline));
     }
 
+    private static Health health(final Args args, final Path recording) throws IOException {
+        final List<Path> others = new ArrayList<>();
+        final List<String> positional = args.positional();
+        for (int i = 1; i < positional.size(); i++) {
+            final Path other = existing(Path.of(positional.get(i)));
+            // The same file twice is one row twice: a typo, most likely, and never a comparison.
+            if (sameFile(other, recording)) {
+                throw new Args.UsageException(other + " is given twice");
+            }
+            for (final Path earlier : others) {
+                if (sameFile(other, earlier)) {
+                    throw new Args.UsageException(other + " is given twice");
+                }
+            }
+            others.add(other);
+        }
+        final Path html = htmlTarget(args, recording, null);
+        for (final Path other : others) {
+            if (html != null && sameFile(html, other)) {
+                throw new Args.UsageException("--html " + html + " is a recording being read; the report would replace it");
+            }
+        }
+        return new Health(recording, List.copyOf(others), args.top(), html);
+    }
+
     private int health(final Health q) throws IOException {
+        if (!q.others().isEmpty()) {
+            return healthCompared(q);
+        }
         final HealthCollector collector = new HealthCollector();
         JfrReader.read(q.recording(), collector);
         phase("read");
@@ -368,12 +414,49 @@ public final class Main {
         return 0;
     }
 
+    /** {@code health} of several recordings, read concurrently, as one table: a row each, in the order given. */
+    private int healthCompared(final Health q) throws IOException {
+        final List<Path> files = new ArrayList<>();
+        files.add(q.recording());
+        files.addAll(q.others());
+        final List<HealthCollector> collectors = new ArrayList<>(files.size());
+        for (int i = 0; i < files.size(); i++) {
+            collectors.add(new HealthCollector());
+        }
+        readAll(files, collectors);
+        phase("read");
+        final List<HealthReport> reports = new ArrayList<>(files.size());
+        for (final HealthCollector c : collectors) {
+            reports.add(c.report());
+        }
+        out.print(json ? Json.healthCompared(reports, q.top(), VERSION) : Text.healthCompared(reports));
+        html(q.html(), () -> Html.healthCompared(reports));
+        phase("render");
+        return 0;
+    }
+
+    private static Info info(final Args args, final Path recording) {
+        final int top = args.top();
+        if (args.option("top").isPresent() && args.option("thread").isEmpty()) {
+            // --top bounds the creators --thread lists; on its own it would change nothing, silently.
+            throw new Args.UsageException("info takes --top only with --thread");
+        }
+        final Glob threads = args.option("thread").map(Glob::of).orElse(null);
+        if (threads != null && threads.isEmpty()) {
+            throw new Args.UsageException("--thread must name at least one pattern");
+        }
+        return new Info(recording, top, threads, htmlTarget(args, recording, null));
+    }
+
     private int info(final Info q) throws IOException {
         final ThreadCensus census = new ThreadCensus();
         final RecordingInfo info = JfrReader.read(q.recording(), census);
         phase("read");
-        out.print(json ? Json.info(info, census.result(), VERSION) : Text.info(info, census.result()));
-        html(q.html(), () -> Html.info(info, census.result()));
+        final ThreadCensus.Result result = census.result();
+        final RecordingSummary.Starts starts = q.threads() == null ? null
+                : RecordingSummary.starts(result, q.threads(), q.top());
+        out.print(json ? Json.info(info, result, starts, VERSION) : Text.info(info, result, starts));
+        html(q.html(), () -> Html.info(info, result, starts));
         phase("render");
         return 0;
     }
@@ -509,11 +592,25 @@ public final class Main {
      * both fail the second is suppressed into the first, and an {@link Error} stays an error.
      */
     static void readBoth(final Path a, final JfrReader.Sink sinkA, final Path b, final JfrReader.Sink sinkB) throws IOException {
+        readAll(List.of(a, b), List.of(sinkA, sinkB));
+    }
+
+    /**
+     * Reads recordings concurrently, one per virtual thread, each into its own sink. A failure
+     * names its file; later failures are suppressed into the first, and an {@link Error} stays an error.
+     */
+    static void readAll(final List<Path> files, final List<? extends JfrReader.Sink> sinks) throws IOException {
         try (final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            final Future<RecordingInfo> first = executor.submit(() -> JfrReader.read(a, sinkA));
-            final Future<RecordingInfo> second = executor.submit(() -> JfrReader.read(b, sinkB));
-            Throwable failure = outcome(first, a, null);
-            failure = outcome(second, b, failure);
+            final List<Future<RecordingInfo>> reads = new ArrayList<>(files.size());
+            for (int i = 0; i < files.size(); i++) {
+                final Path file = files.get(i);
+                final JfrReader.Sink sink = sinks.get(i);
+                reads.add(executor.submit(() -> JfrReader.read(file, sink)));
+            }
+            Throwable failure = null;
+            for (int i = 0; i < files.size(); i++) {
+                failure = outcome(reads.get(i), files.get(i), failure);
+            }
             if (failure instanceof final IOException e) {
                 throw e;
             }
@@ -549,9 +646,12 @@ public final class Main {
         return primary;
     }
 
-    /** The recording argument, without looking at the file: {@link #check} has none yet. */
-    private static Path recordingPath(final Args args) {
-        if (args.positional().size() > 1) {
+    /**
+     * The recording argument, without looking at the file: {@link #check} has none yet. Only
+     * {@code health} takes more than one, to compare them.
+     */
+    private static Path recordingPath(final String command, final Args args) {
+        if (args.positional().size() > 1 && !command.equals("health")) {
             throw new Args.UsageException("unexpected argument '" + args.positional().get(1) + "'");
         }
         return Path.of(args.first("recording file"));
@@ -559,12 +659,71 @@ public final class Main {
 
     private static Path existing(final Path p) throws IOException {
         if (Files.isDirectory(p)) {
-            throw new Args.UsageException(p + " is a directory, not a recording");
+            throw new Args.UsageException(p + " is a directory, not a recording" + assembleHint(p));
         }
         if (!Files.isRegularFile(p)) {
             throw new NoSuchFileException(p.toString());
         }
         return p;
+    }
+
+    /** A chunk the JVM writes to its repository: {@code 2026_10_01_13_37_14.jfr}, {@code ..._1.jfr} after a clash. */
+    private static final Pattern CHUNK = Pattern.compile("\\d{4}(_\\d{2}){5}(_\\d+)?\\.jfr");
+    /** A JVM's own repository directory: its start time and pid, {@code 2026_10_01_13_37_14_53959}. */
+    private static final Pattern JVM_REPOSITORY = Pattern.compile("\\d{4}(_\\d{2}){5}_\\d+");
+
+    /**
+     * The {@code jfr assemble} line for a directory of chunks: the repository of one JVM, which
+     * holds chunks named by the time they began, or the repository a recording was told to use
+     * ({@code repository=}), which holds one such directory per JVM, named by its start and pid.
+     * Empty for anything else: a directory of finished recordings is not one recording's chunks.
+     */
+    private static String assembleHint(final Path dir) {
+        final Path jvm;
+        String more = "";
+        if (chunks(dir) > 0) {
+            jvm = dir;
+        } else {
+            final List<Path> jvms = new ArrayList<>();
+            try (final DirectoryStream<Path> entries = Files.newDirectoryStream(dir)) {
+                for (final Path entry : entries) {
+                    if (JVM_REPOSITORY.matcher(entry.getFileName().toString()).matches() && Files.isDirectory(entry)
+                            && chunks(entry) > 0) {
+                        jvms.add(entry);
+                    }
+                }
+            } catch (final IOException e) {
+                // Unreadable: the plain message stands.
+                return "";
+            }
+            if (jvms.isEmpty()) {
+                return "";
+            }
+            jvms.sort(null);
+            jvm = jvms.getLast();
+            more = jvms.size() == 1 ? "" : " (it holds " + jvms.size() + " JVMs' directories; that is the last by name)";
+        }
+        // The newest chunk is the one the JVM was writing when it stopped: unfinished, and no reader,
+        // the JDK's included, can read it; the ones before it are complete.
+        final int n = chunks(jvm);
+        return "; if it is the repository of a JVM that ended without writing its recording (killed, crashed), its "
+                + "newest chunk is the one it was writing and cannot be read" + (n == 1 ? ", and it holds no other"
+                : ": join the " + n + " chunks with jfr assemble " + jvm + " out.jfr, and jfrq names the size to cut "
+                + "out.jfr to so that it holds only the finished ones") + more;
+    }
+
+    /** How many chunks a directory holds, by their names: a JFR repository holds the chunks of one recording. */
+    private static int chunks(final Path dir) {
+        int n = 0;
+        try (final DirectoryStream<Path> files = Files.newDirectoryStream(dir, "*.jfr")) {
+            for (final Path f : files) {
+                n += CHUNK.matcher(f.getFileName().toString()).matches() ? 1 : 0;
+            }
+        } catch (final IOException e) {
+            // Unreadable: the plain message stands.
+            return 0;
+        }
+        return n;
     }
 
     /**

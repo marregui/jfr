@@ -7,19 +7,27 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 
+import dev.jfrq.core.health.HealthCollector;
+import dev.jfrq.core.health.ThreadCpu;
 import dev.jfrq.core.jfr.JfrFixtures;
 import dev.jfrq.core.jfr.JfrReader;
+import dev.jfrq.core.jfr.NativeThreads;
 import dev.jfrq.core.jfr.RecordingInfo;
+import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Interval;
+import dev.jfrq.core.model.Stack;
 import dev.jfrq.core.model.ThreadRef;
+import dev.jfrq.core.util.Glob;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -159,6 +167,95 @@ class ThreadCensusTest {
                 .filter(f -> f.name().equals("silent")).findFirst().orElseThrow();
         assertEquals(0, family.seen());
         assertEquals(1, family.aliveAtEnd());
+    }
+
+    @Test
+    void aStartWithNeitherParentNorStackIsAnAttachAndTheStartsKeepTheirOrder() {
+        final ThreadCensus census = new ThreadCensus();
+        final Stack made = new Stack(List.of(new Frame("com.example.Pool", "grow", 12, false)), false);
+        census.row(10, A);
+        // File order, not time order.
+        census.start(60, C, null, Stack.EMPTY, true);
+        census.start(40, B, A, made, false);
+        // A start with no parent but a stack is a start the JVM made, not an attach.
+        census.start(50, D, null, made, false);
+        census.row(90, A);
+        census.finish(info(true));
+        final ThreadCensus.Result r = census.result();
+        assertEquals(Set.of(C), r.attached());
+        assertEquals(List.of(B, D, C), r.startEvents().stream().map(ThreadCensus.Start::thread).toList());
+        assertEquals(new ThreadCensus.Start(40, B, A, made, false), r.startEvents().getFirst());
+        assertTrue(r.startEvents().getLast().isAttached());
+
+        // Starts recorded without their parent cannot tell an attach apart: unknown, not none.
+        final ThreadCensus older = new ThreadCensus();
+        older.life(40, B, false);
+        older.finish(info(true));
+        assertNull(older.result().attached());
+        assertEquals(1, older.result().startEvents().size());
+    }
+
+    @Test
+    void aThreadNativeCodeAttachedIsToldApartAndEachThreadHasItsCpu() throws Exception {
+        assumeTrue(NativeThreads.available(), "pthread_create");
+        final String[] attached = new String[1];
+        final Path file = JfrFixtures.record(dir, "attach", r -> {
+            r.enable("jdk.ThreadStart").withStackTrace();
+            r.enable("jdk.ThreadEnd");
+            r.enable("jdk.ThreadCPULoad").withPeriod(Duration.ofMillis(50));
+        }, () -> {
+            attached[0] = NativeThreads.attachOnce();
+            JfrFixtures.onThread("spinner", () -> JfrFixtures.burn(600));
+            JfrFixtures.onThread("spawner", () -> JfrFixtures.onThread("spawned", () -> JfrFixtures.sleep(1)));
+        });
+        final ThreadCensus census = new ThreadCensus();
+        final RecordingInfo info = JfrReader.read(file, census);
+        final ThreadCensus.Result r = census.result();
+        assertEquals(Set.of(attached[0]), names(r.attached()), r.startEvents().toString());
+        final ThreadCensus.Start spawned = r.startEvents().stream().filter(s -> s.thread().name().equals("spawned"))
+                .findFirst().orElseThrow();
+        assertFalse(spawned.isAttached());
+        assertEquals("spawner", spawned.parent().name());
+        assertFalse(spawned.stack().isEmpty());
+
+        final List<RecordingSummary.Family> families = RecordingSummary.threadFamilies(info, r);
+        assertTrue(RecordingSummary.familyHeaders(r, families).containsAll(List.of("Attached", "CPU")));
+        final RecordingSummary.Family nativeFamily = families.stream()
+                .filter(f -> f.name().equals(RecordingSummary.family(attached[0]))).findFirst().orElseThrow();
+        assertTrue(nativeFamily.attached() >= 1, nativeFamily.toString());
+        final RecordingSummary.Family spinner = families.stream().filter(f -> f.name().equals("spinner"))
+                .findFirst().orElseThrow();
+        // Burning for 600 ms in readings 50 ms apart: a share above zero, and never above the machine.
+        assertTrue(spinner.cpu() > 0 && spinner.cpu() <= 1, spinner.toString());
+        assertEquals(2, RecordingSummary.familyNotes(r, families).size());
+        final RecordingSummary.Starts starts = RecordingSummary.starts(r, Glob.of(attached[0]), 5);
+        assertEquals(1, starts.attached());
+        assertEquals(RecordingSummary.ATTACHED, starts.creators().getFirst().site());
+    }
+
+    @Test
+    void infoAndHealthLeaveOutTheSameAttachedReadings() throws Exception {
+        // An attached thread burning 300 ms reads at the cap until it ends: left out by both the
+        // census (info) and the health collector, which find the attach each on its own.
+        assumeTrue(NativeThreads.available(), "pthread_create");
+        final Path file = JfrFixtures.record(dir, "attach-cpu", r -> {
+            r.enable("jdk.ThreadStart").withStackTrace();
+            r.enable("jdk.ThreadEnd");
+            r.enable("jdk.ThreadCPULoad").withPeriod(Duration.ofMillis(50));
+        }, () -> {
+            NativeThreads.attachOnce(300);
+            JfrFixtures.onThread("spinner", () -> JfrFixtures.burn(300));
+        });
+        final ThreadCensus census = new ThreadCensus();
+        JfrReader.read(file, census);
+        final HealthCollector health = new HealthCollector();
+        JfrReader.read(file, health);
+        final ThreadCpu.Result fromInfo = census.result().cpu();
+        final ThreadCpu.Result fromHealth = health.report().threadCpu();
+        assertTrue(fromInfo.isKnown());
+        assertEquals(fromInfo.leftOut(), fromHealth.leftOut());
+        assertEquals(fromInfo.readings(), fromHealth.readings());
+        assertEquals(fromInfo.share(), fromHealth.share(), 1e-12);
     }
 
     private static Set<String> names(final Set<ThreadRef> threads) {

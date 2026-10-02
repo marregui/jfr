@@ -3,10 +3,10 @@
 Ask a JFR recording one question and get the answer.
 
 ```
-$ jfrq stalls app.jfr --thread 'event-loop-*' --gap 50ms --top 3
+$ jfrq stalls demo-lock.jfr --thread 'event-loop-*' --gap 50ms --top 3
 ...
 STALLS >= 50.0 ms: 46 found, showing 3, longest first
-   1  event-loop-3-2         +13.682s    182 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@9b983e4c0 held by housekeeper (handed on through event-loop-3-1)
+   1  event-loop-3-1         +0.498s 15:26:28.993Z    179 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@764b6e2f40 held by housekeeper (handed on through event-loop-3-2)
         at dev.jfrq.demo.SessionRegistry.touch(SessionRegistry.java:29)
         at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:49)
         ...
@@ -56,10 +56,10 @@ JVM already report about itself that points at trouble ahead*.
 | `jfrq stalls` | When did a thread not return to its idle point, and why: a lock (and who held it), a blocking socket or file call, a sleep, a GC pause, or CPU-bound code? |
 | `jfrq locks` | Which locks did threads wait for, how long, who held them, and which holders were themselves blocked (convoys)? |
 | `jfrq alloc` | Which threads, classes and sites allocate, in bytes per second; and with `--baseline`, what changed between two recordings? |
-| `jfrq health` | What the JVM reported about itself: an `OutOfMemoryError` for direct memory, a failed evacuation, a full collection, GC time or pauses over its own goals, a collection forced by a humongous allocation, metaspace or `System.gc()`; how heap after GC, resident memory, threads and CPU moved; and which throwables were created, by class and by site. |
-| `jfrq info` | What is in the file: span, threads, event counts, and the thresholds and periods that were active when it was made. |
+| `jfrq health` | What the JVM reported about itself: an `OutOfMemoryError` for direct memory, a failed evacuation, a full collection, GC time or pauses over its own goals, a collection forced by a humongous allocation, metaspace or `System.gc()`; how heap after GC, resident memory, threads and CPU moved, and native memory by category under NMT; and which throwables were created, by class and by site. Given several recordings, one table comparing them. |
+| `jfrq info` | What is in the file: span, threads (with their CPU, and which ones native code attached), event counts, and the thresholds and periods that were active when it was made; with `--thread`, how those threads were started and by which code. |
 
-Common options: `--top N` (rows per table, default 15; every command but `info`),
+Common options: `--top N` (rows per table, default 15; for `info`, the creators `--thread` lists),
 `--html FILE`, `--json`, `--timing`, `--version`, `--help`.
 
 Every command prints plain text for a terminal or a ticket, and writes a self-contained
@@ -81,7 +81,7 @@ one, instead of the parser hanging on it.
 ## Build and install
 
 ```
-./gradlew build          # compiles, runs 330+ tests, checks coverage
+./gradlew build          # compiles, runs 430+ tests, checks coverage
 ./gradlew installDist    # cli/build/install/jfrq/bin/jfrq, live/build/install/jfrq-live/bin/jfrq-live,
                          # netty-demo/build/install/netty-demo/bin/netty-demo
 ```
@@ -100,8 +100,8 @@ and start-up is merely ordinary. JVM options go in `JFRQ_OPTS` (`jfrq`) or
 ## Usage
 
 ```
-jfrq info   recording.jfr [--html out.html] [--json]
-jfrq health recording.jfr [--top N] [--html out.html] [--json]
+jfrq info   recording.jfr [--thread GLOB [--top N]] [--html out.html] [--json]
+jfrq health recording.jfr [more.jfr ...] [--top N] [--html out.html] [--json]
 jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html] [--json]
 jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html] [--json]
 jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html] [--json]
@@ -111,7 +111,9 @@ jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N
 agent to read: stable field names with the unit in the name, instants in UTC, `null` where
 the recording cannot say, and a `schema` number that changes only when a field does.
 [docs/JSON.md](docs/JSON.md) lists every field. Every time `jfrq` and `jfrq-live` print is
-UTC and says so.
+UTC and says so: a wait, a convoy, a stall or a pause is printed as its offset from the
+recording's start and its time of day, `+13.682s 11:37:15.286Z`, so the line in a log written
+beside the recording can be found without converting by hand.
 
 `GLOB` is a comma-separated list of shell globs on thread names (`*`, `?`, `[0-3]`,
 `[!0-9]`; a backslash makes the next character literal): `'event-loop-*'`,
@@ -121,7 +123,21 @@ families, one row per family with its count, how many some event names, and an e
 census (`jdk.ThreadAllocationStatistics`) and `jdk.ThreadStart`/`jdk.ThreadEnd`, as both JDK
 profiles do, each family also says how many threads were alive when the recording began,
 started, ended, and were alive when it ended: a leak is an `At end` that grows window after
-window, which the count of threads seen in a window cannot show. Durations take a unit (`50ms`, `1.5s`, `2m`); options belong to their
+window, which the count of threads seen in a window cannot show. When the recording has
+`jdk.ThreadCPULoad` (both JDK profiles, every 10 s) each family has its `CPU`, its share of
+the JVM's CPUs (the machine's, unless `-XX:ActiveProcessorCount`, a container limit or a CPU
+affinity mask sets fewer) across the window. Each reading is weighed by the stretch it covers, since the
+thread's last evaluation or its start; a reading at the first evaluation of a thread alive
+before the recording covers a stretch the file does not hold, and the readings of a thread
+native code attached hold CPU the native thread used before the attach until one comes in
+below one core, so both are left out, and the line under the table says how many were. A recording shorter than two periods shows little for the threads
+that were already running.
+`Attached` counts the threads native code attached to the JVM (JNI `AttachCurrentThread`, an
+upcall): their starts carry no stack and no parent thread, and a library that attaches for
+every callback starts one each time, which by name looks like any `Thread-N`. `info --thread
+GLOB` adds how the matching threads were started: how many, the most in 100 ms and in a
+second and when, and the code that started them (the innermost frame outside the JDK in the
+starting thread's stack, with the threads that ran it). Durations take a unit (`50ms`, `1.5s`, `2m`); options belong to their
 command, so a `stalls` option on `locks` is an error rather than silently ignored, and so
 is an option given twice. A wait or a block that began before the recording, or outlived
 it, is counted only for the part inside it, and that is the part `--min` and `--gap` are
@@ -154,6 +170,30 @@ and every `StackOverflowError`, without running a constructor, so they never rea
 file. A failed evacuation is the step before a heap one. A few `java.lang.NoSuchMethodError`s whose message
 names `java.lang.invoke.Invokers$Holder` are the JDK linking method handles, thrown and
 caught inside the JDK; they are not a fault.
+
+When a recording says `jdk.JavaExceptionThrow` was off (JDK 21's `profile` leaves it off),
+`health` says so and prints the setting that turns it on, `jdk.JavaExceptionThrow#enabled=true`,
+which `-XX:StartFlightRecording` and `jcmd <pid> JFR.start` both take. Under the trends,
+`health` adds the CPU the Java threads used by their own readings, and on macOS warns at the
+top when the JVM's own figure (`jdk.CPULoad`) is below it: a process uses at least what its
+threads do, and on one JDK 21.0.3 macOS soak the JVM reported 0.2 % while its threads
+reported 8.0 %. (On Linux the JVM's figure divides by the host's CPUs, so the two do not
+compare.) When the floor of heap after GC rose, by more than its printed figures round away, it says the recording cannot tell what
+holds the heap (`jdk.OldObjectSample` names where objects were allocated), and that a class
+histogram or a heap dump can. A JVM run with `-XX:NativeMemoryTracking=summary` writes NMT's
+committed memory by category, which `health` lists with the same floors; resident set minus
+committed heap is not native growth, because the heap becomes resident as it is touched.
+
+`jfrq health a.jfr b.jfr c.jfr` reads the recordings concurrently and answers with one table,
+a row per recording in the order given (the nodes of a cluster, or a JVM's successive
+runs): span, findings, GC time, heap after GC floors, resident set, live threads, threads
+started, the JVM's and the threads' CPU, and throwables per second, then each recording's
+findings under its name. A JVM that was killed leaves its repository directory of chunk
+files rather than a recording, and `jfrq` given that directory (or the `repository=` one
+above it) says what to do: `jfr assemble DIR out.jfr` joins the chunks, the last of which,
+the one the JVM was writing, is unfinished and unreadable by any reader; `jfrq` then names the
+size to cut `out.jfr` to so it holds only the finished ones. A repository of a single chunk
+holds nothing readable.
 
 A thread parked on its own empty queue is not contention and is not a stall: `locks` lists
 those apart and `stalls` leaves them out. They are recognised by the frame of a pool
@@ -203,7 +243,7 @@ second across the JVM (JDK 25); `jfrq stalls` warns when a throttle is in force,
 line above switches it off so no blocking call goes unrecorded.
 
 `jfrq health` needs nothing beyond either JDK 25 settings file: both record the
-collector's events, the once-a-second statistics and `jdk.JavaExceptionThrow`, throttled
+collector's events, the once-a-second statistics, `jdk.ThreadCPULoad` and `jdk.JavaExceptionThrow`, throttled
 to 100 per second in `default` and 300 in `profile`. Under the throttle the class and site
 shares are of a sample; the total created is exact either way.
 

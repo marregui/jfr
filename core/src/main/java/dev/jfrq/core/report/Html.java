@@ -3,6 +3,7 @@
 
 package dev.jfrq.core.report;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -144,7 +145,7 @@ public final class Html {
             p.h2("JVM-wide pauses ≥ gap");
             p.tableStart("At", "Duration", "Kind", "Detail");
             for (final Pause pause : report.pauses()) {
-                p.row(Durations.offset(pause.interval().start() - report.info().startNanos()),
+                p.row(Durations.at(pause.interval().start(), report.info().startNanos()),
                         Durations.format(pause.duration()), pause.kind().label(), pause.detail());
             }
             p.tableEnd();
@@ -158,7 +159,7 @@ public final class Html {
         int n = 1;
         for (final Stall s : stalls) {
             final int row = n++;
-            p.row(row, s.thread().name(), Durations.offset(s.start() - report.info().startNanos()),
+            p.row(row, s.thread().name(), Durations.at(s.start(), report.info().startNanos()),
                     Durations.format(s.duration()), s.verdict(), s.detail(), s.evidence().name().toLowerCase(Locale.ROOT));
             if (s.stack().isEmpty()) {
                 continue;
@@ -297,7 +298,7 @@ public final class Html {
                         chain.append(' ').append(w.heldBy());
                     }
                 }
-                p.row(Durations.offset(c.head().start() - report.info().startNanos()), chain.toString());
+                p.row(Durations.at(c.head().start(), report.info().startNanos()), chain.toString());
             }
             p.tableEnd();
         }
@@ -305,7 +306,7 @@ public final class Html {
         p.h2("Longest waits");
         p.tableStart("At", "Duration", "Waiter", "Lock", "Held by");
         for (final Wait w : report.longest(top)) {
-            p.row(Durations.offset(w.start() - report.info().startNanos()), Durations.format(w.duration()),
+            p.row(Durations.at(w.start(), report.info().startNanos()), Durations.format(w.duration()),
                     w.waiter().name(), w.lock().pretty(), w.heldBy());
             if (!w.stack().isEmpty()) {
                 p.stackRow(5, w.stack());
@@ -451,6 +452,7 @@ public final class Html {
 
     public static String health(final HealthReport r, final int top) {
         final Page p = new Page("jfrq health", r.info());
+        p.warnings(r.warnings());
         p.h2("Findings (from the JVM's own events, the most serious first)");
         if (r.findings().isEmpty()) {
             p.kv("None", HealthReport.NO_FINDINGS);
@@ -495,13 +497,30 @@ public final class Html {
         if (!threads.isEmpty()) {
             p.kv("Threads", threads);
         }
+        final String cpu = r.threadCpuLine();
+        if (!cpu.isEmpty()) {
+            p.kv("Thread CPU", cpu);
+        }
+        final String heap = r.heapNote();
+        if (!heap.isEmpty()) {
+            p.kv("Heap", heap);
+        }
+        if (!r.nativeMemory().isEmpty()) {
+            p.h2("Native memory (" + HealthReport.NATIVE_MEMORY_RULE + ")");
+            p.tableStart("Category", "Start", "End", "Min", "Max", "Floor, first third", "Floor, last third");
+            for (final HealthReport.Series s : r.nativeMemory().subList(0, Math.min(top + 1, r.nativeMemory().size()))) {
+                p.row(s.name(), s.format(s.start()), s.format(s.end()), s.format(s.min()), s.format(s.max()),
+                        s.format(s.floorFirst()), s.format(s.floorLast()));
+            }
+            p.tableEnd();
+        }
         final HealthReport.Throwables t = r.throwables();
         p.h2("Throwables created (counted in the constructor: a rethrow does not count again)");
         final double rate = t.rate();
         p.kv("Created", Double.isNaN(rate) ? "unknown: jdk.ExceptionStatistics was not recorded twice"
                 : String.format(Locale.ROOT, "%d in %s = %.1f/s, exactly", t.created(), Durations.format(t.createdNanos()),
                 rate));
-        p.kv("Events", t.samples() == 0 ? HealthReport.NO_THROWS : t.samples() + " jdk.JavaExceptionThrow"
+        p.kv("Events", t.samples() == 0 ? r.noThrows() : t.samples() + " jdk.JavaExceptionThrow"
                 + (t.throttle() == null ? ", every one"
                 : " (throttled at " + t.throttle()
                 + ": every one below that rate, a sample above it; the shares below are of the events)"));
@@ -527,8 +546,46 @@ public final class Html {
         return p.finish();
     }
 
-    /** {@code G1New 37, G1Old 17}, in the order the map has them. */
+    /** {@code health} over several recordings: one row each, then each one's findings. */
+    public static String healthCompared(final List<HealthReport> reports) {
+        final List<Path> files = new ArrayList<>(reports.size());
+        for (final HealthReport r : reports) {
+            files.add(r.info().file());
+        }
+        final List<String> labels = RecordingSummary.labels(files);
+        final Page p = new Page("jfrq health of " + reports.size() + " recordings", String.join(", ", labels));
+        p.para(HealthReport.COMPARED_RULE);
+        p.tableStart(HealthReport.COMPARED.toArray(new String[0]));
+        for (int i = 0; i < reports.size(); i++) {
+            p.row(reports.get(i).comparedCells(labels.get(i)));
+        }
+        p.tableEnd();
+        for (int i = 0; i < reports.size(); i++) {
+            final HealthReport r = reports.get(i);
+            p.h2(labels.get(i));
+            p.kv("Recording", r.info().file().toString());
+            p.warnings(r.info().warnings());
+            p.warnings(r.warnings());
+            if (r.findings().isEmpty()) {
+                p.kv("Findings", "none");
+            } else {
+                p.tableStart("Finding", "Count", "What it means");
+                for (final HealthReport.Finding f : r.findings()) {
+                    p.row(f.kind().name(), f.count(), f.text());
+                }
+                p.tableEnd();
+            }
+        }
+        return p.finish();
+    }
+
     public static String info(final RecordingInfo info, final ThreadCensus.Result census) {
+        return info(info, census, null);
+    }
+
+    /** {@code info}, with how the threads {@code --thread} names were started when it was given ({@code starts}). */
+    public static String info(final RecordingInfo info, final ThreadCensus.Result census,
+                              final RecordingSummary.Starts starts) {
         final Page p = new Page("jfrq info", info);
         final String lives = RecordingSummary.lives(census);
         p.kv("Threads", info.threads().size() + " seen in events" + (lives.isEmpty() ? "" : "; " + lives));
@@ -561,11 +618,30 @@ public final class Html {
         if (!families.isEmpty()) {
             p.h2("Threads (the names --thread matches)");
             p.tableStart(RecordingSummary.familyHeaders(census, families).toArray(new String[0]));
-            final boolean virtual = RecordingSummary.hasVirtual(families);
             for (final RecordingSummary.Family f : families) {
-                p.row(RecordingSummary.familyCells(f, census, virtual));
+                p.row(RecordingSummary.familyCells(f, census, families));
             }
             p.tableEnd();
+            for (final String note : RecordingSummary.familyNotes(census, families)) {
+                p.para(note);
+            }
+        }
+        if (starts != null) {
+            p.h2("Starts of " + starts.glob());
+            p.kv("Starts", RecordingSummary.startsLine(starts, info.startNanos()));
+            if (starts.starts() > 0) {
+                p.kv("Busiest", RecordingSummary.peaksLine(starts, info.startNanos()));
+                p.para("Created by: " + RecordingSummary.CREATOR_RULE);
+                p.tableStart("Site", "Starts", "Share", "Started from");
+                for (final RecordingSummary.Creator c : starts.creators()) {
+                    p.row(c.site(), c.starts(), String.format(Locale.ROOT, "%.1f%%", c.share() * 100),
+                            names(c.parents()));
+                    if (!c.stack().isEmpty()) {
+                        p.stackRow(4, c.stack());
+                    }
+                }
+                p.tableEnd();
+            }
         }
         return p.finish();
     }
@@ -759,12 +835,17 @@ public final class Html {
         private final StringBuilder sb = new StringBuilder();
 
         Page(final String title, final RecordingInfo info) {
-            sb.append("<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>").append(escape(title))
-                    .append(" · ").append(escape(info.file().getFileName().toString())).append("</title>\n<style>\n")
-                    .append(CSS).append("</style></head><body>\n<h1>").append(escape(title)).append("</h1>\n<dl>");
+            this(title, info.file().getFileName().toString());
             kv("Recording", info.file().toString());
             kv("Span", Durations.format(info.duration()) + " from " + info.start());
             warnings(info.warnings());
+        }
+
+        /** A page about several recordings: each section names its own. */
+        Page(final String title, final String subtitle) {
+            sb.append("<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>").append(escape(title))
+                    .append(" · ").append(escape(subtitle)).append("</title>\n<style>\n")
+                    .append(CSS).append("</style></head><body>\n<h1>").append(escape(title)).append("</h1>\n<dl>");
         }
 
         void kv(final String k, final String v) {

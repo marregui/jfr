@@ -25,7 +25,8 @@ public final class Fields {
     public static final int BYTES_READ = ALLOCATION_SIZE + 1;
     public static final int BYTES_WRITTEN = BYTES_READ + 1;
     public static final int CAUSE = BYTES_WRITTEN + 1;
-    public static final int GC_ID = CAUSE + 1;
+    public static final int COMMITTED = CAUSE + 1;
+    public static final int GC_ID = COMMITTED + 1;
     public static final int GC_TIME_RATIO = GC_ID + 1;
     public static final int HEAP_USED = GC_TIME_RATIO + 1;
     public static final int HOST = HEAP_USED + 1;
@@ -39,7 +40,9 @@ public final class Fields {
     public static final int NAME = MONITOR_CLASS + 1;
     public static final int OBJECT_CLASS = NAME + 1;
     public static final int OPERATION = OBJECT_CLASS + 1;
-    public static final int PARKED_CLASS = OPERATION + 1;
+    public static final int OS_VERSION = OPERATION + 1;
+    public static final int PARENT_THREAD = OS_VERSION + 1;
+    public static final int PARKED_CLASS = PARENT_THREAD + 1;
     public static final int PATH = PARKED_CLASS + 1;
     public static final int PAUSE_TARGET = PATH + 1;
     public static final int PEAK_COUNT = PAUSE_TARGET + 1;
@@ -50,15 +53,18 @@ public final class Fields {
     public static final int SIZE = SAFEPOINT_ID + 1;
     public static final int STACK_TRACE = SIZE + 1;
     public static final int SUM_OF_PAUSES = STACK_TRACE + 1;
-    public static final int THREAD = SUM_OF_PAUSES + 1;
+    public static final int SYSTEM = SUM_OF_PAUSES + 1;
+    public static final int THREAD = SYSTEM + 1;
     public static final int THROWABLES = THREAD + 1;
     public static final int THROWN_CLASS = THROWABLES + 1;
     public static final int TIME = THROWN_CLASS + 1;
     public static final int TIMED_OUT = TIME + 1;
     public static final int TIMEOUT = TIMED_OUT + 1;
     public static final int TLAB_SIZE = TIMEOUT + 1;
-    public static final int UNTIL = TLAB_SIZE + 1;
-    public static final int WEIGHT = UNTIL + 1;
+    public static final int TYPE = TLAB_SIZE + 1;
+    public static final int UNTIL = TYPE + 1;
+    public static final int USER = UNTIL + 1;
+    public static final int WEIGHT = USER + 1;
     public static final int WHEN = WEIGHT + 1;
     public static final int COUNT = WHEN + 1;
 
@@ -75,6 +81,7 @@ public final class Fields {
         NAMES[BYTES_READ] = "bytesRead";
         NAMES[BYTES_WRITTEN] = "bytesWritten";
         NAMES[CAUSE] = "cause";
+        NAMES[COMMITTED] = "committed";
         NAMES[GC_ID] = "gcId";
         NAMES[GC_TIME_RATIO] = "gcTimeRatio";
         NAMES[HEAP_USED] = "heapUsed";
@@ -89,6 +96,8 @@ public final class Fields {
         NAMES[NAME] = "name";
         NAMES[OBJECT_CLASS] = "objectClass";
         NAMES[OPERATION] = "operation";
+        NAMES[OS_VERSION] = "osVersion";
+        NAMES[PARENT_THREAD] = "parentThread";
         NAMES[PARKED_CLASS] = "parkedClass";
         NAMES[PATH] = "path";
         NAMES[PAUSE_TARGET] = "pauseTarget";
@@ -100,6 +109,7 @@ public final class Fields {
         NAMES[SIZE] = "size";
         NAMES[STACK_TRACE] = "stackTrace";
         NAMES[SUM_OF_PAUSES] = "sumOfPauses";
+        NAMES[SYSTEM] = "system";
         NAMES[THREAD] = "thread";
         NAMES[THROWABLES] = "throwables";
         NAMES[THROWN_CLASS] = "thrownClass";
@@ -107,7 +117,9 @@ public final class Fields {
         NAMES[TIMED_OUT] = "timedOut";
         NAMES[TIMEOUT] = "timeout";
         NAMES[TLAB_SIZE] = "tlabSize";
+        NAMES[TYPE] = "type";
         NAMES[UNTIL] = "until";
+        NAMES[USER] = "user";
         NAMES[WEIGHT] = "weight";
         NAMES[WHEN] = "when";
         assert COUNT <= Long.SIZE : COUNT;

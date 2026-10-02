@@ -319,6 +319,63 @@ class HealthCollectorTest {
                 gc.causes().values().stream().mapToLong(Long::longValue).sum());
     }
 
+    /**
+     * A JVM run with native memory tracking, in a process of its own, with one thread burning
+     * CPU: NMT's committed memory is read by category with the total first, and the burning
+     * thread's CPU comes from its own readings.
+     */
+    @Test
+    void nativeMemoryAndThreadCpuAreReadFromAJvmThatRecordsThem() throws Exception {
+        final Path file = dir.resolve("nmt.jfr");
+        final Process p = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+                "-XX:NativeMemoryTracking=summary", "-XX:StartFlightRecording=filename=" + file + ",settings=default,"
+                + "jdk.NativeMemoryUsage#period=100ms,jdk.NativeMemoryUsageTotal#period=100ms,"
+                + "jdk.ThreadCPULoad#period=100ms", "-Xlog:disable", "-Xlog:all=error:stderr",
+                "-cp", System.getProperty("java.class.path"), Burn.class.getName(), "1500")
+                .redirectErrorStream(true).redirectOutput(dir.resolve("nmt.log").toFile()).start();
+        assertTrue(p.waitFor(60, TimeUnit.SECONDS), "the JVM finished");
+        assertEquals(0, p.exitValue(), () -> read(dir.resolve("nmt.log")));
+
+        final HealthCollector health = new HealthCollector();
+        JfrReader.read(file, health);
+        final HealthReport r = health.report();
+        final List<Series> nmt = r.nativeMemory();
+        assertEquals("Total", nmt.getFirst().name(), nmt.toString());
+        assertTrue(nmt.stream().anyMatch(s -> s.name().equals("Java Heap")), nmt.toString());
+        for (int i = 0; i < nmt.size(); i++) {
+            assertEquals(Series.Unit.BYTES, nmt.get(i).unit());
+            if (i > 1) {
+                assertTrue(nmt.get(i - 1).end() >= nmt.get(i).end(), "largest at the end first: " + nmt);
+            }
+        }
+        assertTrue(nmt.getFirst().end() > 0);
+        final ThreadCpu.Result cpu = r.threadCpu();
+        assertTrue(cpu.isKnown());
+        final double burner = cpu.byThread().entrySet().stream().filter(e -> e.getKey().name().equals(Burn.THREAD))
+                .mapToDouble(Map.Entry::getValue).findFirst().orElseThrow(() -> new AssertionError(cpu.byThread()));
+        // One thread of the machine's, busy for most of the window, and nothing above the whole machine.
+        assertTrue(burner > 0 && burner <= 1, String.valueOf(burner));
+        assertTrue(cpu.share() >= burner && cpu.share() <= 1, cpu.toString());
+        assertTrue(r.threadCpuLine().startsWith("Java threads used "), r.threadCpuLine());
+        final Map<String, Object> doc = JsonParser.object(Json.health(r, 3, "test"));
+        assertEquals(4, list(doc, "nativeMemory").size(), "the total and --top categories");
+        assertEquals((long) nmt.size() - 1, doc.get("nativeMemoryCategories"));
+        assertEquals(cpu.share(), (double) map(doc, "threadCpu").get("share"), 1e-9);
+        assertTrue(Html.health(r, 3).contains("Native memory ("), "the page has the section");
+    }
+
+    /** Burns CPU on one named thread for as many milliseconds as it is told. */
+    static final class Burn {
+        static final String THREAD = "burner";
+
+        public static void main(final String[] args) throws InterruptedException {
+            final long millis = Long.parseLong(args[0]);
+            final Thread t = new Thread(() -> JfrFixtures.burn(millis), THREAD);
+            t.start();
+            t.join();
+        }
+    }
+
     /** Keeps about 40 MB alive in a 48 MB heap and churns it, for as many milliseconds as it is told. */
     static final class Squeeze {
         public static void main(final String[] args) {

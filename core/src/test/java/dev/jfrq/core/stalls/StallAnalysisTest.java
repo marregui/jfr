@@ -1203,6 +1203,31 @@ class StallAnalysisTest {
         }
     }
 
+    @Test
+    void aRunWhoseEstimatedTailGivesWayToASilenceIsDroppedWhenWhatIsLeftIsUnderTheGap() {
+        // Seed 68385057724875 of the property test above, reduced: two busy samples 43 ms apart
+        // make a run that reaches the gap only by its estimated tail (one 17 ms period); the
+        // silence after the second sample, which two socket writes explain, takes that tail.
+        // What is left is 43 ms against a 46 ms gap: no stall, not a stall under the gap.
+        final List<Sample> samples = new ArrayList<>(idle(0, 1_000, 10));
+        samples.add(new Sample(1_000 * MS, BURN, false, false));
+        samples.add(new Sample(1_043 * MS, BURN, false, false));
+        samples.addAll(idle(1_139, 2_000, 10));
+        final List<Block> writes = List.of(blockWith(1_025, 1_059, BlockKind.SOCKET_WRITE, "on q@0", READ0),
+                blockWith(1_058, 1_093, BlockKind.SOCKET_WRITE, "on q@0", READ0));
+        final RecordingInfo info = info(2_000, Map.of("jdk.ExecutionSample",
+                Map.of("enabled", "true", "period", "17 ms")), "jdk.ExecutionSample");
+        final StallReport r = new StallAnalysis(46 * MS).analyse(info, List.of(new ThreadTimeline(LOOP, samples, writes)),
+                List.of());
+        for (final Stall st : r.stallsOf(LOOP)) {
+            assertTrue(st.duration() >= 46 * MS, st.toString());
+        }
+        assertTrue(r.stallsOf(LOOP).stream().noneMatch(st -> st.evidence() == Stall.Evidence.SAMPLES),
+                r.stallsOf(LOOP).toString());
+        assertEquals(List.of(new Interval(1_043 * MS, 1_139 * MS)),
+                r.stallsOf(LOOP).stream().map(Stall::interval).toList());
+    }
+
     /** A {@code java.util.Timer} thread between tasks: a wait with the time to the next one as its timeout. */
     static final Stack TIMER = stack(new Frame("java.lang.Object", "wait0", 0, "Native"),
             new Frame("java.lang.Object", "wait", 389, "JIT compiled"),

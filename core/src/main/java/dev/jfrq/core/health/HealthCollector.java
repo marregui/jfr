@@ -33,6 +33,7 @@ import dev.jfrq.core.jfr.Transient;
 import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Interner;
 import dev.jfrq.core.model.Stack;
+import dev.jfrq.core.model.ThreadRef;
 import dev.jfrq.core.util.Durations;
 import dev.jfrq.core.util.Sorts;
 import jdk.jfr.consumer.RecordedEvent;
@@ -53,7 +54,9 @@ public final class HealthCollector implements JfrReader.Sink {
             EventKinds.OLD_GARBAGE_COLLECTION, EventKinds.GC_HEAP_SUMMARY,
             EventKinds.GC_CONFIGURATION, EventKinds.GC_HEAP_CONFIGURATION, EventKinds.CPU_LOAD,
             EventKinds.JAVA_THREAD_STATISTICS, EventKinds.RESIDENT_SET_SIZE, EventKinds.EXCEPTION_STATISTICS,
-            EventKinds.JAVA_EXCEPTION_THROW, EventKinds.JAVA_ERROR_THROW, EventKinds.EVACUATION_FAILED);
+            EventKinds.JAVA_EXCEPTION_THROW, EventKinds.JAVA_ERROR_THROW, EventKinds.EVACUATION_FAILED,
+            EventKinds.THREAD_CPU_LOAD, EventKinds.THREAD_START, EventKinds.NATIVE_MEMORY_USAGE,
+            EventKinds.NATIVE_MEMORY_USAGE_TOTAL, EventKinds.OS_INFORMATION);
 
     /** Collectors whose every collection is of the whole heap, in a pause. */
     static final Set<String> FULL_COLLECTORS = Set.of("G1Full", "SerialOld", "ParallelOld");
@@ -87,6 +90,12 @@ public final class HealthCollector implements JfrReader.Sink {
     private final Points threadsStarted = new Points();
     private final Points throwablesCreated = new Points();
     private long peakThreads = Nulls.LONG_NULL;
+    private final ThreadCpu threadCpu = new ThreadCpu();
+    /** Native memory committed, per NMT category, and in total. */
+    private final ObjObjHashMap<String, Points> nativeMemory = new ObjObjHashMap<>(32);
+    private final Points nativeTotal = new Points();
+    /** The operating system, as {@code jdk.OSInformation} names it; null until read. */
+    private String osVersion;
 
     /** Per throwable class, when each was created, and an example message. */
     private final ObjObjHashMap<String, Thrown> byClass = new ObjObjHashMap<>(64);
@@ -157,6 +166,35 @@ public final class HealthCollector implements JfrReader.Sink {
             case EventKinds.EXCEPTION_STATISTICS ->
                     throwablesCreated.add(Events.startNanos(e), Events.longOr(e, Fields.THROWABLES, 0, interner));
             case EventKinds.JAVA_EXCEPTION_THROW -> throwable(e);
+            case EventKinds.THREAD_CPU_LOAD -> {
+                final ThreadRef thread = Events.thread(e, Fields.EVENT_THREAD, interner);
+                if (thread != null) {
+                    threadCpu.add(thread, Events.startNanos(e), Events.doubleOr(e, Fields.USER, 0, interner)
+                            + Events.doubleOr(e, Fields.SYSTEM, 0, interner));
+                }
+            }
+            case EventKinds.THREAD_START -> {
+                // When a thread's first CPU reading began: see ThreadCpu.
+                final ThreadRef thread = Events.thread(e, Fields.THREAD, interner);
+                if (thread != null) {
+                    threadCpu.start(thread, Events.startNanos(e), Events.isAttach(e,
+                            Events.thread(e, Fields.PARENT_THREAD, interner), Events.stack(e, interner), interner));
+                }
+            }
+            case EventKinds.NATIVE_MEMORY_USAGE -> {
+                final String category = Events.stringOr(e, Fields.TYPE, "?", interner);
+                final int index = nativeMemory.keyIndex(category);
+                final Points points = index < 0 ? nativeMemory.valueAtQuick(index)
+                        : nativeMemory.putAt(index, category, new Points());
+                points.add(Events.startNanos(e), Events.longOr(e, Fields.COMMITTED, 0, interner));
+            }
+            case EventKinds.NATIVE_MEMORY_USAGE_TOTAL ->
+                    nativeTotal.add(Events.startNanos(e), Events.longOr(e, Fields.COMMITTED, 0, interner));
+            case EventKinds.OS_INFORMATION -> {
+                if (osVersion == null) {
+                    osVersion = Events.stringOr(e, Fields.OS_VERSION, null, interner);
+                }
+            }
             case EventKinds.JAVA_ERROR_THROW -> {
                 final String cls = Events.className(e, Fields.THROWN_CLASS, interner);
                 errors.increment(cls == null ? "?" : cls, 1);
@@ -318,16 +356,74 @@ public final class HealthCollector implements JfrReader.Sink {
         final Gc gc = new Gc(collectionsMap, causesMap, oldCycles, pauseNanos, longest(), gcTimeRatio,
                 pauseTargetNanos, maxHeapBytes);
         final List<Series> trends = new ArrayList<>(5);
-        heapAfterGc.series("Heap after GC", Series.Unit.BYTES, trends);
-        residentSet.series("Resident set", Series.Unit.BYTES, trends);
-        liveThreads.series("Live threads", Series.Unit.COUNT, trends);
-        jvmCpu.series("JVM CPU", Series.Unit.FRACTION, trends);
+        heapAfterGc.series(HealthReport.HEAP_AFTER_GC, Series.Unit.BYTES, trends);
+        residentSet.series(HealthReport.RESIDENT_SET, Series.Unit.BYTES, trends);
+        liveThreads.series(HealthReport.LIVE_THREADS, Series.Unit.COUNT, trends);
+        jvmCpu.series(HealthReport.JVM_CPU, Series.Unit.FRACTION, trends);
         machineCpu.series("Machine CPU", Series.Unit.FRACTION, trends);
         final Threads threads = new Threads(threadsStarted.span(), peakThreads);
         final Throwables throwables = new Throwables(created(), throwablesCreated.duration(), samples,
                 info.throttle(EventKinds.nameOf(EventKinds.JAVA_EXCEPTION_THROW)).orElse(null), classRows(),
                 siteRows(), sorted(errors));
-        report = new HealthReport(info, findings(info, gc, throwables), gc, trends, threads, throwables);
+        final ThreadCpu.Result cpu = threadCpu.result(info);
+        final List<String> warnings = new ArrayList<>(1);
+        final String jvmCpuWarning = jvmCpuWarning(trends, cpu, osVersion);
+        if (jvmCpuWarning != null) {
+            warnings.add(jvmCpuWarning);
+        }
+        report = new HealthReport(info, findings(info, gc, throwables), gc, trends, threads, throwables, cpu,
+                nativeMemory(), warnings);
+    }
+
+    /**
+     * Native memory as NMT committed it, the total first and then each category, largest at the
+     * end of the window first; empty without NMT ({@code -XX:NativeMemoryTracking}), which is the
+     * only way the JVM writes these events.
+     */
+    private List<Series> nativeMemory() {
+        final List<Series> out = new ArrayList<>(nativeMemory.size() + 1);
+        nativeTotal.series("Total", Series.Unit.BYTES, out);
+        final List<Series> categories = new ArrayList<>(nativeMemory.size());
+        for (int s = 0, n = nativeMemory.slots(); s < n; s++) {
+            if (nativeMemory.hasKeyAtSlot(s)) {
+                nativeMemory.valueAtSlot(s).series(nativeMemory.keyAtSlot(s), Series.Unit.BYTES, categories);
+            }
+        }
+        categories.sort(Comparator.comparingDouble(Series::end).reversed().thenComparing(Series::name));
+        out.addAll(categories);
+        return out;
+    }
+
+    /**
+     * A process uses at least the CPU its Java threads use, so a JVM total below theirs is
+     * wrong: the JDK 21.0.3 JVMs of one macOS soak, in 67 recordings (killed nodes' readable
+     * chunks among them), averaged 0.02 % to 0.45 % of their CPUs in {@code jdk.CPULoad} (no
+     * reading above 1.02 %) while {@code ps} saw them at 150 % to 236 % of a core, and their
+     * threads' own readings summed to 0.8 % to 16.9 %. The
+     * margin (half again, plus a point) keeps two figures read over slightly different stretches
+     * from tripping it: on the 22 JDK 25 recordings of the same soak the threads read 0.28 to
+     * 1.03 times the JVM's figure.
+     *
+     * <p>The two compare only where they divide by the same count. {@code jdk.ThreadCPULoad}
+     * divides by the JVM's active processor count everywhere; {@code jdk.CPULoad}'s JVM figure
+     * does too on macOS, but on Linux it divides by the host's CPUs ({@code /proc/stat}), so a
+     * JVM held to fewer CPUs reads lower there than its threads with nothing wrong. The JDK 25
+     * sources show both; no other system was checked. So the warning is given only for a
+     * recording whose {@code jdk.OSInformation} names Darwin.
+     */
+    static String jvmCpuWarning(final List<Series> trends, final ThreadCpu.Result cpu, final String osVersion) {
+        if (!cpu.isKnown() || osVersion == null || !osVersion.contains("Darwin")) {
+            return null;
+        }
+        for (final Series s : trends) {
+            if (s.name().equals(HealthReport.JVM_CPU) && cpu.share() > s.mean() * 1.5 + 0.01) {
+                return String.format(Locale.ROOT, "JVM CPU (jdk.CPULoad) averages %s of the JVM's CPUs, below the %s its "
+                        + "own Java threads used (jdk.ThreadCPULoad): the JVM's figure is wrong in this recording; the "
+                        + "threads' figure is a floor, as it leaves out the threads that are not Java threads (the "
+                        + "collector's)", s.format(s.mean()), s.format(cpu.share()));
+            }
+        }
+        return null;
     }
 
     /**

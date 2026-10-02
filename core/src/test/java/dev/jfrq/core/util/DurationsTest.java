@@ -138,5 +138,9 @@ class DurationsTest {
         assertEquals("2.00 s", Durations.format(Duration.ofSeconds(2)));
         assertEquals("+3.412s", Durations.offset(3_412_000_000L));
         assertEquals("-0.500s", Durations.offset(-500_000_000L));
+        // The time of day in UTC beside the offset, so a log line beside the recording can be found.
+        assertEquals("23:37:15.286Z", Durations.clock(1_790_811_435_286_000_000L));
+        assertEquals("+13.682s 23:37:15.286Z", Durations.at(1_790_811_435_286_000_000L,
+                1_790_811_435_286_000_000L - 13_682_000_000L));
     }
 }

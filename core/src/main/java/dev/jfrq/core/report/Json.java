@@ -15,6 +15,7 @@ import dev.jfrq.core.alloc.AllocationReport;
 import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.coll.Nulls;
 import dev.jfrq.core.health.HealthReport;
+import dev.jfrq.core.health.ThreadCpu;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.locks.ContentionReport;
 import dev.jfrq.core.locks.Wait;
@@ -50,6 +51,53 @@ public final class Json {
 
     public static String health(final HealthReport r, final int top, final String version) {
         final Writer w = envelope("health", version, r.info());
+        healthFields(w, r, top);
+        return w.finish();
+    }
+
+    /**
+     * {@code health} over several recordings: the envelope without a recording, and a
+     * {@code reports} array of one {@code health} document each, minus the fields the envelope
+     * already gives, in the order given.
+     */
+    public static String healthCompared(final List<HealthReport> reports, final int top, final String version) {
+        final Writer w = new Writer();
+        w.object();
+        w.name("tool").value("jfrq");
+        w.name("version").value(version);
+        w.name("schema").value(SCHEMA);
+        w.name("command").value("health");
+        w.name("reports").array();
+        for (final HealthReport r : reports) {
+            w.object();
+            w.name("recording").object();
+            recordingFields(w, r.info());
+            w.end();
+            healthFields(w, r, top);
+            w.end();
+        }
+        w.end();
+        return w.finish();
+    }
+
+    private static void series(final Writer w, final HealthReport.Series s) {
+        w.object();
+        w.name("series").value(s.name());
+        w.name("unit").value(s.unit().name());
+        w.name("points").value(s.points());
+        w.name("start").value(s.start());
+        w.name("end").value(s.end());
+        w.name("min").value(s.min());
+        w.name("max").value(s.max());
+        w.name("mean").value(s.mean());
+        w.name("floorFirstThird").value(s.floorFirst());
+        w.name("floorLastThird").value(s.floorLast());
+        w.end();
+    }
+
+    /** Every field of a {@code health} document after its envelope. */
+    private static void healthFields(final Writer w, final HealthReport r, final int top) {
+        w.name("warnings").strings(r.warnings());
         w.name("findings").array();
         for (final HealthReport.Finding f : r.findings()) {
             w.object();
@@ -92,22 +140,23 @@ public final class Json {
         w.end();
         w.name("trends").array();
         for (final HealthReport.Series s : r.trends()) {
-            w.object();
-            w.name("series").value(s.name());
-            w.name("unit").value(s.unit().name());
-            w.name("points").value(s.points());
-            w.name("start").value(s.start());
-            w.name("end").value(s.end());
-            w.name("min").value(s.min());
-            w.name("max").value(s.max());
-            w.name("mean").value(s.mean());
-            w.name("floorFirstThird").value(s.floorFirst());
-            w.name("floorLastThird").value(s.floorLast());
-            w.end();
+            series(w, s);
         }
         w.end();
         w.name("threadsStarted").value(r.threads().started());
         w.name("threadsPeak").value(r.threads().peak());
+        final ThreadCpu.Result cpu = r.threadCpu();
+        w.name("threadCpu").object();
+        w.name("share").value(cpu.share());
+        w.name("readings").value(cpu.isKnown() ? cpu.readings() : Nulls.LONG_NULL);
+        w.name("readingsLeftOut").value(cpu.isKnown() ? cpu.leftOut() : Nulls.LONG_NULL);
+        w.end();
+        w.name("nativeMemory").array();
+        for (final HealthReport.Series s : top(r.nativeMemory(), top + 1)) {
+            series(w, s);
+        }
+        w.end();
+        w.name("nativeMemoryCategories").value(Math.max(0, r.nativeMemory().size() - 1));
         final HealthReport.Throwables t = r.throwables();
         w.name("throwables").object();
         w.name("created").value(t.created());
@@ -116,6 +165,7 @@ public final class Json {
         final boolean thrown = t.samples() > 0 || r.info().isEnabled("jdk.JavaExceptionThrow");
         w.name("events").value(thrown ? t.samples() : Nulls.LONG_NULL);
         w.name("throttle").value(t.throttle());
+        w.name("enableWith").value(r.isThrowEventOff() ? HealthReport.ENABLE_THROWS : null);
         w.name("errors").object();
         for (final Map.Entry<String, Long> e : t.errors().entrySet()) {
             w.name(e.getKey()).value(e.getValue());
@@ -151,12 +201,17 @@ public final class Json {
         }
         w.end();
         w.end();
-        return w.finish();
     }
 
     // ----------------------------------------------------------------------------- info
 
     public static String info(final RecordingInfo info, final ThreadCensus.Result census, final String version) {
+        return info(info, census, null, version);
+    }
+
+    /** {@code info}, with {@code starts} when {@code --thread} was given; {@code "starts": null} otherwise. */
+    public static String info(final RecordingInfo info, final ThreadCensus.Result census,
+                              final RecordingSummary.Starts starts, final String version) {
         final Writer w = envelope("info", version, info);
         w.name("threadsSeen").value(info.threads().size());
         w.name("threadsAlive").object();
@@ -196,11 +251,60 @@ public final class Json {
             w.name("started").value(intOrNull(f.started()));
             w.name("ended").value(intOrNull(f.ended()));
             w.name("aliveAtEnd").value(intOrNull(f.aliveAtEnd()));
+            w.name("attached").value(intOrNull(f.attached()));
+            w.name("cpuShare").value(f.cpu());
             w.name("example").value(f.example());
             w.end();
         }
         w.end();
+        final ThreadCpu.Result cpu = census.cpu();
+        w.name("threadCpu").object();
+        w.name("share").value(cpu.share());
+        w.name("readings").value(cpu.isKnown() ? cpu.readings() : Nulls.LONG_NULL);
+        w.name("readingsLeftOut").value(cpu.isKnown() ? cpu.leftOut() : Nulls.LONG_NULL);
+        w.end();
+        w.name("starts");
+        if (starts == null) {
+            w.nullValue();
+        } else {
+            starts(w, starts, info);
+        }
         return w.finish();
+    }
+
+    private static void starts(final Writer w, final RecordingSummary.Starts s, final RecordingInfo info) {
+        w.object();
+        w.name("glob").value(s.glob());
+        w.name("threads").value(s.threads());
+        w.name("starts").value(s.starts());
+        w.name("attached").value(s.attached());
+        w.name("first").value(s.starts() == 0 ? null : iso(s.firstNanos()));
+        w.name("firstOffsetNanos").value(s.starts() == 0 ? Nulls.LONG_NULL : s.firstNanos() - info.startNanos());
+        w.name("last").value(s.starts() == 0 ? null : iso(s.lastNanos()));
+        w.name("lastOffsetNanos").value(s.starts() == 0 ? Nulls.LONG_NULL : s.lastNanos() - info.startNanos());
+        w.name("peaks").array();
+        for (final RecordingSummary.Peak p : List.of(s.burst(), s.second())) {
+            w.object();
+            w.name("windowNanos").value(p.windowNanos());
+            w.name("count").value(p.count());
+            w.name("start").value(p.count() == 0 ? null : iso(p.startNanos()));
+            w.name("offsetNanos").value(p.count() == 0 ? Nulls.LONG_NULL : p.startNanos() - info.startNanos());
+            w.end();
+        }
+        w.end();
+        w.name("creatorsFound").value(s.creatorsFound());
+        w.name("creators").array();
+        for (final RecordingSummary.Creator c : s.creators()) {
+            w.object();
+            w.name("site").value(c.site());
+            w.name("starts").value(c.starts());
+            w.name("share").value(c.share());
+            w.name("parents").strings(names(c.parents()));
+            stack(w, c.stack());
+            w.end();
+        }
+        w.end();
+        w.end();
     }
 
     // --------------------------------------------------------------------------- stalls

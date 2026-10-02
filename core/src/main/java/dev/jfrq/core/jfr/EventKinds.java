@@ -55,7 +55,11 @@ public final class EventKinds {
     public static final int JAVA_EXCEPTION_THROW = EXCEPTION_STATISTICS + 1;
     public static final int JAVA_ERROR_THROW = JAVA_EXCEPTION_THROW + 1;
     public static final int EVACUATION_FAILED = JAVA_ERROR_THROW + 1;
-    public static final int COUNT = EVACUATION_FAILED + 1;
+    public static final int THREAD_CPU_LOAD = EVACUATION_FAILED + 1;
+    public static final int NATIVE_MEMORY_USAGE = THREAD_CPU_LOAD + 1;
+    public static final int NATIVE_MEMORY_USAGE_TOTAL = NATIVE_MEMORY_USAGE + 1;
+    public static final int OS_INFORMATION = NATIVE_MEMORY_USAGE_TOTAL + 1;
+    public static final int COUNT = OS_INFORMATION + 1;
 
     private static final String[] NAMES = new String[COUNT];
     private static final ObjLongHashMap<String> BY_NAME = new ObjLongHashMap<>(COUNT, UNKNOWN);
@@ -95,6 +99,10 @@ public final class EventKinds {
         NAMES[JAVA_EXCEPTION_THROW] = "jdk.JavaExceptionThrow";
         NAMES[JAVA_ERROR_THROW] = "jdk.JavaErrorThrow";
         NAMES[EVACUATION_FAILED] = "jdk.EvacuationFailed";
+        NAMES[THREAD_CPU_LOAD] = "jdk.ThreadCPULoad";
+        NAMES[NATIVE_MEMORY_USAGE] = "jdk.NativeMemoryUsage";
+        NAMES[NATIVE_MEMORY_USAGE_TOTAL] = "jdk.NativeMemoryUsageTotal";
+        NAMES[OS_INFORMATION] = "jdk.OSInformation";
         for (int kind = 0; kind < COUNT; kind++) {
             assert NAMES[kind] != null : kind;
             BY_NAME.put(NAMES[kind], kind);

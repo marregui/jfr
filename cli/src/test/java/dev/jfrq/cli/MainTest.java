@@ -39,6 +39,7 @@ import dev.jfrq.core.report.JsonParser;
 import dev.jfrq.core.stalls.Stall;
 import jdk.jfr.Recording;
 import jdk.jfr.consumer.RecordedEvent;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -481,6 +482,16 @@ class MainTest {
         return (Map<String, Object>) doc.get(name);
     }
 
+    @SuppressWarnings("unchecked")
+    private static List<Object> list(final Map<String, Object> doc, final String name) {
+        return (List<Object>) doc.get(name);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> object(final Object o) {
+        return (Map<String, Object>) o;
+    }
+
     @Test
     void alloc() throws Exception {
         final Path html = dir.resolve("alloc.html");
@@ -604,5 +615,206 @@ class MainTest {
         final Run defaults = run("stalls", recording.toString(), "--thread", "loop-cli");
         assertEquals(0, defaults.status());
         assertTrue(defaults.out().contains("Gap        50.0 ms"));
+    }
+
+    /** A recording of three threads one spawner starts, with their starts and CPU readings. */
+    static Path spawnRecording() throws Exception {
+        final Path file = dir.resolve("spawn.jfr");
+        if (Files.exists(file)) {
+            return file;
+        }
+        try (final Recording r = new Recording()) {
+            r.enable("jdk.ActiveSetting");
+            r.enable("jdk.ThreadStart").withStackTrace();
+            r.enable("jdk.ThreadEnd");
+            r.enable("jdk.ThreadCPULoad").withPeriod(Duration.ofMillis(50));
+            r.setDestination(file);
+            r.start();
+            final Thread spawner = new Thread(() -> {
+                for (int i = 0; i < 3; i++) {
+                    final Thread t = new Thread(() -> {
+                        final long end = System.nanoTime() + 150 * 1_000_000L;
+                        while (System.nanoTime() < end) {
+                            Thread.onSpinWait();
+                        }
+                    }, "spawned-" + i);
+                    t.start();
+                    try {
+                        t.join(Duration.ofSeconds(30));
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }, "spawner");
+            spawner.start();
+            spawner.join(Duration.ofSeconds(60));
+            assertFalse(spawner.isAlive(), "spawner never finished");
+            r.stop();
+        }
+        return file;
+    }
+
+    @Test
+    void infoThreadSaysHowTheMatchingThreadsWereStartedAndByWhom() throws Exception {
+        final Path file = spawnRecording();
+        final Path html = dir.resolve("spawn.html");
+        final Run r = run("info", file.toString(), "--thread", "spawned-*", "--top", "1", "--html", html.toString());
+        assertEquals(0, r.status(), r.err());
+        assertTrue(r.out().contains("\nSTARTS OF spawned-*\n"), r.out());
+        assertTrue(r.out().contains("Starts   3 starts of 3 threads, from +"), r.out());
+        assertTrue(r.out().contains("Busiest  "), r.out());
+        assertTrue(r.out().contains("CREATED BY ("), r.out());
+        assertTrue(r.out().contains("started from spawner"), r.out());
+        assertTrue(r.out().contains("MainTest.lambda$spawnRecording"), r.out());
+        // The families table has the threads' CPU, and says what the column leaves out.
+        assertTrue(r.out().contains("  CPU: the share of the JVM's CPUs"), r.out());
+        final String page = Files.readString(html);
+        assertTrue(page.contains("Starts of spawned-*"), page);
+        assertTrue(page.contains("started it"), page);
+
+        final Map<String, Object> doc = JsonParser.object(json("info", file.toString(), "--thread", "spawned-*"));
+        final Map<String, Object> starts = map(doc, "starts");
+        assertEquals(3L, starts.get("starts"));
+        assertEquals(0L, starts.get("attached"));
+        final List<Object> creators = list(starts, "creators");
+        assertEquals(1, creators.size());
+        assertEquals(List.of("spawner"), object(creators.getFirst()).get("parents"));
+        assertEquals(2, list(starts, "peaks").size());
+        assertTrue(map(doc, "threadCpu").containsKey("share"));
+        // Without --thread the field is there, and null.
+        assertTrue(JsonParser.object(json("info", file.toString())).containsKey("starts"));
+        assertEquals(null, JsonParser.object(json("info", file.toString())).get("starts"));
+
+        final Run none = run("info", file.toString(), "--thread", "nobody");
+        assertEquals(0, none.status());
+        assertTrue(none.out().contains("no jdk.ThreadStart of a thread matching nobody in the recording"), none.out());
+        assertEquals(2, run("info", file.toString(), "--thread", " ").status());
+        final Run topAlone = run("info", file.toString(), "--top", "3");
+        assertEquals(2, topAlone.status());
+        assertTrue(topAlone.err().contains("info takes --top only with --thread"), topAlone.err());
+    }
+
+    @Test
+    void healthOfSeveralRecordingsIsOneTableInTheOrderGiven() throws Exception {
+        final Path other = spawnRecording();
+        final Path html = dir.resolve("compared.html");
+        final Run r = run("health", recording.toString(), other.toString(), "--html", html.toString());
+        assertEquals(0, r.status(), r.err());
+        assertTrue(r.out().startsWith("HEALTH OF 2 RECORDINGS ("), r.out());
+        assertTrue(r.out().indexOf("  cli.jfr ") < r.out().indexOf("  spawn.jfr "), r.out());
+        for (final String column : List.of("Recording", "Heap after GC, floors", "Java threads CPU", "Throwables/s")) {
+            assertTrue(r.out().contains(column), column + " in " + r.out());
+        }
+        // Each recording's findings under its name: the fixture's System.gc() is one.
+        assertTrue(r.out().contains("\ncli.jfr\n"), r.out());
+        assertTrue(r.out().contains("caused by System.gc()"), r.out());
+        assertTrue(r.out().contains("\nspawn.jfr\n  no findings\n"), r.out());
+        assertTrue(Files.readString(html).contains("<title>jfrq health of 2 recordings"));
+
+        final Map<String, Object> doc = JsonParser.object(json("health", recording.toString(), other.toString(),
+                "--top", "1"));
+        assertEquals("health", doc.get("command"));
+        final List<Object> reports = list(doc, "reports");
+        assertEquals(2, reports.size());
+        assertEquals("cli.jfr", map(object(reports.get(0)), "recording").get("file"));
+        assertEquals("spawn.jfr", map(object(reports.get(1)), "recording").get("file"));
+        assertTrue(object(reports.get(0)).containsKey("findings"));
+
+        // The second recording is checked like the first, and protected like it.
+        assertEquals(1, run("health", recording.toString(), dir.resolve("gone.jfr").toString()).status());
+        final Run over = run("health", recording.toString(), other.toString(), "--html", other.toString());
+        assertEquals(2, over.status());
+        assertTrue(over.err().contains("is a recording being read"), over.err());
+        assertEquals(2, run("locks", recording.toString(), other.toString()).status());
+        final Run twice = run("health", recording.toString(), dir.resolve(".").resolve("cli.jfr").toString());
+        assertEquals(2, twice.status());
+        assertTrue(twice.err().contains("is given twice"), twice.err());
+        // Twice among the others, not only the first again.
+        final Run twiceAfter = run("health", recording.toString(), other.toString(), other.toString());
+        assertEquals(2, twiceAfter.status());
+        assertTrue(twiceAfter.err().contains(other + " is given twice"), twiceAfter.err());
+        // Under jfrq-live, a recording that is the dump's own target is that, whether or not it exists yet.
+        final Path t2 = dir.resolve("t2.jfr");
+        Files.writeString(t2, "an earlier dump");
+        final Path t3 = dir.resolve("t3-not-yet.jfr");
+        for (final Path target : List.of(t2, t3)) {
+            final Args.UsageException dumped = assertThrows(Args.UsageException.class,
+                    () -> Main.check(new String[] {"health", target.toString()}, target));
+            assertTrue(dumped.getMessage().contains("is the file the dump is written to"), dumped.getMessage());
+        }
+        Main.check(new String[] {"health", recording.toString()}, t2);
+    }
+
+    @Test
+    void aDirectoryOfChunksIsPointedAtJfrAssemble() throws Exception {
+        final Path repository = Files.createDirectories(dir.resolve("2026_10_01_12_00_00_4242"));
+        Files.copy(recording, repository.resolve("2026_10_01_12_00_00.jfr"));
+        final Run r = run("health", repository.toString());
+        assertEquals(2, r.status());
+        // One chunk: the one the JVM was writing, which nothing can read.
+        assertTrue(r.err().contains("its newest chunk is the one it was writing and cannot be read, and it holds no "
+                + "other"), r.err());
+        Files.copy(recording, repository.resolve("2026_10_01_12_05_00.jfr"));
+        final Run two = run("health", repository.toString());
+        assertTrue(two.err().contains("join the 2 chunks with jfr assemble " + repository + " out.jfr"), two.err());
+        // The repository a recording was told to use holds one such directory per JVM.
+        final Path configured = Files.createDirectories(dir.resolve("repo"));
+        final Path older = Files.createDirectories(configured.resolve("2026_10_01_11_00_00_4241"));
+        Files.copy(recording, older.resolve("2026_10_01_11_00_00.jfr"));
+        Files.createDirectories(configured.resolve("2026_10_01_12_00_00_4242"));
+        Files.copy(recording, configured.resolve("2026_10_01_12_00_00_4242").resolve("2026_10_01_12_00_00.jfr"));
+        final Run nested = run("info", configured.toString());
+        assertEquals(2, nested.status());
+        assertTrue(nested.err().contains("and it holds no other (it holds 2 JVMs' directories; that is the last by "
+                + "name)"), nested.err());
+        Files.copy(recording, older.resolve("2026_10_01_11_05_00.jfr"));
+        final Run olderOne = run("info", older.toString());
+        assertTrue(olderOne.err().contains("jfr assemble " + older + " out.jfr"), olderOne.err());
+        // A directory of finished recordings, or of run directories, is not one recording's chunks.
+        final Path runs = Files.createDirectories(dir.resolve("runs").resolve("135510"));
+        Files.copy(recording, runs.resolve("n2.jfr"));
+        for (final Path notChunks : List.of(runs, runs.getParent())) {
+            final Run r2 = run("health", notChunks.toString());
+            assertEquals(2, r2.status());
+            assertFalse(r2.err().contains("jfr assemble"), r2.err());
+        }
+        final Path empty = Files.createDirectories(dir.resolve("empty-dir"));
+        final Run plain = run("info", empty.toString());
+        assertEquals(2, plain.status());
+        assertFalse(plain.err().contains("jfr assemble"), plain.err());
+        // A file named like a JVM's directory is not one.
+        final Path named = Files.createDirectories(dir.resolve("named"));
+        Files.writeString(named.resolve("2026_10_01_12_00_00_4242"), "not a directory");
+        assertFalse(run("health", named.toString()).err().contains("jfr assemble"));
+    }
+
+    @Test
+    void anUnreadableDirectoryGetsThePlainMessage() throws Exception {
+        final Path locked = Files.createDirectories(dir.resolve("locked").resolve("2026_10_01_13_00_00_4243"));
+        Files.copy(recording, locked.resolve("2026_10_01_13_00_00.jfr"));
+        final Path parent = Files.createDirectories(dir.resolve("locked-parent"));
+        Assumptions.assumeTrue(locked.toFile().setReadable(false) && parent.toFile().setReadable(false),
+                "the file system cannot take read permission away");
+        try {
+            Assumptions.assumeFalse(Files.isReadable(locked), "running with permission to read everything");
+            for (final Path p : List.of(locked, parent)) {
+                final Run r = run("info", p.toString());
+                assertEquals(2, r.status());
+                assertTrue(r.err().contains(p + " is a directory, not a recording\n"), r.err());
+            }
+        } finally {
+            locked.toFile().setReadable(true);
+            parent.toFile().setReadable(true);
+        }
+    }
+
+    @Test
+    void readingSeveralRecordingsNamesEveryFileThatFailed() throws Exception {
+        final Path a = dir.resolve("junk-c.jfr");
+        Files.writeString(a, "definitely not a recording, but long enough to have a header");
+        final IOException failed = assertThrows(IOException.class, () -> Main.readAll(List.of(recording, a, a),
+                List.of(new Nothing(), new Nothing(), new Nothing())));
+        assertTrue(failed.getMessage().startsWith(a + ": "), failed.getMessage());
+        assertEquals(1, failed.getSuppressed().length);
     }
 }

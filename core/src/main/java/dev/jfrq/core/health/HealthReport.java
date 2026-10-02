@@ -3,6 +3,8 @@
 
 package dev.jfrq.core.health;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -34,9 +36,15 @@ import dev.jfrq.core.util.Durations;
  *                   recording has no events for is left out
  * @param threads    thread starts over the window
  * @param throwables the throwables created, by class and by site
+ * @param threadCpu  the CPU the Java threads used, from their own readings
+ * @param nativeMemory native memory NMT committed: the total first, then each category, largest at the
+ *                   end first; empty when the JVM ran without NMT
+ * @param warnings   what makes a figure here wrong, said once above everything else: a JVM CPU
+ *                   total below what its own threads used
  */
 public record HealthReport(RecordingInfo info, List<Finding> findings, Gc gc, List<Series> trends, Threads threads,
-                           Throwables throwables) {
+                           Throwables throwables, ThreadCpu.Result threadCpu, List<Series> nativeMemory,
+                           List<String> warnings) {
 
     /** G1's concurrent marking cycle, reported as a collection of its own. */
     public static final String CONCURRENT_CYCLE = "G1Old";
@@ -77,13 +85,144 @@ public record HealthReport(RecordingInfo info, List<Finding> findings, Gc gc, Li
     /** The column {@link #when} fills. */
     public static final String WHEN = "First, median, last";
 
-    /** What both renderers say when no throwable is in the file. */
+    /** What both renderers say when no throwable is in the file and the settings cannot say why. */
     public static final String NO_THROWS = "no jdk.JavaExceptionThrow events: none was created, or the event was off "
             + "(both JDK 25 settings files enable it)";
+
+    /** The setting that records every throwable created, as {@code -XX:StartFlightRecording} and {@code JFR.start} take it. */
+    public static final String ENABLE_THROWS = "jdk.JavaExceptionThrow#enabled=true";
+
+    /**
+     * What both renderers say when no throwable is in the file: when the settings show the
+     * event was off, the setting that turns it on, in the form both ways of starting a
+     * recording accept (the {@code profile} settings of JDK 21 leave it off; JDK 25's turn it on).
+     */
+    public String noThrows() {
+        if (!isThrowEventOff()) {
+            return NO_THROWS;
+        }
+        return "no jdk.JavaExceptionThrow events: the event was off in this recording. To record the throwables "
+                + "created, add " + ENABLE_THROWS + " to -XX:StartFlightRecording, or to jcmd <pid> JFR.start";
+    }
+
+    /** Whether the settings show {@code jdk.JavaExceptionThrow} was off, so that its absence says nothing. */
+    public boolean isThrowEventOff() {
+        return throwables.samples() == 0 && info.setting(THROW_EVENT, "enabled").isPresent() && !info.isEnabled(THROW_EVENT);
+    }
+
+    private static final String THROW_EVENT = "jdk.JavaExceptionThrow";
 
     public HealthReport {
         findings = List.copyOf(findings);
         trends = List.copyOf(trends);
+        nativeMemory = List.copyOf(nativeMemory);
+        warnings = List.copyOf(warnings);
+    }
+
+    /** What the comparison table is, in the words both renderers print above it. */
+    public static final String COMPARED_RULE = "one row each, in the order given; a range is the first value to "
+            + "the last, heap after GC the floor of the first third to the floor of the last; run health on one "
+            + "for its trends and throwables";
+
+    /** The columns of {@code health} over several recordings, both renderers': one row per recording. */
+    public static final List<String> COMPARED = List.of("Recording", "Start", "Span", "Findings", "GC paused",
+            "Longest pause", "Heap after GC, floors", "Resident set", "Live threads", "Threads started", "JVM CPU",
+            "Java threads CPU", "Throwables/s");
+
+    /**
+     * This report's row under {@link #COMPARED}, named {@code label}: the figures a reader puts
+     * side by side for the nodes of a cluster or a JVM's successive runs. A range is the first
+     * value and the last, {@code 155 MB → 2.23 GB}; heap after GC is the floor of the first third
+     * and of the last, the pair that says whether what was collected came back down; a dash is
+     * a figure the recording cannot give.
+     */
+    public Object[] comparedCells(final String label) {
+        final Series heap = series(HEAP_AFTER_GC);
+        final Series rss = series(RESIDENT_SET);
+        final Series live = series(LIVE_THREADS);
+        final Series cpu = series(JVM_CPU);
+        final double span = info.span().duration();
+        final double rate = throwables.rate();
+        return new Object[] {label, Instant.ofEpochSecond(0, info.startNanos()).truncatedTo(ChronoUnit.SECONDS),
+                Durations.format(info.span().duration()), findings.size(),
+                gc.count() == 0 || span <= 0 ? "—" : String.format(Locale.ROOT, "%.2f%%", 100.0 * gc.pauseNanos() / span),
+                gc.count() == 0 ? "—" : Durations.format(gc.longestPauseNanos()),
+                heap == null ? "—" : heap.format(heap.floorFirst()) + " → " + heap.format(heap.floorLast()),
+                range(rss), range(live), threads.started() == Nulls.LONG_NULL ? "—" : threads.started(),
+                cpu == null ? "—" : cpu.format(cpu.mean()),
+                threadCpu.isKnown() ? String.format(Locale.ROOT, "%.1f%%", threadCpu.share() * 100) : "—",
+                Double.isNaN(rate) ? "—" : String.format(Locale.ROOT, "%.1f", rate)};
+    }
+
+    /** The trend named {@code name}, or {@code null} when the recording has none. */
+    public Series series(final String name) {
+        for (final Series s : trends) {
+            if (s.name().equals(name)) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    private static String range(final Series s) {
+        return s == null ? "—" : s.format(s.start()) + " → " + s.format(s.end());
+    }
+
+    /** What the native memory table is, in the words both renderers print above it. */
+    public static final String NATIVE_MEMORY_RULE = "committed, by NMT category, from jdk.NativeMemoryUsage; the total "
+            + "first. Resident set minus committed heap is not native growth: the heap becomes resident as it is "
+            + "touched";
+
+    /** The trend whose floor says the heap kept what it collected. */
+    public static final String HEAP_AFTER_GC = "Heap after GC";
+    /** The trend of the JVM's own CPU figure, {@code jdk.CPULoad}'s user and system. */
+    public static final String JVM_CPU = "JVM CPU";
+    public static final String RESIDENT_SET = "Resident set";
+    public static final String LIVE_THREADS = "Live threads";
+
+    /**
+     * What both renderers say under the trends when the floor of heap after GC rose from the
+     * first third of the window to the last: that the recording can say how much stayed, not
+     * what holds it. {@code jdk.OldObjectSample} names where surviving objects were allocated,
+     * which on one recording pointed at the code creating messages and not at the queue that
+     * kept 510 000 of them; what holds an object is in a class histogram or a heap dump. Empty
+     * when the floor did not rise as the trends print it: a rise their three figures round
+     * away (748 MB to 748 MB, 204 KB on a flat heap) is not one to explain.
+     */
+    public String heapNote() {
+        final Series s = series(HEAP_AFTER_GC);
+        if (s == null || !(s.floorLast() > s.floorFirst()) || s.format(s.floorLast()).equals(s.format(s.floorFirst()))) {
+            return "";
+        }
+        return "The floor of heap after GC rose by " + Bytes.format((long) (s.floorLast() - s.floorFirst()))
+                + ". What holds it is not in a JFR recording (jdk.OldObjectSample names where objects were "
+                + "allocated, not what keeps them): jcmd <pid> GC.class_histogram, or a heap dump, says that.";
+    }
+
+    /**
+     * {@code Java threads used 8.6% of the JVM's CPUs (jdk.ThreadCPULoad, 9208 readings; ...)}, as
+     * both renderers print it under the trends; empty without readings.
+     */
+    public String threadCpuLine() {
+        if (!threadCpu.isKnown()) {
+            return "";
+        }
+        return String.format(Locale.ROOT, "Java threads used %.1f%% of the JVM's CPUs (jdk.ThreadCPULoad, %d reading%s%s)",
+                threadCpu.share() * 100, threadCpu.readings(), threadCpu.readings() == 1 ? "" : "s",
+                leftOut(threadCpu.leftOut()));
+    }
+
+    /**
+     * {@code ; 20 readings left out ...}: what the CPU figures could not count, as every
+     * renderer says it; empty when nothing was left out.
+     */
+    public static String leftOut(final long readings) {
+        return readings == 0 ? "" : String.format(Locale.ROOT, "; %d reading%s left out: of threads whose "
+                + "start is not in the file, read before any evaluation the file shows (alive before the recording) "
+                + "or in a recording without jdk.ThreadStart, which cover a stretch not in the file; and of threads "
+                + "native code attached, up to the first below one core, which hold CPU the native thread used "
+                + "before the attach", readings,
+                readings == 1 ? "" : "s");
     }
 
     /**

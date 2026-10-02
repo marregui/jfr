@@ -901,7 +901,7 @@ public final class StallAnalysis {
                 claimed = claim(claimed, sampledParts(tl, kept));
             } else {
                 if (runs != null) {
-                    giveWayTails(runs, kept);
+                    runs = giveWayTails(runs, kept);
                 }
                 stalls.addAll(kept);
                 claimed = claim(claimed, intervals(kept));
@@ -925,8 +925,14 @@ public final class StallAnalysis {
         return parts;
     }
 
-    /** Cuts each run's estimated tail where a later-tier stall starts inside it, so stalls stay disjoint. */
-    private static void giveWayTails(final ObjList<Stall> runs, final ObjList<Stall> kept) {
+    /**
+     * Cuts each run's estimated tail where a later-tier stall starts inside it, so stalls stay
+     * disjoint. A run that the cut leaves shorter than a gap is no longer a stall and is
+     * dropped: its samples alone did not span a gap, only the estimate after them did, and that
+     * estimate is the part that gave way.
+     */
+    private ObjList<Stall> giveWayTails(final ObjList<Stall> runs, final ObjList<Stall> kept) {
+        final ObjList<Stall> out = new ObjList<>(runs.size());
         for (int i = 0, n = runs.size(); i < n; i++) {
             final Stall run = runs.getQuick(i);
             long end = run.interval().end();
@@ -936,11 +942,14 @@ public final class StallAnalysis {
                     end = start;
                 }
             }
-            if (end != run.interval().end()) {
-                runs.setQuick(i, new Stall(run.thread(), new Interval(run.start(), end), run.verdict(), run.detail(),
+            if (end == run.interval().end()) {
+                out.add(run);
+            } else if (end - run.start() >= gap) {
+                out.add(new Stall(run.thread(), new Interval(run.start(), end), run.verdict(), run.detail(),
                         run.stack(), run.evidence(), run.samples()));
             }
         }
+        return out;
     }
 
     private static ObjList<Interval> intervals(final ObjList<Stall> stalls) {

@@ -684,7 +684,12 @@ in the file whole, and counted whole it puts more time in the window than the wi
 holds. The gap is then applied to the clipped length — 700 ms of blocking with 20 ms of
 it inside the window is not a 50 ms stall — and a warning says how many stalls were cut.
 A busy run's tail, which is an estimate (one sampler period past its last sample), stops
-at the end of the recording for the same reason. Silences need no clipping: they are
+at the end of the recording for the same reason. It also gives way to a silence stall that starts inside it, so
+the two stay disjoint, and a run the cut leaves shorter than a gap is dropped: only the
+estimate made it a gap long, and the estimate is the part that gave way. Before that rule a
+randomised test found a 43 ms run kept against a 46 ms gap; `stalls --thread '*'` on the 15
+recordings of two earlier soak rounds listed 26 such runs, in 7 of them, of 40.4 to 49.9 ms
+against a 50 ms gap, which the rule removes and nothing else. Silences need no clipping: they are
 bounded by two samples, or by a sample and an end of the thread's life inside the span,
 all inside it by construction.
 
@@ -1019,6 +1024,26 @@ parse within noise for both (58 pause events against 277 thousand parks).
 - `health`'s count of throwables created covers the stretch between the first and last
   `jdk.ExceptionStatistics` reading, once a second in both settings files; a burst in the
   last second of a recording is in the events but not the count.
+- A loop whose parks are mostly shorter than the `jdk.ThreadPark` threshold shows only the
+  parks above it, so its idle time can fall far short of a perch's half window. On a broker
+  of a three-node cluster, the JGroups bundler thread's recorded waits on its own condition
+  came to 3 102 parks and 1m18s, 7.0 % of an 18-minute window at a 10 ms threshold, below
+  the 9.8 % of the busiest real queue measured in section 3; no shape tells the two apart. A rule for several waiters on one condition, each parked over half the
+  window, was measured on fifteen recordings before it was written: every lock it would have
+  matched was a `ThreadPoolExecutor.getTask` pool the idle list already names, so it was not
+  added. `--idle` with the loop's frame, or a 1 ms threshold, is the remedy.
+- `jdk.ThreadCPULoad` covers Java threads only (the compilers' threads among them): the
+  collector's threads are in the JVM's total and in no family's `CPU`. A thread's reading at
+  the first evaluation in the file is left out unless its start is in the file (section 11),
+  so a recording shorter than two periods (20 s at the JDK settings' 10 s) shows little for
+  the threads that were already running; an attached thread's readings up to its first one
+  below one core are left out too (section 11), apart from the VM's own `main`'s; the line
+  under the table says how many readings were left out. An evaluation at which a single other thread had a reading is not
+  recognised as one, and a reading after it is weighed from the instant before, which
+  overstates it. Whether `jdk.ThreadStart` was on is the last chunk's setting: a recording
+  that turned it on partway through weighs a thread started before that, and with no start
+  in the file, as alive since the recording began; 100 threads of 50 ms each, 60 of them
+  before the switch, read 41.8 % for the 3.9 % they used.
 - Verdicts name threads by the name JFR recorded for them. On JDK 25 a thread renamed
   after it started keeps the name it started with in every event (verified on a 21-chunk
   recording of a thread renamed a thousand times), so a pool that renames its workers per
@@ -1106,3 +1131,144 @@ among them), the class's constructor, and sometimes a static factory of the clas
 site is the first frame outside the JDK below all that, and the stack shown starts there.
 Naming the innermost frame outside the JDK instead would put every subclass of an
 application's base exception on the base class's constructor.
+
+**What the threads used, by their own readings.** `jdk.ThreadCPULoad` gives each Java
+thread's user and system CPU as a share of the JVM's CPUs since the JVM last evaluated it,
+once a period (10 s in both JDK settings files) for every Java thread at one instant, and
+once more when a thread ends. The JVM's CPUs are its active processor count: the machine's,
+unless `-XX:ActiveProcessorCount`, a container limit or a CPU affinity mask sets fewer, and
+the share passes 100 % when the process uses more CPUs than it counts. `jdk.CPULoad`'s JVM
+figure divides by the same count on macOS, and by the host's CPUs on Linux (it reads
+`/proc/stat`); its machine figure is the host's on both (JDK 25 sources). On macOS the two
+compare: an Edge run with `-XX:ActiveProcessorCount=2` on a 12-core machine read 100.9 % for
+the JVM and 103.6 % for its threads. On Linux a JVM held to 2 of 12 CPUs reads a sixth of
+what its threads read with nothing wrong. A reading times the stretch it covers is the thread's CPU in it, so their sum
+over the window, divided by the window, is the Java threads' share of the JVM's CPUs; the
+rule and what it leaves out are section 11's. A process uses at least the CPU its threads
+use, so a `JVM CPU` trend (`jdk.CPULoad`) below it is wrong where the two divide by the same
+count, and `health` puts a warning above everything else when, on a recording whose
+`jdk.OSInformation` names Darwin, the threads' figure exceeds the JVM's by half again plus a
+point. Elsewhere it does not compare them: on Linux the counts differ whenever the JVM is
+held to fewer CPUs than the host, and no other system's source was checked.
+The margin covers two figures read over slightly different stretches; the case it exists
+for is far outside it. JDK 21.0.3 broker JVMs on macOS, in 67 recordings of one soak (64
+finished files and the readable chunks of the nodes it killed),
+averaged 0.02 % to 0.45 % in `jdk.CPULoad`, no reading above 1.02 %, while `ps` showed them
+at 150 % to 236 % of a core and their threads' readings summed to 0.8 % to 16.9 %; the
+warning fires on 65 of them. The Edge on JDK 25 in the same runs, 22 recordings, had its
+threads at 0.28 to 1.03 times the JVM's figure, 0.93 to 1.03 in 15 of them; the one above
+1 is within the margin, and the warning fires on none. The raw events hold the
+zeros, so the fault is in what the JVM wrote, not in reading it.
+
+**Native memory, when NMT was on.** A JVM started with `-XX:NativeMemoryTracking=summary`
+(or `detail`) writes `jdk.NativeMemoryUsage` per category and `jdk.NativeMemoryUsageTotal`
+once a second in both settings files; without NMT it writes none. `health` lists committed
+memory, the total first and then the categories largest at the end first, each with the
+same start, end, range and floors as a trend. Resident set minus committed is not native
+growth: committed heap becomes resident only as it is touched. On one broker the resident set
+rose from 155 MB to 2.23 GB in 19 minutes while NMT's committed total rose from 1.22 GB to
+1.86 GB, of which the heap was 1.07 GB throughout. Memory a library allocates with `malloc`
+(RocksDB's, there) is in no NMT category.
+
+**What holds the heap is not in the file.** When the floor of heap after GC rose from the
+first third to the last, `health` says so under the trends, with the size, and that a class
+histogram or a heap dump is where the answer is: `jdk.OldObjectSample` names where
+surviving objects were allocated, not what keeps them. On an Edge whose heap filled to its
+limit, the samples pointed at the code that creates messages; the class histogram showed
+510 000 of them held by a task queue. A rise the trends round away is not reported: on a
+steady Netty service the floors printed 748 MB and 748 MB, 204 KB apart, and a note under
+them that the floor rose read as a contradiction of the table.
+
+**A throwable event that was off is said, with the setting.** When the settings show
+`jdk.JavaExceptionThrow` disabled (JDK 21's `profile` leaves it off; JDK 25's turns it on),
+an empty table says nothing about the application, so `health` prints
+`jdk.JavaExceptionThrow#enabled=true`, which `-XX:StartFlightRecording` and
+`jcmd <pid> JFR.start` both take (verified on JDK 21.0.3).
+
+**Several recordings, one table.** `health a.jfr b.jfr ...` reads them concurrently, one
+virtual thread each as `alloc --baseline` does, and prints a row per recording in the order
+given: span, findings, GC time, the longest pause, heap after GC floors, resident set and
+live threads from first to last, threads started, the JVM's and the threads' CPU, and
+throwables per second, then each recording's warnings and findings under its name. A label
+is the file name, or as many directories above it as it takes to tell the recordings apart
+(`n1/run/node.jfr`), or its whole path when the same file is given twice, which is a usage
+error. The JSON has a `reports` array, each element a `health` document's `recording` and
+fields without the envelope (`tool`, `version`, `schema`, `command`), which the comparison
+document carries once. A killed JVM
+leaves its repository directory of chunks rather than a recording. Given that directory, or
+the `repository=` directory that holds one per JVM (named by start time and pid), `jfrq`
+points at `jfr assemble`; directories are recognised by the names the JVM gives chunks
+(`2026_10_01_13_37_14.jfr`), so a directory of finished recordings is not mistaken for one.
+The newest chunk is the one the JVM was writing: unfinished, and unreadable by the JDK's own
+`jfr summary` too (it reports the stream stuck in a locked state). `jfrq` refuses the
+assembled file for it and names the size to cut it to, which keeps the finished chunks: on a
+broker node killed at 14 minutes, three chunks assembled and cut read as 9m51s. A repository
+of one chunk holds nothing readable, and the hint says so.
+
+## 11. `info`: how threads were started, and what they used
+
+**Attached threads.** A `jdk.ThreadStart` names the new thread, the thread that started it
+(`parentThread`) and that thread's stack. A thread native code attaches to the JVM (JNI
+`AttachCurrentThread`, an FFM upcall from a thread the JVM did not make) has neither: on a
+broker whose RocksDB event listener attaches a thread for every callback, 792 of 794
+`Thread-N` starts in 18 minutes had no parent and no stack, and nothing else in the file set
+them apart from threads Java code started. The JVM's own threads have a parent and no stack
+(the compiler threads), and Java's have both, so both conditions are required. The `java`
+launcher attaches `main`, and `DestroyJavaVM` is attached the same way. A file without the
+`parentThread` field cannot tell, and says nothing.
+
+**CPU per family.** Each family's `CPU` is the sum of its threads' shares (section 10's rule).
+A reading covers the time since the JVM last evaluated the thread, which the event does not
+carry. The JVM keeps a thread's wall-clock time from its start and from each evaluation
+after it. The file shows an evaluation as an instant two or more readings share, or as the
+thread's own previous reading; a thread's last reading, at its end, has an instant of its
+own. So each reading is weighed by the time since the latest of: the start of its thread's
+life (a compiler thread the JVM stops and starts again keeps its name: `C2 CompilerThread1`
+started 43 times on one broker), the thread's previous reading, and the latest instant
+before it that two or more readings share. That is the time between evaluations as it ran:
+on one loaded broker 22 of 104 periods of 10 s ran over 10.5 s, up to 22.7 s. Weighing every
+reading as a period overstated the threads that end between periods: six threads that each
+ran a second read 5.6 % of a 12-core machine for 0.6 %. With every reading weighed by its own
+stretch, the Java threads of the JDK 25 Edge summed to 0.93 to 1.03 times the JVM's own
+figure in 15 of 22 recordings, and to less in the rest (section 10). One stretch the file cannot bound: an evaluation at which a single
+other thread had a reading is not seen, and a reading after it is weighed from the shared
+instant before, which overstates it.
+
+A thread whose start is in the file has its first reading counted from that start, unless
+native code attached the thread. Its CPU time then counts from the native thread's creation
+and its wall-clock time from the attach, so its readings also hold the CPU the native thread
+used before the attach, which the file does not have. The JVM caps a reading at one core and
+carries the rest into the thread's next reading (`jfrThreadCPULoadEvent.cpp`, JDK 25), so that
+CPU comes out at one core a reading until it is spent. A RocksDB callback thread reads a
+whole core, the cap, over the 0.003 ms to 2.9 ms since its attach (0.005 ms to 0.08 ms for 90 %
+of 777 on one broker); weighed from the periodic instant before them, those readings came to
+38.4 % on a broker whose threads used 8.0 %, and weighed from the attach to almost nothing,
+which looked right. It is not, for a thread that stays attached past an evaluation: when
+`main` returns, the `java` launcher attaches the same native thread again as `DestroyJavaVM`,
+which only waits. On a live JDK 21 broker its first reading, 2.544 % of 12 CPUs 10.03 s after
+the attach, was the 3.06 s of CPU `main` had used, counted a second time; on another broker
+the first reading was at the cap 0.85 s after the attach and the next, 2.11 %, carried the
+rest. So an attached life's readings are left out up to and including its first reading
+below the cap, and the readings after it count. The cap is one core of the JVM's CPUs,
+exactly 1/N, so it is the largest reading in the file when that is 1/N; when it is not, no
+reading was capped, nothing was carried, and only the first reading after an attach is left
+out. A thread spinning a whole core from its attach on reads just under the cap (an attached
+spinner on 12 CPUs read 8.296 % and 8.307 % in its first two readings), so its own CPU ends the
+leaving out within a reading or two. The VM's own `main` is
+the exception: HotSpot attaches the thread that creates the VM under that name, and its native
+thread ran only the launcher before, so its first reading is its own start-up work (3 s of
+spinning in `main` read 8.3 %, the JVM's own figure, where leaving it out read 0.0 %). A reading
+with no start of its thread, no earlier reading of it and no shared instant before it in the
+file covers a stretch the file does not hold: a thread alive before the recording, at the
+first evaluation, or any thread's first reading in a recording without `jdk.ThreadStart`. That
+reading is left out too, and the line under the table counts both kinds.
+
+**Starts of `--thread`.** `info --thread GLOB` counts the starts of the matching threads, the
+most in any 100 ms and in any second (a window is half open, so two starts one window apart
+are in different windows) and when, and groups them by creator: the innermost frame outside
+the JDK in the starting thread's stack, the rule `alloc --sites` uses, since `Thread.start`
+and a pool's `addWorker` are the same for every pool. The stack shown starts at that frame.
+On an Edge under overload, its cached pool's threads started 470 times in 100 ms, and 1 890 of
+1 891 starts came from `MoreExecutors$ListeningDecorator.execute`, a future listener dispatched to a pool that
+makes a thread whenever none is idle.
+

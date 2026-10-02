@@ -63,6 +63,11 @@ final class Text {
     }
 
     static String info(final RecordingInfo info, final ThreadCensus.Result census) {
+        return info(info, census, null);
+    }
+
+    /** {@code info}, with how the threads {@code --thread} names were started when it was given. */
+    static String info(final RecordingInfo info, final ThreadCensus.Result census, final RecordingSummary.Starts starts) {
         final StringBuilder sb = new StringBuilder(header(info));
         final String lives = RecordingSummary.lives(census);
         sb.append(String.format(Locale.ROOT, "%-10s %d seen in events%s\n", "Threads", info.threads().size(),
@@ -87,6 +92,31 @@ final class Text {
         }
         sb.append(t.render());
         sb.append(threadFamilies(info, census));
+        if (starts != null) {
+            sb.append(starts(starts, info));
+        }
+        return sb.toString();
+    }
+
+    /** {@code info --thread}: when the matching threads were started, at the busiest, and by which code. */
+    static String starts(final RecordingSummary.Starts s, final RecordingInfo info) {
+        final StringBuilder sb = new StringBuilder("\nSTARTS OF ").append(s.glob()).append('\n');
+        sb.append(String.format(Locale.ROOT, "  %-8s %s\n", "Starts", RecordingSummary.startsLine(s, info.startNanos())));
+        if (s.starts() == 0) {
+            return sb.toString();
+        }
+        sb.append(String.format(Locale.ROOT, "  %-8s %s\n", "Busiest", RecordingSummary.peaksLine(s, info.startNanos())));
+        sb.append(String.format(Locale.ROOT, "\n  CREATED BY (%s)%s\n", RecordingSummary.CREATOR_RULE,
+                s.creatorsFound() > s.creators().size() ? ", showing " + s.creators().size() + " of " + s.creatorsFound()
+                        : ""));
+        int n = 1;
+        for (final RecordingSummary.Creator c : s.creators()) {
+            sb.append(String.format(Locale.ROOT, "  %2d  %6d  %6s  %s\n", n++, c.starts(), pct(c.share()), c.site()));
+            if (!c.parents().isEmpty()) {
+                sb.append("        started from ").append(names(c.parents())).append('\n');
+            }
+            sb.append(c.stack().pretty("        ", STACK_FRAMES));
+        }
         return sb.toString();
     }
 
@@ -98,21 +128,26 @@ final class Text {
         }
         final StringBuilder sb = new StringBuilder("\nTHREADS (the names --thread matches)\n");
         final List<String> headers = RecordingSummary.familyHeaders(census, families);
-        final boolean virtual = RecordingSummary.hasVirtual(families);
         final int[] numeric = new int[headers.size() - 2];
         for (int i = 0; i < numeric.length; i++) {
             numeric[i] = i + 1;
         }
         final TextTable table = new TextTable(headers.toArray(new String[0])).numeric(numeric);
         for (final RecordingSummary.Family f : families) {
-            table.row(RecordingSummary.familyCells(f, census, virtual));
+            table.row(RecordingSummary.familyCells(f, census, families));
         }
         sb.append(table.render("  "));
+        for (final String note : RecordingSummary.familyNotes(census, families)) {
+            sb.append("  ").append(note).append('\n');
+        }
         return sb.toString();
     }
 
     static String health(final HealthReport r, final int top) {
         final StringBuilder sb = new StringBuilder(header(r.info()));
+        for (final String w : r.warnings()) {
+            sb.append("WARNING    ").append(w).append('\n');
+        }
         sb.append("\nFINDINGS (from the JVM's own events, the most serious first)\n");
         if (r.findings().isEmpty()) {
             sb.append("  none: ").append(HealthReport.NO_FINDINGS).append('\n');
@@ -161,7 +196,73 @@ final class Text {
         if (!threads.isEmpty()) {
             sb.append("  ").append(threads).append('\n');
         }
+        final String cpu = r.threadCpuLine();
+        if (!cpu.isEmpty()) {
+            sb.append("  ").append(cpu).append('\n');
+        }
+        final String heap = r.heapNote();
+        if (!heap.isEmpty()) {
+            sb.append("  ").append(heap).append('\n');
+        }
+        sb.append(nativeMemory(r, top));
         sb.append(throwables(r, top));
+        return sb.toString();
+    }
+
+    /**
+     * {@code health} over several recordings: one row each, then what each one's JVM reported.
+     * The trends and throwables of one recording are its own report; this is the comparison.
+     */
+    static String healthCompared(final List<HealthReport> reports) {
+        final List<Path> files = new ArrayList<>(reports.size());
+        for (final HealthReport r : reports) {
+            files.add(r.info().file());
+        }
+        final List<String> labels = RecordingSummary.labels(files);
+        final StringBuilder sb = new StringBuilder("HEALTH OF ").append(reports.size()).append(" RECORDINGS (")
+                .append(HealthReport.COMPARED_RULE).append(")\n");
+        final TextTable table = new TextTable(HealthReport.COMPARED.toArray(new String[0]))
+                .numeric(3, 4, 5, 9, 10, 11, 12);
+        for (int i = 0; i < reports.size(); i++) {
+            table.row(reports.get(i).comparedCells(labels.get(i)));
+        }
+        sb.append(table.render("  "));
+        for (int i = 0; i < reports.size(); i++) {
+            final HealthReport r = reports.get(i);
+            sb.append('\n').append(labels.get(i)).append('\n');
+            for (final String w : r.info().warnings()) {
+                sb.append("  WARNING  ").append(w).append('\n');
+            }
+            for (final String w : r.warnings()) {
+                sb.append("  WARNING  ").append(w).append('\n');
+            }
+            if (r.findings().isEmpty()) {
+                sb.append("  no findings\n");
+            }
+            int n = 1;
+            for (final HealthReport.Finding f : r.findings()) {
+                sb.append(String.format(Locale.ROOT, "  %2d  %s\n", n++, f.text()));
+            }
+        }
+        return sb.toString();
+    }
+
+    /** NMT's committed memory, the total and the largest categories; empty without NMT. */
+    private static String nativeMemory(final HealthReport r, final int top) {
+        if (r.nativeMemory().isEmpty()) {
+            return "";
+        }
+        final StringBuilder sb = new StringBuilder("\nNATIVE MEMORY (").append(HealthReport.NATIVE_MEMORY_RULE).append(")\n");
+        final TextTable table = new TextTable("Category", "Start", "End", "Min", "Max", "Floor, first third",
+                "Floor, last third").numeric(1, 2, 3, 4, 5, 6);
+        for (final HealthReport.Series s : r.nativeMemory().subList(0, Math.min(top + 1, r.nativeMemory().size()))) {
+            table.row(s.name(), s.format(s.start()), s.format(s.end()), s.format(s.min()), s.format(s.max()),
+                    s.format(s.floorFirst()), s.format(s.floorLast()));
+        }
+        sb.append(table.render("  "));
+        if (r.nativeMemory().size() > top + 1) {
+            sb.append("  ... ").append(r.nativeMemory().size() - top - 1).append(" more categories\n");
+        }
         return sb.toString();
     }
 
@@ -175,7 +276,7 @@ final class Text {
                 : String.format(Locale.ROOT, "%d in %s = %.1f/s, exactly (jdk.ExceptionStatistics, its first reading to its last)", t.created(),
                         Durations.format(t.createdNanos()), rate)));
         if (t.samples() == 0) {
-            sb.append("  ").append(HealthReport.NO_THROWS).append('\n');
+            sb.append("  ").append(r.noThrows()).append('\n');
         } else {
             sb.append(String.format(Locale.ROOT, "  %-8s %d jdk.JavaExceptionThrow%s\n", "Events", t.samples(),
                     t.throttle() == null ? ", every one" : " (throttled at " + t.throttle()
@@ -445,7 +546,7 @@ final class Text {
         if (!convoys.isEmpty()) {
             sb.append("\nCONVOYS (the holder was itself blocked)\n");
             for (final ContentionReport.Convoy c : convoys) {
-                sb.append("  ").append(Durations.offset(c.head().start() - r.info().startNanos())).append("  ");
+                sb.append("  ").append(Durations.at(c.head().start(), r.info().startNanos())).append("  ");
                 boolean first = true;
                 for (final Wait w : c.links()) {
                     if (!first) {
@@ -468,7 +569,7 @@ final class Text {
         int n = 1;
         for (final Wait w : r.longest(top)) {
             sb.append(String.format(Locale.ROOT, "  %2d  %s  %8s  %s waited for %s%s\n", n++,
-                    Durations.offset(w.start() - r.info().startNanos()), Durations.format(w.duration()),
+                    Durations.at(w.start(), r.info().startNanos()), Durations.format(w.duration()),
                     w.waiter().name(), w.lock().pretty(), w.owner() == null ? "" : " " + w.heldBy()));
             sb.append(w.stack().pretty("        ", STACK_FRAMES));
         }
@@ -660,8 +761,8 @@ final class Text {
         final List<Pause> pauses = r.pauses();
         for (int i = 0; i < Math.min(top, pauses.size()); i++) {
             final Pause p = pauses.get(i);
-            sb.append(String.format(Locale.ROOT, "  %s  %8s  %s: %s\n", Durations.offset(p.interval().start()
-                    - r.info().startNanos()), Durations.format(p.duration()), p.kind().label(), p.detail()));
+            sb.append(String.format(Locale.ROOT, "  %s  %8s  %s: %s\n", Durations.at(p.interval().start(),
+                    r.info().startNanos()), Durations.format(p.duration()), p.kind().label(), p.detail()));
         }
         if (pauses.size() > top) {
             sb.append("  ... ").append(pauses.size() - top).append(" more\n");
@@ -681,7 +782,7 @@ final class Text {
         for (final Stall s : stalls) {
             final int row = n++;
             sb.append(String.format(Locale.ROOT, "  %2d  %-22s %s  %8s  %-15s %s%s\n", row, s.thread().name(),
-                    Durations.offset(s.start() - r.info().startNanos()), Durations.format(s.duration()),
+                    Durations.at(s.start(), r.info().startNanos()), Durations.format(s.duration()),
                     s.verdict(), s.detail(), evidence(s)));
             final String stack = s.stack().pretty("        ", STACK_FRAMES);
             if (stack.isEmpty()) {
