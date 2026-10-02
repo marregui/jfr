@@ -1,4 +1,5 @@
 plugins {
+    checkstyle
     application
     jacoco
 }
@@ -76,5 +77,24 @@ tasks.jacocoTestCoverageVerification {
 }
 
 tasks.check {
+    dependsOn(tasks.javadoc)
     dependsOn(tasks.jacocoTestCoverageVerification)
+}
+
+// Javadoc is checked, not published: doclint over every member, private ones included, so a broken
+// {@link}, reference or tag fails the build. A member without a comment is not an error (G-10.4).
+tasks.javadoc {
+    (options as StandardJavadocDocletOptions).apply {
+        encoding = "UTF-8"
+        memberLevel = JavadocMemberLevel.PRIVATE
+        addBooleanOption("Xdoclint:all,-missing", true)
+        addBooleanOption("Werror", true)
+    }
+}
+
+// Unused imports, which -Xlint does not report: Checkstyle with that one rule, over every source set.
+checkstyle {
+    toolVersion = libs.versions.checkstyle.get()
+    configFile = rootProject.file("config/checkstyle/checkstyle.xml")
+    maxWarnings = 0
 }

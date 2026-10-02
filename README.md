@@ -81,7 +81,7 @@ one, instead of the parser hanging on it.
 ## Build and install
 
 ```
-./gradlew build          # compiles, runs 430+ tests, checks coverage
+./gradlew build          # compiles, runs 440+ tests, checks coverage, Javadoc (doclint) and imports
 ./gradlew installDist    # cli/build/install/jfrq/bin/jfrq, live/build/install/jfrq-live/bin/jfrq-live,
                          # netty-demo/build/install/netty-demo/bin/netty-demo
 ```
@@ -303,6 +303,9 @@ cli/          the jfrq command: argument parsing and text rendering
 live/         the jfrq-live command: dumps from a running JVM, the cursor, the span check
 netty-demo/   the demo service and its scenarios
 docs/         TUTORIAL.md, DESIGN.md, LIVE.md
+ci/           what CI runs beyond the build: the installed tools on a live JVM (Smoke.java,
+              Workload.java), and the per-module test report (TestReport.java)
+config/       the Checkstyle rule set (unused imports only)
 ```
 
 ## Status

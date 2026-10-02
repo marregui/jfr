@@ -11,7 +11,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Gradle (Kotlin DSL), four modules, no convention plugins: each `*/build.gradle.kts` is self-contained on purpose. JDK 25 everywhere: the module toolchains, the Gradle daemon (`gradle/gradle-daemon-jvm.properties`, so the launching `java` may be older), the `.sdkmanrc` for the shell that runs the installed launcher. No toolchain auto-download: a local Temurin 25 must be installed. `core` has no runtime dependency beyond `jdk.jfr`.
 
 ```
-./gradlew build                       # compile + tests + JaCoCo coverage gates (85 % core, 80 % cli and live)
+./gradlew build                       # compile + tests + JaCoCo coverage gates (85 % core, 80 % cli and live) + doclint over all Javadoc + Checkstyle UnusedImports
+java -cp core/build/libs/core-0.1.0-test-fixtures.jar ci/Smoke.java live   # after installDist: the launchers on a live JVM, as CI runs them (~50 s)
 ./gradlew installDist                 # cli/build/install/jfrq/bin/jfrq, live/build/install/jfrq-live/bin/jfrq-live, netty-demo/build/install/netty-demo/bin/netty-demo
 ./gradlew :core:test                  # one module
 ./gradlew :core:test --tests 'dev.jfrq.core.stalls.StallAnalysisTest'
