@@ -1,0 +1,25 @@
+name: assign
+
+# Every pull request is assigned to the repository's owner, who alone merges them.
+# pull_request_target runs this file as it is on master, with a token that can write, also for
+# pull requests from forks; it checks out nothing, so no code from the pull request runs.
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  assign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+        run: gh pr edit "$PR" --repo "$REPO" --add-assignee "$OWNER"

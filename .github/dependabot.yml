@@ -1,11 +1,13 @@
 # Weekly pull requests for the pinned actions (their commit SHAs) and the Gradle dependencies
-# (gradle/libs.versions.toml, the wrapper), one grouped pull request per ecosystem.
+# (gradle/libs.versions.toml, the wrapper), one grouped pull request per ecosystem, assigned to
+# the owner like every other pull request.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    assignees: [marregui]
     groups:
       actions:
         patterns: ["*"]
@@ -13,6 +15,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    assignees: [marregui]
     groups:
       gradle:
         patterns: ["*"]
