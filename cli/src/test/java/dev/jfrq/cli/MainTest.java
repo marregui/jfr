@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
+import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -181,6 +182,12 @@ class MainTest {
         final int status = new Main(new PrintStream(out, true, StandardCharsets.UTF_8),
                 new PrintStream(err, true, StandardCharsets.UTF_8)).run(argv);
         return new Run(status, out.toString(StandardCharsets.UTF_8), err.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void theStandardStreamsAreUtf8OnEveryPlatform() {
+        // Windows' default is a code page: JSON piped to a file must be UTF-8 all the same.
+        assertEquals(StandardCharsets.UTF_8, Main.utf8(FileDescriptor.out).charset());
     }
 
     @Test

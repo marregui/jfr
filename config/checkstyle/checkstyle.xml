@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+        "https://checkstyle.org/dtds/configuration_1_3.dtd">
+<!-- One rule, for what javac's -Xlint cannot see: an import nothing uses. A name used only in
+     Javadoc ({@link}) counts as used. The style rules live in CODING-GUIDELINES.md. -->
+<module name="Checker">
+    <property name="charset" value="UTF-8"/>
+    <property name="severity" value="error"/>
+    <module name="TreeWalker">
+        <module name="UnusedImports">
+            <property name="processJavadoc" value="true"/>
+        </module>
+    </module>
+</module>

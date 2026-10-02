@@ -1,4 +1,6 @@
 [versions]
+# Checkstyle runs one rule, UnusedImports (config/checkstyle/checkstyle.xml).
+checkstyle = "14.3.0"
 junit = "6.1.3"
 netty = "4.2.18.Final"
 

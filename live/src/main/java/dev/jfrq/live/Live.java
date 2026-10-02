@@ -4,6 +4,7 @@
 package dev.jfrq.live;
 
 import java.io.Closeable;
+import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.lang.reflect.UndeclaredThrowableException;
@@ -135,7 +136,13 @@ public final class Live {
     }
 
     static void main(final String[] argv) {
-        System.exit(new Live(System.out, System.err).run(argv));
+        // UTF-8 on every platform, for its own lines and for jfrq's answer below them (Main#utf8).
+        final PrintStream out = Main.utf8(FileDescriptor.out);
+        final PrintStream err = Main.utf8(FileDescriptor.err);
+        final int status = new Live(out, err).run(argv);
+        out.flush();
+        err.flush();
+        System.exit(status);
     }
 
     /**

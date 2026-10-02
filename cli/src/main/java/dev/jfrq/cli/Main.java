@@ -3,6 +3,8 @@
 
 package dev.jfrq.cli;
 
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.io.Serial;
@@ -193,7 +195,23 @@ public final class Main {
     }
 
     static void main(final String[] argv) {
-        System.exit(new Main(System.out, System.err).run(argv));
+        final PrintStream out = utf8(FileDescriptor.out);
+        final PrintStream err = utf8(FileDescriptor.err);
+        final int status = new Main(out, err).run(argv);
+        out.flush();
+        err.flush();
+        System.exit(status);
+    }
+
+    /**
+     * Standard output or error, written as UTF-8 on every platform. {@code System.out} writes
+     * the platform's encoding, which on Windows is a code page such as cp1252: {@code --json}
+     * piped to a file was then not UTF-8, as JSON must be, and a {@code →} became {@code ?}. A
+     * console set to another code page shows the non-ASCII characters ({@code —}, {@code →}) as
+     * other glyphs; {@code chcp 65001} sets a Windows console to UTF-8.
+     */
+    public static PrintStream utf8(final FileDescriptor fd) {
+        return new PrintStream(new FileOutputStream(fd), true, StandardCharsets.UTF_8);
     }
 
     /**

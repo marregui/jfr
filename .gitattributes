@@ -1,0 +1,6 @@
+# Every text file is stored and checked out with \n line ends, on Windows too; the Windows
+# start script is the exception cmd.exe needs.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.jar binary
+*.jfr binary
