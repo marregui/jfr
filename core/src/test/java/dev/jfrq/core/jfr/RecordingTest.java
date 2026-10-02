@@ -402,6 +402,12 @@ class RecordingTest {
                     lock.lock();
                     try {
                         held.countDown();
+                        // Held for 200 ms from when loop-io is queued on the lock, not from the
+                        // latch: a loaded runner can wake loop-io 140 ms late, which left a park
+                        // of 62 ms when the hold was counted from here.
+                        while (!lock.hasQueuedThreads()) {
+                            JfrFixtures.sleep(1);
+                        }
                         JfrFixtures.sleep(200);
                     } finally {
                         lock.unlock();
@@ -409,7 +415,6 @@ class RecordingTest {
                 }, "lock-holder");
                 holder.start();
                 JfrFixtures.await(held);
-                JfrFixtures.sleep(20);
                 lock.lock();
                 lock.unlock();
                 JfrFixtures.join(holder);
