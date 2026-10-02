@@ -30,7 +30,7 @@ with the file inserted for you, so `-- stalls --thread 'x'` becomes
 | Command | What it does | Cursor |
 |---|---|---|
 | `status` | The JVM's recordings (id, name, state, since when, bounds) and the cursor kept for it. | reads |
-| `start` | Starts a recording: the JDK `profile` settings with the thresholds [README.md](../README.md) recommends, or `--settings NAME` for another JDK profile treated the same way, or `--settings FILE.jfc` taken as it is. `--max-age`, `--max-size`, `--name`. | |
+| `start` | Starts a recording: the JDK `profile` settings with the thresholds [RECORDING.md](RECORDING.md) recommends, or `--settings NAME` for another JDK profile treated the same way, or `--settings FILE.jfc` taken as it is. `--max-age`, `--max-size`, `--name`. | |
 | `bound` | Sets `--max-age` and/or `--max-size` on the running recording; `0` removes a bound. | |
 | `full` | Dumps everything the recording holds. | set to the dump's end |
 | `delta` | Dumps what happened since the cursor. | moved to the dump's end |
@@ -189,7 +189,7 @@ reading the cursor to advancing it, and the second one says it is waiting.
   lookup on its side by naming its RMI endpoint `127.0.0.1`, but cannot do so for the
   target. The local connector talks over loopback whatever the name says.
 - **No running recording**: `full` and `delta` need one. `start` one, or run the JVM
-  with `-XX:StartFlightRecording` (the [README.md](../README.md) line is the right
+  with `-XX:StartFlightRecording` (the [RECORDING.md](RECORDING.md) line is the right
   settings; add `maxage=10m`).
 - **Several running recordings**: name one with `--recording`. A JVM often has a
   continuous recording next to an on-demand one; `status` lists them.

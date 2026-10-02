@@ -459,7 +459,7 @@ to a ticket.
 
 ## 9. Using it on your own service
 
-1. Record with the thresholds shown in the README, or at least with the `profile`
+1. Record with the thresholds shown in [RECORDING.md](RECORDING.md), or at least with the `profile`
    settings. With the `default` settings the monitor threshold is 20 ms and the sampler
    runs at 20 ms; both work, `jfrq` will just tell you what it could not see.
 2. Find the loop's thread names with `jfrq info`. Netty names them after the
@@ -501,7 +501,7 @@ to a ticket.
 A `throttled events` warning means the recording's settings capped socket or file
 events at so many per second across the JVM (the JDK's `profile` settings do, at 300);
 a long read that lost the draw is not in the file, and the silence it caused stays
-unexplained. Record with `throttle=off` on those events, as the README's line does.
+unexplained. Record with `throttle=off` on those events, as the line in [RECORDING.md](RECORDING.md) does.
 
 The `Unseen` line, right under `Threads`, is the verdict on the question before any
 answer to it: how short a stall that no event explains can be and still go unseen, and on

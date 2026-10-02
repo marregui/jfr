@@ -452,7 +452,7 @@ threshold is not in the file. `jfrq` warns when a threshold exceeds the gap. The
 `default` and `profile` settings (JDK 25) also *throttle* the socket and file events to
 100 or 300 per second across the JVM; a service doing thousands of short reads a second
 can then lose the one long read that mattered. `jfrq` warns when a throttle is in
-force, and the README's recording line switches it off.
+force, and the recording line in [RECORDING.md](RECORDING.md) switches it off.
 
 **Sample runs** (as good as the sampling density). Consecutive non-idle samples chain
 into a run when each is within `3 × max(configured period, measured Java cadence)`
@@ -1272,3 +1272,16 @@ On an Edge under overload, its cached pool's threads started 470 times in 100 ms
 1 891 starts came from `MoreExecutors$ListeningDecorator.execute`, a future listener dispatched to a pool that
 makes a thread whenever none is idle.
 
+
+## 12. Source layout
+
+```
+core/         the analyses, one pass over the file, no dependencies
+cli/          the jfrq command: argument parsing and text rendering
+live/         the jfrq-live command: dumps from a running JVM, the cursor, the span check
+netty-demo/   the demo service and its scenarios
+docs/         USAGE.md, RECORDING.md, TUTORIAL.md, DESIGN.md, LIVE.md, JSON.md
+ci/           what CI runs beyond the build: the installed tools on a live JVM (Smoke.java,
+              Workload.java), and the per-module test report (TestReport.java)
+config/       the Checkstyle rule set (unused imports only)
+```

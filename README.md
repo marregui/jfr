@@ -1,312 +1,110 @@
 # jfrq
 
-Ask a JFR recording one question and get the answer.
+**Ask a Java Flight Recorder recording one question. Get a verdict, with its evidence.**
+
+[![build](https://github.com/marregui/jfr/actions/workflows/build.yml/badge.svg)](https://github.com/marregui/jfr/actions/workflows/build.yml)
+[![license](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![JDK](https://img.shields.io/badge/JDK-25-orange)](docs/USAGE.md#1-requirements)
 
 ```
-$ jfrq stalls demo-lock.jfr --thread 'event-loop-*' --gap 50ms --top 3
-...
-STALLS >= 50.0 ms: 46 found, showing 3, longest first
-   1  event-loop-3-1         +0.498s 15:26:28.993Z    179 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@764b6e2f40 held by housekeeper (handed on through event-loop-3-2)
+$ jfrq locks demo-lock.jfr --top 3
+Recording  demo-lock.jfr  15.2 s  starting 2026-10-02T10:22:05.408601Z
+Thresholds JavaMonitorEnter 1.00 ms, ThreadPark 1.00 ms
+Blocked    7.14 s across 51 waits
+
+LOCKS BY TOTAL WAIT
+  Lock                                      Kind       Total  Waits      Max  Waiters                         Held by
+  dev.jfrq.demo.SessionRegistry@7818113800  monitor   7.09 s     46   170 ms  event-loop-3-2, event-loop-3-1  housekeeper
+  dev.jfrq.demo.Persistence@7818178000      monitor  46.7 ms      4  17.4 ms  housekeeper                     persistence-flusher
+  int[]@7818111500                          monitor  1.05 ms      1  1.05 ms  event-loop-3-1                  event-loop-3-2
+
+WHERE THEY WAITED (the longest wait for each lock above)
+  dev.jfrq.demo.SessionRegistry@7818113800  170 ms
         at dev.jfrq.demo.SessionRegistry.touch(SessionRegistry.java:29)
         at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:49)
-        ...
+  ...
 ```
 
-## What JFR is
+In a 15.2 s recording, the two event loops spent 7.09 s between them blocked on one
+monitor, held by the `housekeeper` thread, which was itself waiting on
+`persistence-flusher`. `--html` writes the same answer as a self-contained page; this is
+`stalls` on the same file:
 
-JFR is Java Flight Recorder: the JVM's built-in, low-overhead event recorder. It lives
-inside HotSpot (JEP 328, open-sourced in JDK 11) and writes a binary `.jfr` file of
-timestamped events, which is analysed offline.
+![The stalls HTML report: per-thread sampling cadence, stalls by verdict, and a timeline of 46 monitor stalls on two event loops](docs/images/stalls-report.png)
 
-What it records:
+## Why
 
-- Periodic samples: which threads are running and their stack traces
-  (`jdk.ExecutionSample`, `jdk.NativeMethodSample`). This is the profiling side.
-- Blocking events with exact durations: monitor contention (`jdk.JavaMonitorEnter`),
-  waits, parks, socket and file I/O, safepoints, GC pauses; each with the thread, the
-  stack and the object involved.
-- Allocation events (`jdk.ObjectAllocationSample`), GC and heap statistics, thread start
-  and end, compiler activity, OS and CPU load, JVM and GC configuration.
-- Anchor metadata: the settings and thresholds that were active (`jdk.ActiveSetting`),
-  so a reader knows what the recording could and could not see.
+JDK Mission Control shows the data; `jfr view` prints aggregate tables. Neither answers:
 
-How it works:
-
-- Per-thread buffers in the JVM, flushed to disk in chunks. Overhead is typically 1-2 %
-  because the JVM emits the events itself; no agent instruments bytecode.
-- Threshold-based: durations below a per-event threshold (20 ms for monitor enter in the
-  default profile) are dropped, so the absence of an event is not the absence of the
-  behaviour.
-- Started with `-XX:StartFlightRecording`, `jcmd <pid> JFR.start`, or the `jdk.jfr` API
-  in-process (which is what `netty-demo` does).
-- Read with `jfr print` and `jfr summary`, JDK Mission Control, or programmatically via
-  `jdk.jfr.consumer.RecordingFile` and `EventStream`; the latter is what `jfrq` uses.
-
-`jfrq` exists because raw JFR output is a firehose of events with no verdict. It streams
-the file once and turns those events into one answer per question.
-
-JDK Mission Control shows you the data; `jfr view` shows you aggregate tables. Neither
-tells you *why the event loop stopped at 14:03:07*, *who held the lock that thread was
-waiting for*, or *what changed between the recording before the fix and the one after*.
-`jfrq` answers those three questions, and one that comes before them: *what does the
-JVM already report about itself that points at trouble ahead*.
-
-| Command | Question it answers |
+| Question | Command |
 |---|---|
-| `jfrq stalls` | When did a thread not return to its idle point, and why: a lock (and who held it), a blocking socket or file call, a sleep, a GC pause, or CPU-bound code? |
-| `jfrq locks` | Which locks did threads wait for, how long, who held them, and which holders were themselves blocked (convoys)? |
-| `jfrq alloc` | Which threads, classes and sites allocate, in bytes per second; and with `--baseline`, what changed between two recordings? |
-| `jfrq health` | What the JVM reported about itself: an `OutOfMemoryError` for direct memory, a failed evacuation, a full collection, GC time or pauses over its own goals, a collection forced by a humongous allocation, metaspace or `System.gc()`; how heap after GC, resident memory, threads and CPU moved, and native memory by category under NMT; and which throwables were created, by class and by site. Given several recordings, one table comparing them. |
-| `jfrq info` | What is in the file: span, threads (with their CPU, and which ones native code attached), event counts, and the thresholds and periods that were active when it was made; with `--thread`, how those threads were started and by which code. |
+| Why did the event loop stop at 14:03:07: a lock, a blocking socket or file call, a sleep, a GC pause, or CPU-bound code? | `jfrq stalls` |
+| Which locks did threads wait for, who held them, and which holders were themselves blocked (convoys)? | `jfrq locks` |
+| Which threads, classes and sites allocate, in bytes per second, and what changed since the recording before the fix? | `jfrq alloc` |
+| What did the JVM report about itself that points at trouble: failed evacuations, full GCs, heap floors that climb, throwables by site? | `jfrq health` |
+| What is in the file: span, threads and their CPU, event counts, and the thresholds that limit what it can show? | `jfrq info` |
 
-Common options: `--top N` (rows per table, default 15; for `info`, the creators `--thread` lists),
-`--html FILE`, `--json`, `--timing`, `--version`, `--help`.
+- **One pass over the file.** A 40 MB recording is answered in about 0.25 s.
+- **No dependencies** beyond the JDK.
+- **Text, HTML or JSON.** Text for a terminal or a ticket, `--html` for a self-contained
+  report, `--json` for a program or an agent ([schema](docs/JSON.md)).
 
-Every command prints plain text for a terminal or a ticket, and writes a self-contained
-HTML report with `--html`. A 40 MB recording is answered in about a quarter of a second;
-`--timing` shows where the time went ([docs/DESIGN.md](docs/DESIGN.md), section 8).
+## It does not guess
 
-What it will not do is guess. Every number that rests on sampling says so and says how
-far the sampling can be trusted; the allocation estimate is printed next to the JVM's own
-counters; a truncated file is read as far as it goes and every report says where it
-stops; a file still being written is refused with the command that produces a readable
-one, instead of the parser hanging on it.
+- A number that rests on sampling says so, and says how far the sampling can be trusted.
+  `stalls` opens by stating how long a stall no event explains can be and still go unseen.
+- The allocation estimate is printed next to the JVM's own counters.
+- Every stall names its evidence: a blocking event (exact), a run of samples, or a
+  silence explained by what covered it.
+- A truncated file is read as far as it goes, and the report says where it stops. A file
+  still being written is refused, with the command that makes it readable.
 
-## Requirements
+## Quick start
 
-- JDK 25 to build and run (`jdk.jfr` is part of the JDK; the tool has no other dependency).
-- Recordings from any JDK 17+ JVM. Allocation analysis prefers `jdk.ObjectAllocationSample`
-  (JDK 16+) and falls back to the TLAB events on older files.
-
-## Build and install
+Build (JDK 25):
 
 ```
-./gradlew build          # compiles, runs 440+ tests, checks coverage, Javadoc (doclint) and imports
-./gradlew installDist    # cli/build/install/jfrq/bin/jfrq, live/build/install/jfrq-live/bin/jfrq-live,
-                         # netty-demo/build/install/netty-demo/bin/netty-demo
+git clone https://github.com/marregui/jfr.git && cd jfr
+./gradlew installDist
+export PATH="$PWD/cli/build/install/jfrq/bin:$PWD/live/build/install/jfrq-live/bin:$PWD/netty-demo/build/install/netty-demo/bin:$PATH"
 ```
 
-Put `cli/build/install/jfrq/bin` (and `live/build/install/jfrq-live/bin`) on your `PATH`,
-or call the scripts by path.
-The launcher runs the JVM in `JAVA_HOME` when that is set and a `java` from the
-`PATH` only when it is not; either way it must be JDK 25, so an older `JAVA_HOME`
-is not rescued by a newer `java` on the `PATH`. The first run
-writes an AppCDS archive to `lib/jfrq.jsa` next to the jars, which makes every later run
-start in about a tenth of a second; if the directory is not writable nothing is written
-and start-up is merely ordinary. JVM options go in `JFRQ_OPTS` (`jfrq`) or
-`JFRQ_LIVE_OPTS` (`jfrq-live`): `JFRQ_OPTS=-Xmx4g` for a very large recording, or
-`JFRQ_OPTS="-XX:StartFlightRecording=filename=self.jfr"` to record jfrq itself.
-
-## Usage
-
-```
-jfrq info   recording.jfr [--thread GLOB [--top N]] [--html out.html] [--json]
-jfrq health recording.jfr [more.jfr ...] [--top N] [--html out.html] [--json]
-jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html] [--json]
-jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html] [--json]
-jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html] [--json]
-```
-
-`--json` prints the answer as one JSON document instead of text, for a program or an
-agent to read: stable field names with the unit in the name, instants in UTC, `null` where
-the recording cannot say, and a `schema` number that changes only when a field does.
-[docs/JSON.md](docs/JSON.md) lists every field. Every time `jfrq` and `jfrq-live` print is
-UTC and says so: a wait, a convoy, a stall or a pause is printed as its offset from the
-recording's start and its time of day, `+13.682s 11:37:15.286Z`, so the line in a log written
-beside the recording can be found without converting by hand.
-
-`GLOB` is a comma-separated list of shell globs on thread names (`*`, `?`, `[0-3]`,
-`[!0-9]`; a backslash makes the next character literal): `'event-loop-*'`,
-`'nioEventLoopGroup-*,worker-?'`. `jfrq info` lists them in a `THREADS` table folded into
-families, one row per family with its count, how many some event names, and an example
-(`load-client-N*`, `8`, `8`, `load-client-1`). When the recording holds the JVM's thread
-census (`jdk.ThreadAllocationStatistics`) and `jdk.ThreadStart`/`jdk.ThreadEnd`, as both JDK
-profiles do, each family also says how many threads were alive when the recording began,
-started, ended, and were alive when it ended: a leak is an `At end` that grows window after
-window, which the count of threads seen in a window cannot show. When the recording has
-`jdk.ThreadCPULoad` (both JDK profiles, every 10 s) each family has its `CPU`, its share of
-the JVM's CPUs (the machine's, unless `-XX:ActiveProcessorCount`, a container limit or a CPU
-affinity mask sets fewer) across the window. Each reading is weighed by the stretch it covers, since the
-thread's last evaluation or its start; a reading at the first evaluation of a thread alive
-before the recording covers a stretch the file does not hold, and the readings of a thread
-native code attached hold CPU the native thread used before the attach until one comes in
-below one core, so both are left out, and the line under the table says how many were. A recording shorter than two periods shows little for the threads
-that were already running.
-`Attached` counts the threads native code attached to the JVM (JNI `AttachCurrentThread`, an
-upcall): their starts carry no stack and no parent thread, and a library that attaches for
-every callback starts one each time, which by name looks like any `Thread-N`. `info --thread
-GLOB` adds how the matching threads were started: how many, the most in 100 ms and in a
-second and when, and the code that started them (the innermost frame outside the JDK in the
-starting thread's stack, with the threads that ran it). Durations take a unit (`50ms`, `1.5s`, `2m`); options belong to their
-command, so a `stalls` option on `locks` is an error rather than silently ignored, and so
-is an option given twice. A wait or a block that began before the recording, or outlived
-it, is counted only for the part inside it, and that is the part `--min` and `--gap` are
-measured against.
-
-`alloc --sites` ranks one row per allocating method — the innermost frame outside the JDK —
-so every path that reaches it is summed instead of ranked separately; the row says how many
-stacks it stands for and how many samples are behind all of them. When that method is in a
-library you cannot change, `--app com.example` moves the attribution to your own innermost
-frame; the report lists the packages it saw, so the value to pass is in front of you.
-`--app` takes a comma-separated list of class or package prefixes, each matching at a `.`
-or `$` boundary: `io.netty` matches `io.netty.buffer` and `io.nett` matches neither, and
-`com.example.Handler` matches its nested classes and lambdas (`com.example.Handler$Inner`)
-but not `com.example.HandlerFactory`.
-`locks --by-site` does the same for lock instances: fifteen queues of the same kind become
-one row of fifteen instances, ranked across all of them.
-
-`health` reads what the other commands leave: the collector's own events, the JVM's
-once-a-second statistics and the throwables it created. A finding is only something the
-JVM itself reported, each with when it happened (`5 collections caused by Metadata GC
-Threshold, from +0.487s to +1.152s` is a JVM starting; the same five spread over an hour
-are classes loaded faster than they are unloaded). Trends are numbers without a verdict: each series has its start, end, range
-and the floor of its first and last thirds, so heap after GC whose floor climbs is growth
-that did not come back down, and whether that matters is yours to say. Throwables are
-counted exactly from `jdk.ExceptionStatistics` and ranked from `jdk.JavaExceptionThrow`,
-which fires in the constructor: a site is the code that made the throwable, past its own
-constructors and factory. JFR records an `OutOfMemoryError` only when Java code
-constructs one (direct buffer memory): the JVM makes its own, for the heap or metaspace,
-and every `StackOverflowError`, without running a constructor, so they never reach the
-file. A failed evacuation is the step before a heap one. A few `java.lang.NoSuchMethodError`s whose message
-names `java.lang.invoke.Invokers$Holder` are the JDK linking method handles, thrown and
-caught inside the JDK; they are not a fault.
-
-When a recording says `jdk.JavaExceptionThrow` was off (JDK 21's `profile` leaves it off),
-`health` says so and prints the setting that turns it on, `jdk.JavaExceptionThrow#enabled=true`,
-which `-XX:StartFlightRecording` and `jcmd <pid> JFR.start` both take. Under the trends,
-`health` adds the CPU the Java threads used by their own readings, and on macOS warns at the
-top when the JVM's own figure (`jdk.CPULoad`) is below it: a process uses at least what its
-threads do, and on one JDK 21.0.3 macOS soak the JVM reported 0.2 % while its threads
-reported 8.0 %. (On Linux the JVM's figure divides by the host's CPUs, so the two do not
-compare.) When the floor of heap after GC rose, by more than its printed figures round away, it says the recording cannot tell what
-holds the heap (`jdk.OldObjectSample` names where objects were allocated), and that a class
-histogram or a heap dump can. A JVM run with `-XX:NativeMemoryTracking=summary` writes NMT's
-committed memory by category, which `health` lists with the same floors; resident set minus
-committed heap is not native growth, because the heap becomes resident as it is touched.
-
-`jfrq health a.jfr b.jfr c.jfr` reads the recordings concurrently and answers with one table,
-a row per recording in the order given (the nodes of a cluster, or a JVM's successive
-runs): span, findings, GC time, heap after GC floors, resident set, live threads, threads
-started, the JVM's and the threads' CPU, and throwables per second, then each recording's
-findings under its name. A JVM that was killed leaves its repository directory of chunk
-files rather than a recording, and `jfrq` given that directory (or the `repository=` one
-above it) says what to do: `jfr assemble DIR out.jfr` joins the chunks, the last of which,
-the one the JVM was writing, is unfinished and unreadable by any reader; `jfrq` then names the
-size to cut `out.jfr` to so it holds only the finished ones. A repository of a single chunk
-holds nothing readable.
-
-A thread parked on its own empty queue is not contention and is not a stall: `locks` lists
-those apart and `stalls` leaves them out. They are recognised by the frame of a pool
-waiting for work (`locks --idle` replaces the list; in `stalls`, a sleep, wait or park
-under a frame `--idle` names is idle too) and, for a worker loop no list knows about,
-by shape — one thread, no holder, most of the recording parked there. A lock the
-collector moved has several addresses, so its pieces can each fall short of that; `locks`
-lists them under `MOVED BY THE COLLECTOR`, still counted, and `stalls` names them in a
-warning, because only timing says the pieces are one object. `stalls` also leaves
-out a timer loop: a thread whose waits from one place ran out the timeout it chose, at least
-twice and for more than half its life (a `java.util.Timer`, a cleaner, a periodic poll); the
-recording says which waits timed out, so no list is needed. One wait that timed out is
-still a stall, and a warning names the five threads with the most time set aside and counts the rest. `--idle none` turns all of this
-off, and in `stalls` it also empties the list of idle frames, so no sample is idle: a
-loop sitting in its selector counts as working.
-
-Every stall says how it was found: nothing after the detail means a blocking event,
-exact to its timestamps; `[samples]` means a run of sampler observations; `[silence]`
-means an absence of samples explained by what covered it.
-
-Exit status is 0 on success; 1 when the recording cannot be read (missing, not a
-recording, truncated inside its first chunk, still being written), the HTML report cannot
-be written, or standard output cannot be written; 2 on a usage error. Every option is
-checked before the recording is opened, so these are usage errors too: a directory given
-as the recording, and an `--html` target that is a directory, sits in a directory that is
-missing or not writable, or is one of the recordings being read.
-
-## Recording for jfrq
-
-The JDK's `profile` settings are a good start. Lower the blocking thresholds so short
-waits are in the file, and raise the allocation sample rate:
-
-```
-java -XX:StartFlightRecording=filename=app.jfr,settings=profile,\
-jdk.JavaMonitorEnter#threshold=1ms,jdk.ThreadPark#threshold=1ms,jdk.ThreadSleep#threshold=1ms,\
-jdk.SocketRead#threshold=1ms,jdk.SocketWrite#threshold=1ms,jdk.FileRead#threshold=1ms,jdk.FileWrite#threshold=1ms,\
-jdk.SocketRead#throttle=off,jdk.SocketWrite#throttle=off,jdk.FileRead#throttle=off,jdk.FileWrite#throttle=off,\
-jdk.ExecutionSample#period=10ms,jdk.NativeMethodSample#period=10ms,\
-jdk.ObjectAllocationSample#throttle=1000/s \
--jar app.jar
-```
-
-`jfrq stalls` and `jfrq locks` print the thresholds that were active, because a 20 ms
-monitor threshold means no wait shorter than 20 ms exists in the file, whatever the
-application did. The `profile` settings also throttle socket and file events to 300 per
-second across the JVM (JDK 25); `jfrq stalls` warns when a throttle is in force, and the
-line above switches it off so no blocking call goes unrecorded.
-
-`jfrq health` needs nothing beyond either JDK 25 settings file: both record the
-collector's events, the once-a-second statistics, `jdk.ThreadCPULoad` and `jdk.JavaExceptionThrow`, throttled
-to 100 per second in `default` and 300 in `profile`. Under the throttle the class and site
-shares are of a sample; the total created is exact either way.
-
-## On a running JVM
-
-A recording the JVM is still writing cannot be read in place (its last chunk is open), so
-`jfrq-live` takes a dump of a window and asks the question of that: `full` for everything
-the recording holds, `delta` for what happened since the previous dump, `again` for the
-previous window once more. A cursor per JVM remembers where the last dump stopped, every
-dump prints its real span next to the window asked for, and `start`/`bound` put a
-`--max-age`/`--max-size` on the recording so it does not grow without end. The question
-after `--` is checked before anything is dumped, and a dump is readable by its owner only
-(mode 0600), as a recording can hold command lines, environment variables and system
-properties.
-
-`status` shows the JVM's recordings and the cursor, and `stop` stops and closes the
-recording.
-
-```
-jfrq-live 4242 start --max-age 10m
-jfrq-live 4242 full  -- stalls --thread 'event-loop-*'
-jfrq-live 4242 delta -- stalls --thread 'event-loop-*'
-jfrq-live 4242 delta --out t2.jfr -- alloc --baseline t1.jfr
-```
-
-[docs/LIVE.md](docs/LIVE.md) explains how a dump is taken, why a delta never counts an
-event twice, and what the bounds do.
-
-## Try it on the demo
-
-The `netty-demo` module is a small Netty service with four deliberately injected
-event-loop pathologies, recorded with JFR. [docs/TUTORIAL.md](docs/TUTORIAL.md) walks
-through every one of them and shows what `jfrq` says about each.
+Try it on the bundled Netty demo, which injects a lock convoy into its event loops:
 
 ```
 netty-demo --scenario lock --duration 15s --out demo-lock.jfr
 jfrq stalls demo-lock.jfr --thread 'event-loop-*'
-jfrq locks  demo-lock.jfr
+jfrq locks  demo-lock.jfr --html locks.html
 ```
 
-## How it works, and what it cannot see
-
-[docs/DESIGN.md](docs/DESIGN.md) explains the detectors, the JFR events each one reads,
-and the limits that follow from how the JFR sampler works. The short version: anything a
-blocking event or a pause event explains is exact; anything that rests on samples alone
-is only as good as the sampling cadence. `jfrq` measures that cadence per thread, and
-`stalls` opens with an `Unseen` line when it is too coarse: first, in one line, how short
-a stall no event explains can be and still go unseen on the threads you asked about; then,
-under it, whether the sampler's pace or the thread's own absences are why, and the sampling
-period that would help.
-
-## Layout
+Then on your own service. Recordings from any JDK 17+ JVM are read; the
+[recommended settings](docs/RECORDING.md#2-the-recommended-settings) also record waits
+down to 1 ms, where the JDK's own settings stop at 10 ms (`profile`) or 20 ms (`default`):
 
 ```
-core/         the analyses, one pass over the file, no dependencies
-cli/          the jfrq command: argument parsing and text rendering
-live/         the jfrq-live command: dumps from a running JVM, the cursor, the span check
-netty-demo/   the demo service and its scenarios
-docs/         TUTORIAL.md, DESIGN.md, LIVE.md
-ci/           what CI runs beyond the build: the installed tools on a live JVM (Smoke.java,
-              Workload.java), and the per-module test report (TestReport.java)
-config/       the Checkstyle rule set (unused imports only)
+java -XX:StartFlightRecording=filename=app.jfr,settings=profile -jar app.jar
+jfrq info   app.jfr                          # thread names, and what the recording can show
+jfrq stalls app.jfr --thread 'my-loop-*'
 ```
+
+A JVM that is still running has no finished file. `jfrq-live` dumps a window from it and
+asks the question of that, and a `delta` holds only what happened since the last dump:
+
+```
+jfrq-live 4242 start --max-age 10m
+jfrq-live 4242 delta -- stalls --thread 'event-loop-*'
+```
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [TUTORIAL.md](docs/TUTORIAL.md) | Four injected event-loop pathologies, recorded and diagnosed step by step (about fifteen minutes) |
+| [USAGE.md](docs/USAGE.md) | Every command and option, output rules, exit status |
+| [RECORDING.md](docs/RECORDING.md) | What JFR records, and the settings that give `jfrq` a complete answer |
+| [LIVE.md](docs/LIVE.md) | `jfrq-live`: dumps, the cursor, deltas, bounds |
+| [JSON.md](docs/JSON.md) | The `--json` schema |
+| [DESIGN.md](docs/DESIGN.md) | How each detector works, the JFR events it reads, and what it cannot see |
 
 ## Status
 

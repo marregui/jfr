@@ -198,7 +198,8 @@ public final class Html {
         }
         final StringBuilder legend = new StringBuilder("<p class=\"legend\">");
         for (final Stall.Verdict v : Stall.Verdict.values()) {
-            legend.append("<span style=\"background:").append(colour(v)).append("\"></span>").append(v.name()).append(' ');
+            legend.append("<span class=\"key\"><i style=\"background:").append(colour(v))
+                    .append("\"></i>").append(v.name()).append("</span> ");
         }
         legend.append("</p>");
         return timeline(span, labels, rows) + legend;
@@ -362,8 +363,8 @@ public final class Html {
             rows.add(longest(boxes));
         }
         final StringBuilder legend = new StringBuilder("<p class=\"legend\">");
-        threadColours.forEach((name, colour) -> legend.append("<span style=\"background:").append(colour)
-                .append("\"></span>").append(escape(name)).append(' '));
+        threadColours.forEach((name, colour) -> legend.append("<span class=\"key\"><i style=\"background:").append(colour)
+                .append("\"></i>").append(escape(name)).append("</span> "));
         legend.append("</p>");
         return timeline(span, labels, rows) + legend;
     }
@@ -951,7 +952,8 @@ public final class Html {
             ul.warn { background: var(--warn-bg); border-left: 4px solid var(--warn-edge); padding: 0.6em 1em 0.6em 2em; }
             svg.timeline { width: 100%; height: auto; font: 11px sans-serif; }
             svg .track { fill: var(--track); } svg .lbl { fill: var(--fg); } svg .axis { fill: var(--faint); text-anchor: middle; }
-            p.legend span { display: inline-block; width: 12px; height: 12px; margin: 0 4px 0 10px; vertical-align: middle; }
+            p.legend .key { white-space: nowrap; }
+            p.legend i { display: inline-block; width: 12px; height: 12px; margin: 0 4px 0 10px; vertical-align: middle; }
             p.foot { color: var(--faint); margin-top: 3em; }
             """;
 }

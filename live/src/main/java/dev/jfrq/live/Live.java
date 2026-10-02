@@ -54,7 +54,7 @@ import jdk.management.jfr.RecordingInfo;
  */
 public final class Live {
 
-    /** The settings README.md recommends on top of a JDK profile: short waits recorded, I/O unthrottled. */
+    /** The settings docs/RECORDING.md recommends on top of a JDK profile: short waits recorded, I/O unthrottled. */
     static final Map<String, String> RECOMMENDED = Map.ofEntries(
             Map.entry("jdk.JavaMonitorEnter#threshold", "1 ms"),
             Map.entry("jdk.ThreadPark#threshold", "1 ms"),
@@ -79,8 +79,8 @@ public final class Live {
             commands:
               status  the JVM's recordings (state, bounds) and this tool's cursor for it
               start   start a recording in the JVM: the JDK 'profile' settings with the thresholds
-                      README.md recommends, or --settings NAME for another JDK profile as recommended,
-                      or --settings FILE.jfc taken as it is
+                      docs/RECORDING.md recommends, or --settings NAME for another JDK profile as
+                      recommended, or --settings FILE.jfc taken as it is
               bound   set --max-age / --max-size on the running recording
               full    dump everything the recording holds; the cursor moves to the dump's end
               delta   dump what happened since the cursor; the cursor moves to the dump's end
