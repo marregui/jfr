@@ -101,6 +101,10 @@ public final class Smoke {
                 check(number(map(first.get("threadCpu")), "readings") > 0, "the full dump has thread CPU readings");
                 check(!list(first, "nativeMemory").isEmpty(), "NMT was on: native memory is reported");
             }
+            // UTF-8 on every OS: the arrow of a range survives the launcher, also on Windows.
+            final Run text = run(JFRQ, "health", a.toString(), b.toString());
+            expect(text, 0);
+            check(text.out().contains(" \u2192 "), "health of two recordings prints its ranges with an arrow, in UTF-8");
             final Path html = OUT.resolve("health.html");
             expect(run(JFRQ, "health", a.toString(), b.toString(), "--html", html.toString()), 0);
             check(Files.exists(html) && Files.readString(html).contains("</html>"), "the HTML comparison is written");

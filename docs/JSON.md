@@ -6,7 +6,8 @@ the text report. It is built from the same report objects as the text and the HT
 cut has a count beside it (`…Found`), except `convoys`, whose search stops at `--top`, and
 `longest`, whose count is `waits`. `--html` still writes its file. Under `jfrq-live`, a question
 with `--json` after `--` gets standard output to itself: the dump's own lines (`Dumped`,
-`Window`, `Cursor`) go to standard error.
+`Window`, `Cursor`) go to standard error. Both tools write UTF-8 on every platform, Windows
+included, whose default would be a code page such as cp1252; the text reports too.
 
 ## Conventions
 
