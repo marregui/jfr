@@ -80,7 +80,7 @@ jfrq-live <pid> <command> [options] [-- <jfrq command> [jfrq options]]
 | Option | Meaning |
 |---|---|
 | `--recording ID\|NAME` | Which recording, when the JVM runs more than one. |
-| `--out FILE` | Where the dump goes (default `<pid>-<command>-<HHmmss>.jfr` in the current directory). |
+| `--out FILE` | Where the dump goes (default `<pid>-<command>-<HHmmss.SSS>Z.jfr` in the current directory, UTC). |
 | `--state DIR` | Where cursors are kept (default `~/.jfrq/live`). |
 | `--max-age D` | Keep this much recent data: `10m`, `1h` (`start`, `bound`). |
 | `--max-size SIZE` | Keep this much data: `200MB`, `1GB`; decimal units (`start`, `bound`). |

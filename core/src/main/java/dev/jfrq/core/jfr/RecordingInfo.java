@@ -6,6 +6,8 @@ package dev.jfrq.core.jfr;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -29,10 +31,12 @@ import dev.jfrq.core.util.Durations;
  *                    headers alone (see {@link Chunks}), so the same for every command
  * @param chunks      how many chunks the file holds
  * @param eventCounts events per type name, only for types present among those the pass
- *                    read (all of them for {@code info}, the subscribed ones otherwise)
+ *                    read (all of them for {@code info}, the subscribed ones otherwise); iterates
+ *                    in type-name order
  * @param settings    per event type, setting name to value as JFR recorded it ({@code "10 ms"});
- *                    read on every pass, filtered or not
- * @param threads     every thread that appeared as an event thread in the events the pass read
+ *                    read on every pass, filtered or not; both levels iterate in name order
+ * @param threads     every thread that appeared as an event thread in the events the pass read;
+ *                    iterates in {@link ThreadRef#ORDER}
  * @param warnings    structural problems with the file that limit every answer: truncation,
  *                    chunks that do not follow one another (files joined)
  */
@@ -45,13 +49,22 @@ public record RecordingInfo(
         Set<ThreadRef> threads,
         List<String> warnings) {
 
+    /**
+     * The copies iterate in a fixed order (see the parameters) and stay hashed for lookups:
+     * {@code Map.copyOf} and {@code Set.copyOf} iterate in an order salted per JVM, so a consumer
+     * that did not sort would print differently on every run.
+     */
     public RecordingInfo {
-        eventCounts = Map.copyOf(new TreeMap<>(eventCounts));
+        eventCounts = sorted(eventCounts);
         final Map<String, Map<String, String>> copy = new TreeMap<>();
-        settings.forEach((k, v) -> copy.put(k, Map.copyOf(v)));
-        settings = Map.copyOf(copy);
-        threads = Set.copyOf(threads);
+        settings.forEach((k, v) -> copy.put(k, sorted(v)));
+        settings = Collections.unmodifiableMap(new LinkedHashMap<>(copy));
+        threads = ThreadRef.ordered(threads);
         warnings = List.copyOf(warnings);
+    }
+
+    private static <V> Map<String, V> sorted(final Map<String, V> map) {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(new TreeMap<>(map)));
     }
 
     public long startNanos() {

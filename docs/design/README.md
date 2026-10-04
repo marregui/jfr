@@ -367,7 +367,7 @@ parse within run-to-run variation for both (58 pause events against 277 thousand
 - `PARKED` never names an owner: JFR does not know who holds a `java.util.concurrent`
   lock.
 - A wait or a stall that straddles an end of the recording is counted only for the part
-  inside it ([locks.md](locks.md) and [stalls.md, [section 2](#2-output)](stalls.md#5-merging-and-reporting)), so the same wait reads shorter in a narrow window than
+  inside it ([locks.md](locks.md), [stalls.md, section 5](stalls.md#5-merging-and-reporting) and [section 2](#2-output)), so the same wait reads shorter in a narrow window than
   in a wide one. The `locks` note and the `stalls` warning say when this happened.
   Neither a `stalls` per-thread share nor a `locks` one can exceed 100 %: a thread's
   stalls are disjoint ([stalls.md, section 5](stalls.md#5-merging-and-reporting)).

@@ -152,7 +152,7 @@ public final class RecordingSummary {
         final List<Family> out = new ArrayList<>(families.size());
         for (final Map.Entry<String, List<ThreadRef>> e : families.entrySet()) {
             final List<ThreadRef> threads = e.getValue();
-            threads.sort(Comparator.comparing(ThreadRef::name));
+            threads.sort(ThreadRef.ORDER);
             boolean outside = false;
             int virtual = 0;
             double cpu = 0;
@@ -472,14 +472,17 @@ public final class RecordingSummary {
      *                {@code package.Class.method}; {@link #ATTACHED} or {@link #NO_STACK} without one
      * @param starts  how many starts it made
      * @param share   of all the starts
-     * @param parents the threads that ran it
+     * @param parents the threads that ran it, in {@link ThreadRef#ORDER}: the renderers print and fold
+     *                them in the order they iterate, so a set salted per JVM printed differently on
+     *                every run. The order is fixed here, not in {@link #threadNames}, because lock
+     *                waiters and owners reach that method in the order they were seen, which it keeps
      * @param stack   the first stack seen there, from the site down: the frames above it start a thread
      *                the same way for every pool
      */
     public record Creator(String site, int starts, double share, Set<ThreadRef> parents, Stack stack) {
 
         public Creator {
-            parents = Set.copyOf(parents);
+            parents = ThreadRef.ordered(parents);
         }
 
         private static final class Builder {

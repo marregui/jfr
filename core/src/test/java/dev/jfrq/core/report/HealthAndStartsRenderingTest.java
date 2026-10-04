@@ -144,4 +144,42 @@ class HealthAndStartsRenderingTest {
         assertNull(JsonTest.list(empty, "peaks").getFirst().get("start"));
         assertTrue(Html.info(info, census, none).contains("no jdk.ThreadStart of a thread matching x-*"));
     }
+
+    /** Seven starting threads, in name order: five entries once a pool is folded, one past the four shown. */
+    static final List<ThreadRef> PARENTS = List.of(new ThreadRef(7, "Signal Dispatcher"), new ThreadRef(6, "alpha"),
+            new ThreadRef(5, "main"), new ThreadRef(4, "pool-10-thread-1"), new ThreadRef(3, "pool-2-thread-1"),
+            new ThreadRef(2, "pool-2-thread-2"), new ThreadRef(1, "reaper"));
+
+    /** One site that each of {@code parents} ran once, in the order given. */
+    static ThreadCensus.Result startedFrom(final List<ThreadRef> parents) {
+        final Stack stack = new Stack(List.of(new Frame("java.lang.Thread", "start", 1, false),
+                new Frame("com.example.Pool", "grow", 2, false)), false);
+        final List<ThreadCensus.Start> starts = new ArrayList<>();
+        for (int i = 0; i < parents.size(); i++) {
+            starts.add(new ThreadCensus.Start((20 + i) * S, new ThreadRef(100 + i, "w-" + i), parents.get(i), stack,
+                    false));
+        }
+        return new ThreadCensus.Result(null, null, null, null, null, Set.of(), starts, ThreadCpu.Result.UNKNOWN);
+    }
+
+    @Test
+    void theStartingThreadsPrintInNameOrderWhicheverOrderTheyStartedIn() {
+        // The parents were a set salted per JVM: the same file listed them, and folded them, differently per run.
+        final RecordingInfo info = info("rec.jfr");
+        final ThreadCensus.Result forward = startedFrom(PARENTS);
+        final ThreadCensus.Result backward = startedFrom(PARENTS.reversed());
+        final String html = Html.info(info, forward, RecordingSummary.starts(forward, Glob.of("w-*"), 5));
+        assertEquals(html, Html.info(info, backward, RecordingSummary.starts(backward, Glob.of("w-*"), 5)));
+        assertTrue(html.contains("Signal Dispatcher, alpha, main, pool-N-thread-N* (3 threads) (+1 more)"), html);
+        final List<String> names = PARENTS.stream().map(ThreadRef::name).sorted().toList();
+        for (final ThreadCensus.Result census : List.of(forward, backward)) {
+            final Map<String, Object> js = JsonTest.map(JsonParser.object(Json.info(info, census,
+                    RecordingSummary.starts(census, Glob.of("w-*"), 5), "test")), "starts");
+            assertEquals(names, JsonTest.list(js, "creators").getFirst().get("parents"));
+        }
+        // Under the cap nothing folds, and the order is still the names'.
+        final ThreadCensus.Result few = startedFrom(List.of(PARENTS.get(4), PARENTS.get(1), PARENTS.get(2)));
+        assertTrue(Html.info(info, few, RecordingSummary.starts(few, Glob.of("w-*"), 5))
+                .contains("alpha, main, pool-2-thread-1"));
+    }
 }
