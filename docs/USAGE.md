@@ -114,7 +114,7 @@ any `Thread-N`.
 
 **`--thread GLOB`** adds how the matching threads were started: how many, the most in
 100 ms and in a second and when, and the code that started them (the innermost frame
-outside the JDK in the starting thread's stack, with the threads that ran it).
+outside the JDK in the starting thread's stack, with the threads that ran it, in name order).
 
 ## 7. `alloc`
 

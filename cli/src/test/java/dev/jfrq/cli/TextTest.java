@@ -621,4 +621,32 @@ class TextTest {
         assertTrue(created.endsWith("   1       1  100.0%  " + RecordingSummary.ATTACHED + "\n"), created);
         assertFalse(created.contains("started from"), created);
     }
+
+    @Test
+    void theStartingThreadsPrintInNameOrderWhicheverOrderTheyStartedIn() {
+        // The parents were a set salted per JVM: the same file listed them, and folded them, differently per run.
+        final List<ThreadRef> parents = List.of(new ThreadRef(7, "Signal Dispatcher"), new ThreadRef(6, "alpha"),
+                new ThreadRef(5, "main"), new ThreadRef(4, "pool-10-thread-1"), new ThreadRef(3, "pool-2-thread-1"),
+                new ThreadRef(2, "pool-2-thread-2"), new ThreadRef(1, "reaper"));
+        final RecordingInfo info = new RecordingInfo(Path.of("rec.jfr"), new Interval(10 * S, 110 * S), 1, Map.of(),
+                Map.of(), Set.of(), List.of());
+        final String forward = startedFrom(info, parents);
+        assertEquals(forward, startedFrom(info, parents.reversed()));
+        assertTrue(forward.contains("        started from Signal Dispatcher, alpha, main, pool-N-thread-N* (3 threads)"
+                + " (+1 more)\n"), forward);
+        assertTrue(startedFrom(info, List.of(parents.get(4), parents.get(1), parents.get(2)))
+                .contains("        started from alpha, main, pool-2-thread-1\n"));
+    }
+
+    /** {@code info --thread 'w-*'} on one site that each of {@code parents} ran once, in the order given. */
+    private static String startedFrom(final RecordingInfo info, final List<ThreadRef> parents) {
+        final List<ThreadCensus.Start> starts = new ArrayList<>();
+        for (int i = 0; i < parents.size(); i++) {
+            starts.add(new ThreadCensus.Start((20 + i) * S, new ThreadRef(100 + i, "w-" + i), parents.get(i),
+                    new Stack(List.of(new Frame("com.example.Pool", "grow", 1, false)), false), false));
+        }
+        final ThreadCensus.Result census = new ThreadCensus.Result(null, null, null, null, null, Set.of(), starts,
+                ThreadCpu.Result.UNKNOWN);
+        return Text.info(info, census, RecordingSummary.starts(census, Glob.of("w-*"), 5));
+    }
 }

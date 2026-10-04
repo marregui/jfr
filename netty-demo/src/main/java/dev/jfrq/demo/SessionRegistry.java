@@ -34,7 +34,9 @@ final class SessionRegistry {
 
     /** Holds the registry lock while "compacting" and while flushing to persistence. */
     synchronized void compact() throws InterruptedException {
-        lastSeen.entrySet().removeIf(e -> e.getValue() < System.nanoTime() - 60_000_000_000L);
+        // nanoTime values compare only as differences: the counter's origin is arbitrary and may wrap.
+        final long now = System.nanoTime();
+        lastSeen.entrySet().removeIf(e -> now - e.getValue() > 60_000_000_000L);
         persistence.flush(lastSeen.size());
         Thread.sleep(COMPACT_HOLD_MILLIS);
     }

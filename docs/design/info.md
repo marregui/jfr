@@ -100,6 +100,8 @@ most in any 100 ms and in any second (a window is half open, so two starts one w
 are in different windows) and when, and groups them by creator: the innermost frame outside
 the JDK in the starting thread's stack, the rule `alloc --sites` uses, since `Thread.start`
 and a pool's `addWorker` are the same for every pool. The stack shown starts at that frame.
+The threads that ran a creator are listed in name order (ties by thread id), so two runs over
+one file print the same list and fold the same pools when it is over the cap.
 On an Edge under overload, its cached pool's threads started 470 times in 100 ms, and 1 890 of
 1 891 starts came from `MoreExecutors$ListeningDecorator.execute`, a future listener
 dispatched to a pool that makes a thread whenever none is idle.

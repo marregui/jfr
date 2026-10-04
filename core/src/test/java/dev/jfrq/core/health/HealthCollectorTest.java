@@ -119,13 +119,14 @@ class HealthCollectorTest {
             r.enable(type);
         }
         for (final String type : List.of("jdk.GCConfiguration", "jdk.GCHeapConfiguration", "jdk.CPULoad",
-                "jdk.JavaThreadStatistics", "jdk.ResidentSetSize")) {
+                "jdk.ResidentSetSize")) {
             r.enable(type).withPeriod(Duration.ofMillis(50));
         }
         // Read when the chunk begins and when it ends, so the two readings bracket the body
         // whatever the platform's timer does: on Windows the first 50 ms reading can come only
-        // after the body has thrown everything.
+        // after the body has thrown everything, and the threads started need two readings.
         r.enable("jdk.ExceptionStatistics").with("period", "everyChunk");
+        r.enable("jdk.JavaThreadStatistics").with("period", "everyChunk");
         r.enable("jdk.JavaExceptionThrow").withStackTrace().with("throttle", "off");
     }
 
