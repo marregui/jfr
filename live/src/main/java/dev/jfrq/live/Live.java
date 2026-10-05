@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -80,7 +81,7 @@ public final class Live {
               status  the JVM's recordings (state, bounds) and this tool's cursor for it
               start   start a recording in the JVM: the JDK 'profile' settings with the thresholds
                       docs/RECORDING.md recommends, or --settings NAME for another JDK profile as
-                      recommended, or --settings FILE.jfc taken as it is
+                      recommended, or --settings FILE.jfc taken as it is; then --set on top
               bound   set --max-age / --max-size on the running recording
               full    dump everything the recording holds; the cursor moves to the dump's end
               delta   dump what happened since the cursor; the cursor moves to the dump's end
@@ -98,6 +99,8 @@ public final class Live {
                                    (start, bound)
               --max-size SIZE      keep this much data: 200MB, 1GB; 0 removes the bound (start, bound)
               --settings NAME|FILE JDK profile name (default, profile) or a .jfc file (start)
+              --set EVENT#SETTING=VALUE[,...]  settings on top of those, as stalls advises them:
+                                   --set jdk.ExecutionSample#period=1ms (start)
               --name NAME          the recording's name, not one the JVM has (start; default jfrq-live)
               --version, --help
 
@@ -224,12 +227,13 @@ public final class Live {
             if (command.equals("bound") && limits.isEmpty()) {
                 throw new Args.UsageException("bound needs --max-age and/or --max-size");
             }
+            final Map<String, String> sets = args.option("set").map(Live::parseSets).orElse(Map.of());
             final Jvm jvm = Jvm.attach(pid, err);
             final int status;
             try {
                 status = switch (command) {
                     case "status" -> status(jvm, args);
-                    case "start" -> start(jvm, args, limits, notes);
+                    case "start" -> start(jvm, args, limits, sets, notes);
                     case "bound" -> bound(jvm, args, limits, notes);
                     case "stop" -> stop(jvm, args);
                     default -> dump(jvm, command, args, question, file);
@@ -319,7 +323,7 @@ public final class Live {
         return switch (command) {
             case "status", "stop" -> common;
             case "bound" -> union(common, "max-age", "max-size");
-            case "start" -> union(common, "max-age", "max-size", "settings", "name");
+            case "start" -> union(common, "max-age", "max-size", "settings", "name", "set");
             case "full", "delta", "again" -> union(common, "out");
             default -> throw new Args.UsageException("unknown command '" + command + "'");
         };
@@ -355,8 +359,8 @@ public final class Live {
         return 0;
     }
 
-    private int start(final Jvm jvm, final Args args, final Map<String, String> limits, final List<String> notes)
-            throws IOException {
+    private int start(final Jvm jvm, final Args args, final Map<String, String> limits, final Map<String, String> sets,
+            final List<String> notes) throws IOException {
         final FlightRecorderMXBean fr = jvm.flightRecorder();
         final String settings = args.option("settings").orElse("profile");
         final String name = args.option("name").orElse(DEFAULT_NAME);
@@ -369,14 +373,14 @@ public final class Live {
         }
         final Map<String, String> options = new HashMap<>(limits);
         options.put("name", name);
-        final long id = startRecording(fr, settings, options);
+        final long id = startRecording(fr, settings, options, sets);
         final RecordingInfo started = recording(fr, id);
         line(out, jvmLine(jvm));
         line(out, recordingLine(started));
         for (final String note : notes) {
             line(out, note);
         }
-        line(out, settingsLine(settings));
+        line(out, settingsLine(settings, sets));
         // What the recording ended up with, not what was asked: --max-age 0 or infinity is no bound either.
         if (started.getMaxAge() == 0 && started.getMaxSize() == 0) {
             line(out, unboundedWarning(jvm));
@@ -384,21 +388,70 @@ public final class Live {
         return 0;
     }
 
+    /** The settings {@code --set} accepts a value of, with the values each takes. */
+    private static final Map<String, Pattern> SET_VALUES = Map.of(
+            "period", Pattern.compile("(?:\\d+\\s*(?:ns|us|ms|s|m|h|d)|0|everyChunk|beginChunk|endChunk)"),
+            "threshold", Pattern.compile("(?:\\d+\\s*(?:ns|us|ms|s|m|h|d)|0)"),
+            "throttle", Pattern.compile("(?:\\d+\\s*/\\s*(?:ns|us|ms|s|m|h|d)|off)"),
+            "enabled", Pattern.compile("true|false"),
+            "stackTrace", Pattern.compile("true|false"));
+
+    /**
+     * {@code --set}'s list, {@code jdk.ExecutionSample#period=1ms,jdk.ThreadPark#threshold=0ms},
+     * as the setting each names and its value, in the order given. The recorder takes a value
+     * it cannot read without a word (a period of {@code 1 msec} became {@code everyChunk},
+     * measured on JDK 25), so a value of the settings it can be checked for is checked here,
+     * before the JVM is attached to; any other setting's value goes through as given.
+     */
+    static Map<String, String> parseSets(final String text) {
+        final Map<String, String> sets = new LinkedHashMap<>();
+        for (final String item : text.split(",", -1)) {
+            final int hash = item.indexOf('#');
+            final int eq = item.indexOf('=');
+            if (hash <= 0 || eq < hash + 2 || eq == item.length() - 1) {
+                throw new Args.UsageException("--set takes EVENT#SETTING=VALUE[,...], not '" + item + "'");
+            }
+            final String key = item.substring(0, eq).strip();
+            final String value = item.substring(eq + 1).strip();
+            final Pattern values = SET_VALUES.get(key.substring(key.indexOf('#') + 1));
+            if (values != null && !values.matcher(value).matches()) {
+                throw new Args.UsageException("--set " + key + "=" + value + ": not a value the recorder reads as one");
+            }
+            if (sets.put(key, value) != null) {
+                throw new Args.UsageException("--set names " + key + " twice");
+            }
+        }
+        return sets;
+    }
+
     /**
      * Creates, configures and starts a recording; one the JVM refuses to configure or start is
      * closed again (G-4.2), and the refusal, not a failure to close, is what is thrown.
+     * {@code sets} go on top of the settings, profile or file; each must name a setting the
+     * configured recording already has, since the recorder ignores one it does not know.
      */
-    static long startRecording(final FlightRecorderMXBean fr, final String settings, final Map<String, String> options)
-            throws IOException {
+    static long startRecording(final FlightRecorderMXBean fr, final String settings, final Map<String, String> options,
+            final Map<String, String> sets) throws IOException {
         final long id = fr.newRecording();
         try {
             if (settings.endsWith(".jfc")) {
                 fr.setConfiguration(id, Files.readString(Path.of(settings), StandardCharsets.UTF_8));
             } else {
                 fr.setPredefinedConfiguration(id, settings);
-                // setRecordingSettings replaces the whole map, so the profile is re-read and overlaid.
+            }
+            if (!settings.endsWith(".jfc") || !sets.isEmpty()) {
+                // setRecordingSettings replaces the whole map, so the configuration is re-read and overlaid.
                 final Map<String, String> merged = new HashMap<>(fr.getRecordingSettings(id));
-                merged.putAll(RECOMMENDED);
+                if (!settings.endsWith(".jfc")) {
+                    merged.putAll(RECOMMENDED);
+                }
+                for (final Map.Entry<String, String> set : sets.entrySet()) {
+                    if (!merged.containsKey(set.getKey())) {
+                        throw new Args.UsageException("--set " + set.getKey() + ": the recording's settings have no "
+                                + "such event setting");
+                    }
+                    merged.put(set.getKey(), set.getValue());
+                }
                 fr.setRecordingSettings(id, merged);
             }
             fr.setRecordingOptions(id, options);
@@ -419,9 +472,13 @@ public final class Live {
      * and this is the cheapest moment to answer "did my settings take effect"; the only
      * other way is {@code jfrq info} on the first dump, one dump later.
      */
-    static String settingsLine(final String settings) {
+    static String settingsLine(final String settings, final Map<String, String> sets) {
+        final StringBuilder set = new StringBuilder();
+        for (final Map.Entry<String, String> e : sets.entrySet()) {
+            set.append(set.isEmpty() ? "; then --set " : ", ").append(e.getKey()).append('=').append(e.getValue());
+        }
         if (settings.endsWith(".jfc")) {
-            return String.format(Locale.ROOT, "Settings   %s, taken as it is", settings);
+            return String.format(Locale.ROOT, "Settings   %s, taken as it is%s", settings, set);
         }
         final List<String> thresholds = new ArrayList<>();
         final List<String> throttlesOff = new ArrayList<>();
@@ -449,7 +506,7 @@ public final class Live {
         sb.append("; throttle off for ").append(String.join(", ", throttlesOff));
         sb.append("; ").append(String.join(", ", throttles));
         sb.append("; sampling ").append(String.join(", ", periods));
-        return sb.toString();
+        return sb.append(set).toString();
     }
 
     private int bound(final Jvm jvm, final Args args, final Map<String, String> limits, final List<String> notes)

@@ -67,7 +67,8 @@ gap finds fewer runs only where a pause or blocking events explain the stretch b
 samples, which is then that stall instead. A thread with no
 two consecutive Java samples has no Java cadence (`—`) and chains by the period: the
 spacing of its native samples is not a measure of running Java. The verdict is `BUSY`
-when one culprit frame (the innermost non-JDK frame) owns at least half the samples, and
+when one culprit frame (the innermost non-JDK frame, or with `--app` the innermost frame
+under one of its prefixes, the site key `alloc --app` uses) owns at least half the samples, and
 at least two of them, naming it and the share ("50 % of 2 samples" would rest on one
 sample); `SATURATED` when no frame dominates and there are at least five samples, which is
 a loop with too much work rather than one long task. If blocking events, together and
@@ -291,6 +292,18 @@ block stays in the timeline, because it is still what explains the silence in th
 samples: dropped outright, a 1m10s idle worker became a 1m10s `UNEXPLAINED` stall. The
 same check therefore runs on the explanation of a
 silence as well as on the event itself.
+
+**A thread that never rests is labelled, not dropped.** Profiling a batch program (jfrc's
+own `main`, 2026-10-04) gave a hundred `SATURATED` rows for one thread that never reached
+an idle point: one stretch of work, split wherever its samples paused. When a matched
+thread has at least 50 samples, none of them idle, and enough of them that one per
+sampling period covers half the stretch from its first to its last, a warning names it
+with the count of its `BUSY` and `SATURATED` stalls. The stalls stay, counted: an event
+loop that never returns to idle is lag, the worst stall there is, and the recording cannot
+tell it from a batch thread. The coverage test is what separates busy from unseen: the
+sampler visits only running threads, and a v1 Edge pool thread seen 119 times in a minute
+(v1load.jfr) is never caught resting because it is rarely caught at all. On the 31
+recordings of the parity corpus the warning fires on none.
 
 **Timer loops are scheduled idle.** With `--thread '*'` on a live node, every one of the
 top 25 stalls and 99 % of the stalled time were threads waiting on purpose: a cleaner, a

@@ -18,6 +18,7 @@ import dev.jfrq.core.coll.ObjLongHashMap;
 import dev.jfrq.core.coll.ObjObjHashMap;
 import dev.jfrq.core.jfr.EventKinds;
 import dev.jfrq.core.jfr.RecordingInfo;
+import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.model.Frame;
 import dev.jfrq.core.model.Interval;
 import dev.jfrq.core.model.Stack;
@@ -97,6 +98,11 @@ public final class StallAnalysis {
     /** How many threads with nothing to judge them by are named before the rest are counted. */
     private static final int SILENT_THREADS_SHOWN = 5;
     /**
+     * Samples a thread needs, none of them idle, before it is called busy for the whole
+     * window: fewer say only that the sampler never caught it idle.
+     */
+    static final int ALWAYS_BUSY_MIN_SAMPLES = 50;
+    /**
      * A timer loop has to have run out its own timeout at least this often: one wait that did
      * is as likely a caller that gave up on a result as a thread that meant to wait.
      */
@@ -140,6 +146,10 @@ public final class StallAnalysis {
     private final IdleMatcher workWaits;
     /** A culprit's qualified name, built once per distinct frame (G-2.3). */
     private final ObjObjHashMap<Frame, String> culpritNames = new ObjObjHashMap<>(1024);
+    /** What names a busy run's culprit: the default, or {@code --app}'s packages. */
+    private final SiteKey culpritKey;
+    /** Under {@code --app}, a culprit's name per distinct stack, since it can lie at any depth (G-2.3). */
+    private final ObjObjHashMap<Stack, String> appCulpritNames = new ObjObjHashMap<>(1024);
     /** Scratch for {@link #busy}: culprit counts in first-seen order, a stack per culprit, and their pool (G-3.1). */
     private final ObjList<Culprit> culprits = new ObjList<>();
     private final ObjList<Culprit> culpritPool = new ObjList<>();
@@ -362,11 +372,22 @@ public final class StallAnalysis {
     }
 
     public StallAnalysis(final long gapNanos, final IdleMatcher workWaits) {
+        this(gapNanos, workWaits, SiteKey.culpritMethod());
+    }
+
+    /**
+     * @param culpritKey what names a busy run's culprit: {@link SiteKey#culpritMethod()}, the
+     *                   innermost frame outside the JDK, or {@link SiteKey#inPackages} for
+     *                   {@code --app}, where on a framework-heavy program that frame is always
+     *                   the framework's
+     */
+    public StallAnalysis(final long gapNanos, final IdleMatcher workWaits, final SiteKey culpritKey) {
         if (gapNanos <= 0) {
             throw new IllegalArgumentException("gap must be positive");
         }
         this.gap = gapNanos;
         this.workWaits = workWaits;
+        this.culpritKey = culpritKey;
     }
 
     public long gap() {
@@ -492,11 +513,17 @@ public final class StallAnalysis {
         final ObjList<Stall> stalls = new ObjList<>();
         final ObjList<ThreadSummary> summaries = new ObjList<>(ordered.size());
         final Windows windows = new Windows(sortedPauses);
+        final List<String> alwaysBusy = new ArrayList<>();
         for (int i = 0, n = ordered.size(); i < n; i++) {
             final ThreadTimeline tl = ordered.getQuick(i);
             final Cadence cadence = Cadence.of(tl.samples(), period);
             final int before = stalls.size();
             analyseThread(tl, cadence, windows, stalls, info.span());
+            final int busyRuns = alwaysBusyRuns(tl, stalls, before, period);
+            if (busyRuns > 0) {
+                alwaysBusy.add(tl.thread().name() + " (" + busyRuns + " of its stalls, " + tl.samples().size()
+                        + " samples)");
+            }
             long stalled = 0;
             long worst = 0;
             for (int s = before, m = stalls.size(); s < m; s++) {
@@ -517,6 +544,7 @@ public final class StallAnalysis {
                     + "--idle names, and are not stalls; --idle none turns this off");
         }
         warnTimers(warnings);
+        warnAlwaysBusy(alwaysBusy, warnings);
         warnMoved(stalls, warnings);
         if (clippedStalls > 0) {
             warnings.add(clippedStalls == 1
@@ -651,6 +679,63 @@ public final class StallAnalysis {
             }
         }
         return period;
+    }
+
+    /**
+     * The BUSY and SATURATED stalls of a thread the sampler never caught at its idle point in
+     * at least {@link #ALWAYS_BUSY_MIN_SAMPLES} samples, and caught often enough that its
+     * samples, one per {@code period}, cover at least half the stretch from its first to its
+     * last; or 0. The sampler visits only a thread that is running, so a thread seen 119 times
+     * in a minute (a v1 Edge pool thread, v1load.jfr) is not busy, only never seen resting.
+     * Such a thread computed for the whole window (profiling a batch program, or an event loop that never caught up), and
+     * its sample runs are one busy stretch, split wherever its samples paused: a hundred
+     * SATURATED rows, on jfrc's own main thread (2026-10-04), said that a hundred times. They
+     * are labelled, not removed: an event loop that never returns to idle is also the worst
+     * stall there is, and which of the two it is the recording cannot say.
+     */
+    private static int alwaysBusyRuns(final ThreadTimeline tl, final ObjList<Stall> stalls, final int from,
+                                      final long period) {
+        final List<Sample> samples = tl.samples();
+        if (samples.size() < ALWAYS_BUSY_MIN_SAMPLES || period <= 0) {
+            return 0;
+        }
+        final long seen = samples.getLast().time() - samples.getFirst().time();
+        if ((double) samples.size() * period < seen / 2.0) {
+            return 0;
+        }
+        for (int i = 0, n = samples.size(); i < n; i++) {
+            if (samples.get(i).isIdle()) {
+                return 0;
+            }
+        }
+        int runs = 0;
+        for (int s = from, m = stalls.size(); s < m; s++) {
+            final Stall stall = stalls.getQuick(s);
+            if (stall.evidence() == Evidence.SAMPLES
+                    && (stall.verdict() == Verdict.BUSY || stall.verdict() == Verdict.SATURATED)) {
+                runs++;
+            }
+        }
+        return runs;
+    }
+
+    private static void warnAlwaysBusy(final List<String> threads, final List<String> warnings) {
+        if (threads.isEmpty()) {
+            return;
+        }
+        final StringBuilder names = new StringBuilder();
+        final int shown = Math.min(threads.size(), SILENT_THREADS_SHOWN);
+        for (int i = 0; i < shown; i++) {
+            names.append(i > 0 ? ", " : "").append(threads.get(i));
+        }
+        if (threads.size() > shown) {
+            names.append(" and ").append(threads.size() - shown).append(" more");
+        }
+        warnings.add((threads.size() == 1 ? "1 matching thread was" : threads.size() + " matching threads were")
+                + " never sampled at an idle point, so busy for the whole window (" + names + "): their BUSY and "
+                + "SATURATED stalls are one stretch of work, split wherever the samples paused; a batch thread's "
+                + "are its work, an event loop's are lag. Where the time went is a profile's question; --app "
+                + "names their own frames as culprits");
     }
 
     /**
@@ -1626,6 +1711,10 @@ public final class StallAnalysis {
         final Frame culprit = stack.culpritOrNull();
         if (culprit == null) {
             return "<no stack>";
+        }
+        if (culpritKey != SiteKey.culpritMethod()) {
+            final int index = appCulpritNames.keyIndex(stack);
+            return index < 0 ? appCulpritNames.valueAtQuick(index) : appCulpritNames.putAt(index, stack, culpritKey.of(stack));
         }
         final int index = culpritNames.keyIndex(culprit);
         return index < 0 ? culpritNames.valueAtQuick(index)

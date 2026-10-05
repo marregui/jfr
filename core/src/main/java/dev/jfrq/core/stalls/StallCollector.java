@@ -10,6 +10,7 @@ import java.util.Set;
 import java.util.function.Predicate;
 import java.util.function.ToLongFunction;
 
+import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.coll.LongList;
 import dev.jfrq.core.coll.LongObjHashMap;
 import dev.jfrq.core.coll.Nulls;
@@ -148,9 +149,15 @@ public final class StallCollector implements JfrReader.Sink {
      */
     public StallCollector(final Predicate<String> threadFilter, final IdleMatcher idle, final IdleMatcher workWaits,
                           final long gapNanos) {
+        this(threadFilter, idle, workWaits, gapNanos, SiteKey.culpritMethod());
+    }
+
+    /** @param culpritKey what names a busy run's culprit ({@code --app}); see {@link StallAnalysis} */
+    public StallCollector(final Predicate<String> threadFilter, final IdleMatcher idle, final IdleMatcher workWaits,
+                          final long gapNanos, final SiteKey culpritKey) {
         this.threadFilter = threadFilter;
         this.idle = idle;
-        this.analysis = new StallAnalysis(gapNanos, workWaits);
+        this.analysis = new StallAnalysis(gapNanos, workWaits, culpritKey);
     }
 
     @Override

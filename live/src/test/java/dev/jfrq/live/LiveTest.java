@@ -353,7 +353,7 @@ class LiveTest {
                     default -> throw new AssertionError(method.getName());
                 });
         final IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                () -> Live.startRecording(fr, "no-such-profile", Map.of()));
+                () -> Live.startRecording(fr, "no-such-profile", Map.of(), Map.of()));
         assertEquals("no-such-profile", refused.getMessage());
         assertEquals(1, refused.getSuppressed().length);
         assertEquals("the connection went away", refused.getSuppressed()[0].getMessage());
@@ -690,6 +690,63 @@ class LiveTest {
         } finally {
             assertEquals(0, run(PID, "stop", "--recording", name).status());
         }
+    }
+
+    @Test
+    void startSetsWhatStallsAdvisesAndRefusesWhatTheRecorderWouldIgnore() throws Exception {
+        final String name = "live-set-" + System.nanoTime();
+        final Run start = run(PID, "start", "--name", name, "--max-age", "1m", "--set",
+                "jdk.ExecutionSample#period=1ms,jdk.ThreadSleep#threshold=0 ms");
+        assertEquals(0, start.status(), start.err());
+        try {
+            assertTrue(start.out().contains("sampling ExecutionSample 10 ms, NativeMethodSample 10 ms; then --set "
+                    + "jdk.ExecutionSample#period=1ms, jdk.ThreadSleep#threshold=0 ms"), start.out());
+            final FlightRecorderMXBean fr = ManagementFactory.getPlatformMXBean(FlightRecorderMXBean.class);
+            final jdk.management.jfr.RecordingInfo r = fr.getRecordings().stream().filter(i -> name.equals(i.getName())).findFirst().orElseThrow();
+            assertEquals("1ms", fr.getRecordingSettings(r.getId()).get("jdk.ExecutionSample#period"));
+            assertEquals("0 ms", fr.getRecordingSettings(r.getId()).get("jdk.ThreadSleep#threshold"));
+            // The recommended settings stay under the ones --set does not name.
+            assertEquals("1 ms", fr.getRecordingSettings(r.getId()).get("jdk.ThreadPark#threshold"));
+        } finally {
+            assertEquals(0, run(PID, "stop", "--recording", name).status());
+        }
+
+        // On top of a .jfc too, which is otherwise taken as it is.
+        final Path jfc = dir.resolve("sleep.jfc");
+        Files.writeString(jfc, """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <configuration version="2.0" label="sleep">
+                  <event name="jdk.ThreadSleep">
+                    <setting name="enabled">true</setting>
+                    <setting name="threshold">20 ms</setting>
+                  </event>
+                </configuration>
+                """);
+        final Run fromJfc = run(PID, "start", "--name", name + "-jfc", "--max-age", "1m", "--settings", jfc.toString(),
+                "--set", "jdk.ThreadSleep#threshold=0ms");
+        assertEquals(0, fromJfc.status(), fromJfc.err());
+        try {
+            assertTrue(fromJfc.out().contains("taken as it is; then --set jdk.ThreadSleep#threshold=0ms"), fromJfc.out());
+        } finally {
+            assertEquals(0, run(PID, "stop", "--recording", name + "-jfc").status());
+        }
+
+        // The recorder takes all of these without a word; each is a usage error, the first two
+        // before any attach.
+        for (final String bad : new String[] {"period=1ms", "jdk.ExecutionSample#period=1 msec",
+                "jdk.ExecutionSample#period=1ms,jdk.ExecutionSample#period=2ms"}) {
+            final Run r = run(PID, "start", "--name", name + "-bad", "--set", bad);
+            assertEquals(2, r.status(), bad);
+            assertTrue(r.err().contains("--set"), r.err());
+            assertFalse(r.err().contains("attaching"), r.err());
+        }
+        final Run unknown = run(PID, "start", "--name", name + "-bad", "--set", "jdk.NoSuchEvent#period=1ms");
+        assertEquals(2, unknown.status());
+        assertTrue(unknown.err().contains("--set jdk.NoSuchEvent#period: the recording's settings have no such event "
+                + "setting"), unknown.err());
+        // Refused after the recording was made: it is closed again, not left behind.
+        assertTrue(ManagementFactory.getPlatformMXBean(FlightRecorderMXBean.class).getRecordings().stream()
+                .noneMatch(i -> (name + "-bad").equals(i.getName())));
     }
 
     @Test
