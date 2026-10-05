@@ -510,7 +510,7 @@ public final class Html {
         if (!r.nativeMemory().isEmpty()) {
             p.h2("Native memory (" + HealthReport.NATIVE_MEMORY_RULE + ")");
             p.tableStart("Category", "Start", "End", "Min", "Max", "Floor, first third", "Floor, last third");
-            for (final HealthReport.Series s : r.nativeMemory().subList(0, Math.min(top + 1, r.nativeMemory().size()))) {
+            for (final HealthReport.Series s : r.nativeMemory().subList(0, (int) Math.min(top + 1L, r.nativeMemory().size()))) {
                 p.row(s.name(), s.format(s.start()), s.format(s.end()), s.format(s.min()), s.format(s.max()),
                         s.format(s.floorFirst()), s.format(s.floorLast()));
             }

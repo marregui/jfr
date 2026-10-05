@@ -148,7 +148,8 @@ Sizes are decimal (`200MB` is 200 000 000 bytes), as every size `jfrq` prints;
 `bound --max-age 0` on a recording that has no `max-size` makes it unbounded again. The
 JVM keeps the age bound in whole seconds: an age under a second is a usage error (the JVM
 would take it as zero, which means no bound), and a fraction is rounded up to the next
-second with a note saying so. With deltas a minute apart, `--max-age 10m` leaves nine
+second with a note saying so. An age past 9223372036s (the largest number of seconds
+whose nanoseconds fit in a `long`) is a usage error too. With deltas a minute apart, `--max-age 10m` leaves nine
 minutes of margin for each delta and limits a `full` dump to the last ten minutes.
 
 ## 4. The span check

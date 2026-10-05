@@ -138,6 +138,10 @@ class LiveTest {
         final Run subSecond = run(PID, "start", "--max-age", "500ms");
         assertEquals(2, subSecond.status());
         assertTrue(subSecond.err().contains("whole seconds"), subSecond.err());
+        // Rounded up, the last fraction of a second of the longest duration would overflow.
+        final Run tooLong = run(PID, "start", "--max-age", "9223372036.5s");
+        assertEquals(2, tooLong.status());
+        assertTrue(tooLong.err().contains("the JVM keeps at most 9223372036s"), tooLong.err());
         assertEquals(2, run(PID, "full", "-x").status());
         assertEquals(2, run(PID, "full", "--out", "a.jfr", "--out", "b.jfr").status());
         assertEquals(2, run("99999999999999999999", "status").status());

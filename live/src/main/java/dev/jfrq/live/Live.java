@@ -701,6 +701,13 @@ public final class Live {
             // "infinity" keeps everything, which is the recorder's 0.
             final long seconds = nanos == Durations.INFINITE ? 0
                     : nanos / 1_000_000_000L + (nanos % 1_000_000_000L == 0 ? 0 : 1);
+            // Rounded up, the last fraction of a second below the longest duration overflows a
+            // Duration's nanoseconds, here and in the JVM's own recorder.
+            final long longest = Long.MAX_VALUE / 1_000_000_000L;
+            if (seconds > longest) {
+                throw new Args.UsageException("--max-age " + age.orElseThrow() + ": the JVM keeps at most "
+                        + longest + "s; give 0 or infinity to remove the bound");
+            }
             if (nanos != Durations.INFINITE && nanos % 1_000_000_000L != 0) {
                 notes.add("Note       --max-age " + age.orElseThrow() + " rounded up to "
                         + Durations.format(Duration.ofSeconds(seconds)) + ": the JVM keeps whole seconds");

@@ -184,6 +184,14 @@ zone is ambiguous.
   to dump the recording instead. The JDK parser would otherwise poll, without a timeout,
   for the chunk to finish; see [section 1](#1-one-pass-several-sinks). Questioning a running JVM is what `jfrq-live`
   is for ([LIVE.md](../LIVE.md)): it takes windowed dumps, which are finished files.
+- **Damaged inside a chunk** (the framing holds, the bytes within it do not): the JDK
+  parser ends the stream quietly on an `IOException` (the data runs out, a size exceeds
+  what is left, a constant pool entry does not parse), and the answer stands on the events
+  read before it. Any other exception fails the read: `failed while reading the recording
+  (damaged file?)` with the exception, exit status 1. A class or method name left null by
+  a damaged constant pool is reported as `null`. An exception thrown while jfrq handles an
+  event does not end the pass: the event is left out, and every report carries a warning
+  with the number of events left out and the first exception.
 - **Several recordings in one JVM:** the span is the file's own ([section 1](#1-one-pass-several-sinks)); the
   settings reported are the last chunk's, since settings can change between chunks.
 - **Files joined** (`cat a.jfr b.jfr`, which the JDK parser reads without a warning): the

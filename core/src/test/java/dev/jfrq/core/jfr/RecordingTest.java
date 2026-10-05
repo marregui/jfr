@@ -172,6 +172,32 @@ class RecordingTest {
     }
 
     @Test
+    void aSinkFailureIsAWarningNotADroppedEvent() throws Exception {
+        final Path file = JfrFixtures.record(dir, "failing", r -> r.enable("jdk.ThreadSleep").withThreshold(Duration.ZERO),
+                () -> {
+                    JfrFixtures.sleep(5);
+                    JfrFixtures.sleep(5);
+                });
+        final JfrReader.Sink failing = new JfrReader.Sink() {
+            @Override
+            public Set<String> eventTypes() {
+                return Set.of("jdk.ThreadSleep");
+            }
+
+            @Override
+            public void accept(@Transient final RecordedEvent event) {
+                throw new IllegalStateException("boom");
+            }
+        };
+        final RecordingInfo info = JfrReader.read(file, failing);
+        final long sleeps = info.eventCounts().get("jdk.ThreadSleep");
+        assertTrue(sleeps >= 2, info.eventCounts().toString());
+        // Every failure is counted; the stream's default would print a stack trace per event and go on.
+        assertTrue(info.warnings().contains(sleeps + " event(s) could not be handled and are missing from every"
+                + " figure; the first failure: java.lang.IllegalStateException: boom"), info.warnings().toString());
+    }
+
+    @Test
     void missingFileIsAnIoException() {
         assertThrows(IOException.class, () -> JfrReader.read(dir.resolve("nope.jfr")));
     }

@@ -255,12 +255,12 @@ final class Text {
         final StringBuilder sb = new StringBuilder("\nNATIVE MEMORY (").append(HealthReport.NATIVE_MEMORY_RULE).append(")\n");
         final TextTable table = new TextTable("Category", "Start", "End", "Min", "Max", "Floor, first third",
                 "Floor, last third").numeric(1, 2, 3, 4, 5, 6);
-        for (final HealthReport.Series s : r.nativeMemory().subList(0, Math.min(top + 1, r.nativeMemory().size()))) {
+        for (final HealthReport.Series s : r.nativeMemory().subList(0, (int) Math.min(top + 1L, r.nativeMemory().size()))) {
             table.row(s.name(), s.format(s.start()), s.format(s.end()), s.format(s.min()), s.format(s.max()),
                     s.format(s.floorFirst()), s.format(s.floorLast()));
         }
         sb.append(table.render("  "));
-        if (r.nativeMemory().size() > top + 1) {
+        if (r.nativeMemory().size() > top + 1L) {
             sb.append("  ... ").append(r.nativeMemory().size() - top - 1).append(" more categories\n");
         }
         return sb.toString();

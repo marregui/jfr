@@ -473,6 +473,11 @@ class MainTest {
         assertTrue(r.out().contains("java.lang.IllegalStateException"), r.out());
         assertTrue(Files.readString(html).contains("<title>jfrq health"));
         assertEquals(2, run("health", recording.toString(), "--sites").status());
+        // The native memory rows are --top categories and the total: + 1 must not overflow.
+        final String max = String.valueOf(Integer.MAX_VALUE);
+        assertEquals(0, run("health", recording.toString(), "--top", max).status());
+        assertEquals(0, run("health", recording.toString(), "--top", max, "--json").status());
+        assertEquals(0, run("health", recording.toString(), "--top", max, "--html", html.toString()).status());
     }
 
     /** The command's standard output with --json appended, which must be the JSON document alone. */
