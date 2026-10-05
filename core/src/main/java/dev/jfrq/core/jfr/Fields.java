@@ -32,7 +32,8 @@ public final class Fields {
     public static final int HOST = HEAP_USED + 1;
     public static final int JVM_SYSTEM = HOST + 1;
     public static final int JVM_USER = JVM_SYSTEM + 1;
-    public static final int LONGEST_PAUSE = JVM_USER + 1;
+    public static final int JVM_VERSION = JVM_USER + 1;
+    public static final int LONGEST_PAUSE = JVM_VERSION + 1;
     public static final int MACHINE_TOTAL = LONGEST_PAUSE + 1;
     public static final int MAX_SIZE = MACHINE_TOTAL + 1;
     public static final int MESSAGE = MAX_SIZE + 1;
@@ -88,6 +89,7 @@ public final class Fields {
         NAMES[HOST] = "host";
         NAMES[JVM_SYSTEM] = "jvmSystem";
         NAMES[JVM_USER] = "jvmUser";
+        NAMES[JVM_VERSION] = "jvmVersion";
         NAMES[LONGEST_PAUSE] = "longestPause";
         NAMES[MACHINE_TOTAL] = "machineTotal";
         NAMES[MAX_SIZE] = "maxSize";

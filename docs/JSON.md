@@ -107,7 +107,7 @@ the text report.
 
 | Field | |
 |---|---|
-| `warnings[]` | what makes a figure in the document wrong: a JVM CPU total (`jdk.CPULoad`) below what its own Java threads used, on a recording made on macOS, where the two divide by the same count |
+| `warnings[]` | what makes a figure in the document wrong: a JVM CPU total (`jdk.CPULoad`) from a JVM with JDK-8326446 (Apple silicon, before 17.0.13, 21.0.4, 22.0.2 and 23), which writes it at 3/125 of the truth; otherwise one below what its own Java threads used, on a recording made on macOS, where the two divide by the same count |
 | `findings[]` | most serious first: `kind`, `count`, `first`, `firstOffsetNanos`, `last`, `lastOffsetNanos` (all `null` for `GC_TIME_OVER_GOAL`, which is about the whole window), `text` |
 | `gc` | `null` counts when `jdk.GarbageCollection` (or, for `oldCycles`, `jdk.OldGarbageCollection`) was not recorded; `collections`, `byCollector` and `byCause` (objects, most first; a G1 concurrent cycle, `G1Old`, is in `byCollector` but not in `byCause`), `oldCycles`, `pauseNanos`, `pauseShare`, `longestPauseNanos`, `gcTimeRatio`, `pauseTargetNanos`, `maxHeapBytes` |
 | `trends[]` | `series` (`Heap after GC`, `Resident set`, `Live threads`, `JVM CPU`, `Machine CPU`; one the recording has no events for is left out), `unit`, `points`, `start`, `end`, `min`, `max`, `mean`, `floorFirstThird`, `floorLastThird` (the lowest value in each; `null` under three points) |

@@ -59,7 +59,8 @@ public final class EventKinds {
     public static final int NATIVE_MEMORY_USAGE = THREAD_CPU_LOAD + 1;
     public static final int NATIVE_MEMORY_USAGE_TOTAL = NATIVE_MEMORY_USAGE + 1;
     public static final int OS_INFORMATION = NATIVE_MEMORY_USAGE_TOTAL + 1;
-    public static final int COUNT = OS_INFORMATION + 1;
+    public static final int JVM_INFORMATION = OS_INFORMATION + 1;
+    public static final int COUNT = JVM_INFORMATION + 1;
 
     private static final String[] NAMES = new String[COUNT];
     private static final ObjLongHashMap<String> BY_NAME = new ObjLongHashMap<>(COUNT, UNKNOWN);
@@ -103,6 +104,7 @@ public final class EventKinds {
         NAMES[NATIVE_MEMORY_USAGE] = "jdk.NativeMemoryUsage";
         NAMES[NATIVE_MEMORY_USAGE_TOTAL] = "jdk.NativeMemoryUsageTotal";
         NAMES[OS_INFORMATION] = "jdk.OSInformation";
+        NAMES[JVM_INFORMATION] = "jdk.JVMInformation";
         for (int kind = 0; kind < COUNT; kind++) {
             assert NAMES[kind] != null : kind;
             BY_NAME.put(NAMES[kind], kind);

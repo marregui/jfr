@@ -94,25 +94,65 @@ class HealthReportTest {
     void aJvmTotalBelowItsOwnThreadsIsWarnedAboutAndAConsistentOneIsNot() {
         final ThreadCpu.Result threads = new ThreadCpu.Result(Map.of(new ThreadRef(1, "t"), 0.086), 0.086, 100, 10);
         final String warning = HealthCollector.jvmCpuWarning(List.of(fraction(HealthReport.JVM_CPU, 0.002)), threads,
-                MAC);
+                MAC, JDK25);
         assertTrue(warning.startsWith("JVM CPU (jdk.CPULoad) averages 0.2% of the JVM's CPUs, below the 8.6% its own "
                 + "Java threads used"), warning);
         // A JDK 25 node: threads a little under the JVM, which also runs the collector's threads.
         final ThreadCpu.Result consistent = new ThreadCpu.Result(Map.of(), 0.042, 100, 10);
         assertNull(HealthCollector.jvmCpuWarning(List.of(fraction(HealthReport.JVM_CPU, 0.046)), consistent,
-                MAC));
+                MAC, JDK25));
         // Within half again plus a point of the machine, two figures read over different stretches agree.
         assertNull(HealthCollector.jvmCpuWarning(List.of(fraction(HealthReport.JVM_CPU, 0.01)),
-                new ThreadCpu.Result(Map.of(), 0.0249, 1, 1), MAC));
-        assertNull(HealthCollector.jvmCpuWarning(List.of(), threads, MAC));
+                new ThreadCpu.Result(Map.of(), 0.0249, 1, 1), MAC, JDK25));
+        assertNull(HealthCollector.jvmCpuWarning(List.of(), threads, MAC, JDK21_3));
         assertNull(HealthCollector.jvmCpuWarning(List.of(fraction(HealthReport.JVM_CPU, 0.002)),
-                ThreadCpu.Result.UNKNOWN, MAC));
+                ThreadCpu.Result.UNKNOWN, MAC, JDK25));
         // On Linux the JVM's figure divides by the host's CPUs, the threads' by the JVM's own count:
         // a JVM held to 2 of 12 CPUs reads a sixth of its threads with nothing wrong. No warning
         // there, nor where the system is unknown.
         assertNull(HealthCollector.jvmCpuWarning(List.of(fraction(HealthReport.JVM_CPU, 0.002)), threads,
-                "uname: Linux 6.8.0-45-generic #45-Ubuntu SMP x86_64"));
-        assertNull(HealthCollector.jvmCpuWarning(List.of(fraction(HealthReport.JVM_CPU, 0.002)), threads, null));
+                "uname: Linux 6.8.0-45-generic #45-Ubuntu SMP x86_64", null));
+        assertNull(HealthCollector.jvmCpuWarning(List.of(fraction(HealthReport.JVM_CPU, 0.002)), threads, null, null));
+    }
+
+    @Test
+    void aJvmWithJdk8326446IsNamedWhateverItsThreadsRead() {
+        // 21.0.3 on Apple silicon: three busy threads on 12 cores read 0.60%, 3/125 of the 25%.
+        final String warning = HealthCollector.jvmCpuWarning(List.of(fraction(HealthReport.JVM_CPU, 0.006)),
+                ThreadCpu.Result.UNKNOWN, MAC, JDK21_3);
+        assertEquals("JVM CPU (jdk.CPULoad) averages 0.6% of the JVM's CPUs, 3/125 of what it used: this JVM, a JDK "
+                + "before 17.0.13, 21.0.4, 22.0.2 and 23 on Apple silicon, reads its CPU time in 24 MHz ticks as "
+                + "nanoseconds (JDK-8326446); times 125/3 the average is 25.0%", warning);
+        assertNull(HealthCollector.jvmCpuWarning(List.of(), ThreadCpu.Result.UNKNOWN, MAC, JDK21_3));
+    }
+
+    @Test
+    void jdk8326446IsAppleSiliconBeforeEachFix() {
+        assertTrue(HealthCollector.cpuInTicks(JDK21_3));
+        assertTrue(HealthCollector.cpuInTicks(arm("21+35-2513")));
+        assertTrue(HealthCollector.cpuInTicks(arm("17.0.12+7-LTS")));
+        assertTrue(HealthCollector.cpuInTicks(arm("20.0.2+9")));
+        assertTrue(HealthCollector.cpuInTicks(arm("22.0.1+8-16")));
+        assertTrue(HealthCollector.cpuInTicks(arm("11.0.24+8-LTS")));
+        assertFalse(HealthCollector.cpuInTicks(arm("17.0.13+11-LTS")));
+        assertFalse(HealthCollector.cpuInTicks(arm("21.0.4+7-LTS")));
+        assertFalse(HealthCollector.cpuInTicks(arm("22.0.2+9")));
+        assertFalse(HealthCollector.cpuInTicks(arm("23-ea+20")));
+        assertFalse(HealthCollector.cpuInTicks(JDK25));
+        // Intel Macs count nanoseconds; Linux and Windows read other counters.
+        assertFalse(HealthCollector.cpuInTicks(JDK21_3.replace("bsd-aarch64", "bsd-amd64")));
+        assertFalse(HealthCollector.cpuInTicks(JDK21_3.replace("bsd-aarch64", "linux-aarch64")));
+        assertFalse(HealthCollector.cpuInTicks(arm("")));
+        assertFalse(HealthCollector.cpuInTicks(null));
+    }
+
+    static final String JDK21_3 = arm("21.0.3+7-LTS-152");
+    static final String JDK25 = arm("25.0.4.1+1-LTS");
+
+    /** A {@code jdk.JVMInformation} version string of a macOS JVM on Apple silicon. */
+    static String arm(final String version) {
+        return "Java HotSpot(TM) 64-Bit Server VM (" + version + ") for bsd-aarch64 JRE (" + version
+                + "), built on 2024-03-11T17:42:26Z by \"mach5one\" with clang Apple LLVM 12.0.0";
     }
 
     @Test

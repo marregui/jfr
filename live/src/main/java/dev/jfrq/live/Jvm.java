@@ -108,6 +108,11 @@ public final class Jvm implements Closeable {
         if (System.getProperty(RMI_HOSTNAME) == null) {
             System.setProperty(RMI_HOSTNAME, "127.0.0.1");
         }
+        // On macOS the JDK's attach to a pid with no process waits about five seconds for a
+        // handshake and then says the process "is not ready"; ask the OS first.
+        if (ProcessHandle.of(Long.parseLong(pid)).isEmpty()) {
+            throw new IOException("cannot attach to " + pid + ": no such process");
+        }
         final VirtualMachine vm;
         try {
             vm = VirtualMachine.attach(pid);

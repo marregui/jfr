@@ -375,7 +375,7 @@ final class Text {
 
         if (sites) {
             sb.append("\nBY SITE (").append(key.description()).append("; every path through it is one row)\n");
-            sb.append(packages(r));
+            sb.append(packages(r, key));
             int n = 1;
             for (final AllocationReport.SiteRow row : r.sites(key, top)) {
                 sb.append(String.format(Locale.ROOT, "  %2d  %10s  %10s  %6s  %d sample%s  %s%s\n", n++,
@@ -390,9 +390,10 @@ final class Text {
 
     /**
      * The line that makes {@code --app} usable by a reader who has never seen the application:
-     * its own report names the packages it could be pointed at.
+     * its own report names the packages it could be pointed at. The hint is left out once
+     * {@code --app} is in use.
      */
-    private static String packages(final AllocationReport r) {
+    private static String packages(final AllocationReport r, final SiteKey key) {
         final List<AllocationReport.Row<String>> roots = r.packageRoots(PACKAGES_SHOWN);
         if (roots.isEmpty()) {
             return "";
@@ -404,7 +405,9 @@ final class Text {
             }
             sb.append(root.key()).append(' ').append(pct(root.share()));
         }
-        return "  Packages " + sb + "  (--app PREFIX ranks by the innermost frame in one of them instead)\n";
+        final String hint = key == SiteKey.culpritMethod()
+                ? "  (--app PREFIX ranks by the innermost frame in one of them instead)" : "";
+        return "  Packages " + sb + hint + "\n";
     }
 
     /** A recording by its file name, or by its path as given when the other side has the same name. */
