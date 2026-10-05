@@ -419,7 +419,11 @@ class TextTest {
         assertTrue(sites.contains("1200 samples  dev.app.NodeId.parse  (2 stacks, the biggest below)"), sites);
         assertEquals(1, occurrences(sites, "dev.app.NodeId.parse "), sites);
         // The line that tells a reader what --app could be pointed at.
-        assertTrue(sites.contains("Packages dev.app 100.0%"), sites);
+        assertTrue(sites.contains("Packages dev.app 100.0%  (--app PREFIX"), sites);
+        // Under --app the packages are still listed, the hint to use --app is not.
+        final String app = section(Text.alloc(r, 15, true, SiteKey.inPackages(List.of("dev.app"))), "BY SITE");
+        assertTrue(app.contains("Packages dev.app 100.0%\n"), app);
+        assertFalse(app.contains("--app PREFIX"), app);
     }
 
     @Test

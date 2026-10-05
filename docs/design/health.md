@@ -124,7 +124,16 @@ at 150 % to 236 % of a core and their threads' readings summed to 0.8 % to 16.9 
 warning fires on 65 of them. The Edge on JDK 25 in the same runs, 22 recordings, had its
 threads at 0.28 to 1.03 times the JVM's figure, 0.93 to 1.03 in 15 of them; the one above
 1 is within the margin, and the warning fires on none. The raw events hold the
-zeros, so the fault is in what the JVM wrote, not in reading it.
+zeros, so the fault is in what the JVM wrote, not in reading it. The cause is JDK-8326446:
+on Apple silicon the JVM took the task's CPU times, which are Mach ticks at 24 MHz, for
+nanoseconds, so its user and system figures are 3/125 of the truth, about 42 times too low.
+It is fixed in 17.0.13, 21.0.4, 22.0.2 and 23. Three busy threads on a 12-core Apple
+silicon machine read 0.60 % on 21.0.2, 21.0.3 and 22.0.1, and 24.8 % on 25.0.4. So `health`
+reads `jdk.JVMInformation` and, for a `bsd-aarch64` JVM before those releases, puts a warning
+above everything else that names the bug and gives the average times 125/3, whatever the
+threads read; a recording shorter than one `jdk.ThreadCPULoad` period has no thread figure to
+compare. The trend itself is printed as recorded: the factor is the JDK's arithmetic, not a
+reading. The comparison with the threads stays for any other JVM.
 
 **Native memory, when NMT was on.** A JVM started with `-XX:NativeMemoryTracking=summary`
 (or `detail`) writes `jdk.NativeMemoryUsage` per category and `jdk.NativeMemoryUsageTotal`

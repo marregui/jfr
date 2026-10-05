@@ -290,6 +290,11 @@ class HtmlTest {
         assertTrue(html.contains("By site"));
         assertTrue(html.contains("byte[]"));
         assertTrue(html.contains("worker"));
+        // The hint to use --app, only when it is not in use.
+        assertTrue(html.contains("<dt>Packages</dt>") && html.contains("--app PREFIX ranks"), html);
+        final String app = Html.alloc(a, 10, true, SiteKey.inPackages(List.of("dev")));
+        assertTrue(app.contains("<dt>Packages</dt>"), app);
+        assertFalse(app.contains("--app PREFIX ranks"), app);
 
         final AllocationReport b = new AllocationReport(info(), "jdk.ObjectAllocationSample", 500, 5, 5, Map.of(),
                 Map.of("worker", 500L), Map.of("[B", 500L), Map.of(STACK, 500L),

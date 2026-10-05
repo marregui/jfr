@@ -439,7 +439,8 @@ public final class Html {
             packages.append(packages.isEmpty() ? "" : ", ").append(root.key()).append(' ').append(pct(root.share()));
         }
         if (!packages.isEmpty()) {
-            p.kv("Packages", packages + " — --app PREFIX ranks by the innermost frame in one of them instead");
+            p.kv("Packages", packages + (key == SiteKey.culpritMethod()
+                    ? " — --app PREFIX ranks by the innermost frame in one of them instead" : ""));
         }
         p.tableStart("Site", "Bytes", "Rate", "Share", "Samples");
         for (final AllocationReport.SiteRow r : report.sites(key, top)) {

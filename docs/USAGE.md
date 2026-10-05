@@ -191,7 +191,9 @@ that a class histogram or a heap dump can.
 readings, and on macOS warns at the top when the JVM's own figure (`jdk.CPULoad`) is below
 it: a process uses at least what its threads do, and on one JDK 21.0.3 macOS soak the JVM
 reported 0.2 % while its threads reported 8.0 %. (On Linux the JVM's figure divides by the
-host's CPUs, so the two do not compare.)
+host's CPUs, so the two do not compare.) The cause there was JDK-8326446: on Apple silicon,
+JDKs before 17.0.13, 21.0.4, 22.0.2 and 23 write the JVM's figure at 3/125 of the truth, and
+`health` names the bug for such a JVM whatever its threads read.
 
 **Native memory.** A JVM run with `-XX:NativeMemoryTracking=summary` writes NMT's
 committed memory by category, which `health` lists with the same floors; resident set

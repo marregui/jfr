@@ -56,7 +56,7 @@ public final class HealthCollector implements JfrReader.Sink {
             EventKinds.JAVA_THREAD_STATISTICS, EventKinds.RESIDENT_SET_SIZE, EventKinds.EXCEPTION_STATISTICS,
             EventKinds.JAVA_EXCEPTION_THROW, EventKinds.JAVA_ERROR_THROW, EventKinds.EVACUATION_FAILED,
             EventKinds.THREAD_CPU_LOAD, EventKinds.THREAD_START, EventKinds.NATIVE_MEMORY_USAGE,
-            EventKinds.NATIVE_MEMORY_USAGE_TOTAL, EventKinds.OS_INFORMATION);
+            EventKinds.NATIVE_MEMORY_USAGE_TOTAL, EventKinds.OS_INFORMATION, EventKinds.JVM_INFORMATION);
 
     /** Collectors whose every collection is of the whole heap, in a pause. */
     static final Set<String> FULL_COLLECTORS = Set.of("G1Full", "SerialOld", "ParallelOld");
@@ -96,6 +96,8 @@ public final class HealthCollector implements JfrReader.Sink {
     private final Points nativeTotal = new Points();
     /** The operating system, as {@code jdk.OSInformation} names it; null until read. */
     private String osVersion;
+    /** The JVM, as {@code jdk.JVMInformation} names it; null until read. */
+    private String jvmVersion;
 
     /** Per throwable class, when each was created, and an example message. */
     private final ObjObjHashMap<String, Thrown> byClass = new ObjObjHashMap<>(64);
@@ -193,6 +195,11 @@ public final class HealthCollector implements JfrReader.Sink {
             case EventKinds.OS_INFORMATION -> {
                 if (osVersion == null) {
                     osVersion = Events.stringOr(e, Fields.OS_VERSION, null, interner);
+                }
+            }
+            case EventKinds.JVM_INFORMATION -> {
+                if (jvmVersion == null) {
+                    jvmVersion = Events.stringOr(e, Fields.JVM_VERSION, null, interner);
                 }
             }
             case EventKinds.JAVA_ERROR_THROW -> {
@@ -367,7 +374,7 @@ public final class HealthCollector implements JfrReader.Sink {
                 siteRows(), sorted(errors));
         final ThreadCpu.Result cpu = threadCpu.result(info);
         final List<String> warnings = new ArrayList<>(1);
-        final String jvmCpuWarning = jvmCpuWarning(trends, cpu, osVersion);
+        final String jvmCpuWarning = jvmCpuWarning(trends, cpu, osVersion, jvmVersion);
         if (jvmCpuWarning != null) {
             warnings.add(jvmCpuWarning);
         }
@@ -395,35 +402,88 @@ public final class HealthCollector implements JfrReader.Sink {
     }
 
     /**
-     * A process uses at least the CPU its Java threads use, so a JVM total below theirs is
-     * wrong: the JDK 21.0.3 JVMs of one macOS soak, in 67 recordings (killed nodes' readable
-     * chunks among them), averaged 0.02 % to 0.45 % of their CPUs in {@code jdk.CPULoad} (no
-     * reading above 1.02 %) while {@code ps} saw them at 150 % to 236 % of a core, and their
-     * threads' own readings summed to 0.8 % to 16.9 %. The
-     * margin (half again, plus a point) keeps two figures read over slightly different stretches
-     * from tripping it: on the 22 JDK 25 recordings of the same soak the threads read 0.28 to
-     * 1.03 times the JVM's figure.
+     * What makes the {@code JVM CPU} trend wrong, or null. First a JVM known to write it wrong:
+     * JDK-8326446, where on Apple silicon the JVM took the task's CPU times, which are 24 MHz
+     * Mach ticks, for nanoseconds, so its user and system figures are 3/125 of the truth (fixed
+     * in 17.0.13, 21.0.4, 22.0.2 and 23). Three busy threads on 12 cores read 0.60 % on
+     * 21.0.2, 21.0.3 and 22.0.1 and 24.8 % on 25.0.4, the 25 % they used. The trend is
+     * labelled, not corrected: the factor is the JDK's arithmetic, not a reading.
+     *
+     * <p>Otherwise, a process uses at least the CPU its Java threads use, so a JVM total below
+     * theirs is wrong: the JDK 21.0.3 JVMs of one macOS soak, in 67 recordings (killed nodes'
+     * readable chunks among them), averaged 0.02 % to 0.45 % of their CPUs in
+     * {@code jdk.CPULoad} (no reading above 1.02 %) while {@code ps} saw them at 150 % to 236 %
+     * of a core, and their threads' own readings summed to 0.8 % to 16.9 % (JDK-8326446 again,
+     * found later). The margin (half again, plus a point) keeps two figures read over slightly
+     * different stretches from tripping it: on the 22 JDK 25 recordings of the same soak the
+     * threads read 0.28 to 1.03 times the JVM's figure.
      *
      * <p>The two compare only where they divide by the same count. {@code jdk.ThreadCPULoad}
      * divides by the JVM's active processor count everywhere; {@code jdk.CPULoad}'s JVM figure
      * does too on macOS, but on Linux it divides by the host's CPUs ({@code /proc/stat}), so a
      * JVM held to fewer CPUs reads lower there than its threads with nothing wrong. The JDK 25
-     * sources show both; no other system was checked. So the warning is given only for a
+     * sources show both; no other system was checked. So that comparison is made only for a
      * recording whose {@code jdk.OSInformation} names Darwin.
      */
-    static String jvmCpuWarning(final List<Series> trends, final ThreadCpu.Result cpu, final String osVersion) {
-        if (!cpu.isKnown() || osVersion == null || !osVersion.contains("Darwin")) {
-            return null;
-        }
+    static String jvmCpuWarning(final List<Series> trends, final ThreadCpu.Result cpu, final String osVersion,
+            final String jvmVersion) {
+        Series jvm = null;
         for (final Series s : trends) {
-            if (s.name().equals(HealthReport.JVM_CPU) && cpu.share() > s.mean() * 1.5 + 0.01) {
-                return String.format(Locale.ROOT, "JVM CPU (jdk.CPULoad) averages %s of the JVM's CPUs, below the %s its "
-                        + "own Java threads used (jdk.ThreadCPULoad): the JVM's figure is wrong in this recording; the "
-                        + "threads' figure is a floor, as it leaves out the threads that are not Java threads (the "
-                        + "collector's)", s.format(s.mean()), s.format(cpu.share()));
+            if (s.name().equals(HealthReport.JVM_CPU)) {
+                jvm = s;
             }
         }
+        if (jvm == null) {
+            return null;
+        }
+        if (cpuInTicks(jvmVersion)) {
+            return String.format(Locale.ROOT, "JVM CPU (jdk.CPULoad) averages %s of the JVM's CPUs, 3/125 of what it "
+                    + "used: this JVM, a JDK before 17.0.13, 21.0.4, 22.0.2 and 23 on Apple silicon, reads its CPU "
+                    + "time in 24 MHz ticks as nanoseconds (JDK-8326446); times 125/3 the average is %s",
+                    jvm.format(jvm.mean()), jvm.format(jvm.mean() * 125 / 3));
+        }
+        if (cpu.isKnown() && osVersion != null && osVersion.contains("Darwin")
+                && cpu.share() > jvm.mean() * 1.5 + 0.01) {
+            return String.format(Locale.ROOT, "JVM CPU (jdk.CPULoad) averages %s of the JVM's CPUs, below the %s its "
+                    + "own Java threads used (jdk.ThreadCPULoad): the JVM's figure is wrong in this recording; the "
+                    + "threads' figure is a floor, as it leaves out the threads that are not Java threads (the "
+                    + "collector's)", jvm.format(jvm.mean()), jvm.format(cpu.share()));
+        }
         return null;
+    }
+
+    /**
+     * Whether {@code jvmVersion}, {@code jdk.JVMInformation}'s
+     * {@code "... for bsd-aarch64 JRE (21.0.3+7-LTS-152), ..."}, is a JVM with JDK-8326446:
+     * macOS on Apple silicon, before 17.0.13, 21.0.4, 22.0.2 or 23. The bug is as old as the
+     * event, so every earlier release has it. A version it cannot read is not one.
+     */
+    static boolean cpuInTicks(final String jvmVersion) {
+        final String marker = "for bsd-aarch64 JRE (";
+        final int at = jvmVersion == null ? -1 : jvmVersion.indexOf(marker);
+        if (at < 0) {
+            return false;
+        }
+        final int from = at + marker.length();
+        int to = from;
+        while (to < jvmVersion.length() && (Character.isDigit(jvmVersion.charAt(to)) || jvmVersion.charAt(to) == '.')) {
+            to++;
+        }
+        final String[] parts = jvmVersion.substring(from, to).split("\\.");
+        final int feature;
+        final int update;
+        try {
+            feature = Integer.parseInt(parts[0]);
+            update = parts.length > 2 ? Integer.parseInt(parts[2]) : 0;
+        } catch (final NumberFormatException e) {
+            return false;
+        }
+        return switch (feature) {
+            case 17 -> update < 13;
+            case 21 -> update < 4;
+            case 22 -> update < 2;
+            default -> feature < 23;
+        };
     }
 
     /**

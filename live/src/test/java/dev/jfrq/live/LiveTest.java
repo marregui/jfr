@@ -384,10 +384,11 @@ class LiveTest {
 
     @Test
     void attachFailureExitsWithOne() {
-        // No process has this pid: ProcessHandle.of is the check the JDK's attach makes first.
+        // No process has this pid: said at once, without the attach notice.
         final Run r = run("999999999", "status");
         assertEquals(1, r.status());
-        assertTrue(r.err().contains("cannot attach to 999999999"), r.err());
+        assertTrue(r.err().contains("cannot attach to 999999999: no such process"), r.err());
+        assertFalse(r.err().contains("attaching to JVM"), r.err());
     }
 
     @Test
