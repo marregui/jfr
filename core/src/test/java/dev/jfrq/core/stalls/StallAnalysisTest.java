@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 
+import dev.jfrq.core.alloc.SiteKey;
 import dev.jfrq.core.coll.LongList;
 import dev.jfrq.core.jfr.RecordingInfo;
 import dev.jfrq.core.model.Frame;
@@ -176,6 +177,50 @@ class StallAnalysisTest {
         assertEquals(120 * MS, r.threads().getFirst().stalledNanos());
         assertEquals(120 * MS, r.threads().getFirst().worstNanos());
         assertEquals(10 * MS, r.threads().getFirst().javaCadenceNanos());
+    }
+
+    @Test
+    void underAppABusyRunIsNamedAfterTheApplicationFrameNotTheFramework() {
+        // A program over a runtime: the innermost frame outside the JDK is the runtime's.
+        final Stack overRuntime = stack(new Frame("clojure.lang.RT", "get", 780, "JIT compiled"),
+                new Frame("dev.app.Work", "step", 12, "JIT compiled"));
+        final List<Sample> samples = new ArrayList<>(idle(0, 200, 10));
+        samples.addAll(busy(200, 320, 10, overRuntime, false));
+        samples.addAll(idle(320, 500, 10));
+        final List<ThreadTimeline> timelines = List.of(new ThreadTimeline(LOOP, samples, List.of()));
+
+        final Stall plain = new StallAnalysis(50 * MS).analyse(sampledInfo(), timelines, List.of()).stalls().getFirst();
+        assertTrue(plain.detail().startsWith("busy in clojure.lang.RT.get (100% of 12 samples)"), plain.detail());
+        final Stall app = new StallAnalysis(50 * MS, IdleMatcher.forWorkWaits(), SiteKey.inPackages(List.of("dev.app")))
+                .analyse(sampledInfo(), timelines, List.of()).stalls().getFirst();
+        assertTrue(app.detail().startsWith("busy in dev.app.Work.step (100% of 12 samples)"), app.detail());
+        // The stall is the same one, only named differently.
+        assertEquals(plain.interval(), app.interval());
+        assertEquals(plain.verdict(), app.verdict());
+    }
+
+    @Test
+    void aThreadNeverSampledIdleIsLabelledBusyAndItsStallsKept() {
+        // 100 samples, none idle, one per period across the second it was seen.
+        final StallReport busy = analyse(busy(0, 1000, 10, BURN, false), List.of(), List.of());
+        assertEquals(1, busy.stalls().size());
+        assertTrue(busy.warnings().stream().anyMatch(w -> w.startsWith("1 matching thread was never sampled at an "
+                + "idle point, so busy for the whole window (event-loop-1 (1 of its stalls, 100 samples))")),
+                busy.warnings().toString());
+
+        // One idle sample is a return to idle: no label.
+        final List<Sample> rests = new ArrayList<>(busy(0, 500, 10, BURN, false));
+        rests.addAll(idle(500, 510, 10));
+        rests.addAll(busy(510, 1000, 10, BURN, false));
+        assertTrue(analyse(rests, List.of(), List.of()).warnings().stream().noneMatch(w -> w.contains("never sampled")));
+
+        // Seen 100 times in ten seconds is a thread the sampler rarely found running, not a busy one.
+        assertTrue(analyse(busy(0, 10_000, 100, BURN, false), List.of(), List.of()).warnings().stream()
+                .noneMatch(w -> w.contains("never sampled")));
+
+        // Too few samples to say anything about the whole window.
+        assertTrue(analyse(busy(0, 400, 10, BURN, false), List.of(), List.of()).warnings().stream()
+                .noneMatch(w -> w.contains("never sampled")));
     }
 
     @Test

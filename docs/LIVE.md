@@ -29,7 +29,7 @@ with the dump's path inserted, so `-- stalls --thread 'x'` becomes
 | Command | What it does | Cursor |
 |---|---|---|
 | `status` | The JVM's recordings (id, name, state, since when, bounds) and the cursor kept for it. | reads |
-| `start` | Starts a recording: the JDK `profile` settings with the thresholds [RECORDING.md](RECORDING.md) recommends, or `--settings NAME` for another JDK profile treated the same way, or `--settings FILE.jfc` taken as it is. `--max-age`, `--max-size`, `--name`. | |
+| `start` | Starts a recording: the JDK `profile` settings with the thresholds [RECORDING.md](RECORDING.md) recommends, or `--settings NAME` for another JDK profile treated the same way, or `--settings FILE.jfc` taken as it is; then `--set EVENT#SETTING=VALUE[,...]` on top. `--max-age`, `--max-size`, `--name`. | |
 | `bound` | Sets `--max-age` and/or `--max-size` on the running recording; `0` removes a bound. | |
 | `full` | Dumps everything the recording holds. | set to the dump's end |
 | `delta` | Dumps what happened since the cursor. | moved to the dump's end |
@@ -68,6 +68,15 @@ says why (section 4). `Cursor` is where the next `delta` starts.
 throttle and sample period it overlaid. Without it, the settings could be checked only
 with `jfrq info` on the first dump. A `--settings FILE.jfc` is taken as it is, and the
 line says so instead of listing an overlay.
+
+`--set` changes single settings without a `.jfc`, in the form `stalls` advises them:
+`jfrq-live 4242 start --set jdk.ExecutionSample#period=1ms`. Several are one
+comma-separated list, as in `-XX:StartFlightRecording`. The recorder takes a setting it
+does not have, or a value it cannot read, without a word (on JDK 25 a period of `1 msec`
+became `everyChunk`), so `start` refuses both as usage errors: a `period`, `threshold`,
+`throttle`, `enabled` or `stackTrace` value it cannot read before attaching, and an
+`EVENT#SETTING` the configured recording does not have once it is configured, closing the
+recording again. The `Settings` line ends with what `--set` changed.
 
 ## 2. How a dump is taken
 

@@ -40,7 +40,7 @@ jfrq info   recording.jfr [--thread GLOB [--top N]] [--html out.html] [--json]
 jfrq health recording.jfr [more.jfr ...] [--top N] [--html out.html] [--json]
 jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html] [--json]
 jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html] [--json]
-jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html] [--json]
+jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--app PREFIX] [--top N] [--html out.html] [--json]
 ```
 
 Common options: `--top N` (rows per table, default 15; for `info`, the creators `--thread`
@@ -153,6 +153,17 @@ place ran out the timeout it chose, at least twice and for more than half its li
 `java.util.Timer`, a cleaner, a periodic poll); the recording says which waits timed out,
 so no list is needed. One wait that timed out is still a stall, and a warning names the
 five threads with the most time set aside and counts the rest.
+
+**Always busy.** A thread the sampler never caught at an idle point, seen often enough to
+have been running the whole time, gets a warning: its `BUSY` and `SATURATED` stalls are
+one stretch of work, which for a batch thread is its job and for an event loop is lag.
+They stay in the list either way.
+
+**Culprits.** A busy run is named after the frame most of its samples share: the
+innermost frame outside the JDK. On a program written over a framework or another
+language's runtime that frame is always the framework's (`clojure.lang.RT.get`), so
+`stalls --app` takes the same prefixes as `alloc --app` and names the innermost frame under
+one of them instead, falling back to the default for a sample that never enters them.
 
 **`--idle none`** turns all of this off, and in `stalls` it also empties the list of idle
 frames, so no sample is idle: a loop sitting in its selector counts as working.

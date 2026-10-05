@@ -55,7 +55,7 @@ import dev.jfrq.core.util.Glob;
  *   jfrq info   recording.jfr [--thread GLOB [--top N]] [--html out.html] [--json]
  *   jfrq alloc  recording.jfr [--baseline before.jfr] [--top N] [--sites] [--app PREFIX] [--html out.html] [--json]
  *   jfrq locks  recording.jfr [--min 10ms] [--thread GLOB] [--lock GLOB] [--idle REGEX,...] [--by-site] [--top N] [--html out.html] [--json]
- *   jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--top N] [--html out.html] [--json]
+ *   jfrq stalls recording.jfr --thread GLOB [--gap 50ms] [--idle REGEX,...] [--app PREFIX] [--top N] [--html out.html] [--json]
  *   jfrq health recording.jfr [more.jfr ...] [--top N] [--html out.html] [--json]
  * </pre>
  */
@@ -125,6 +125,10 @@ public final class Main {
                              or park under a frame you name is idle too. 'none' also turns off
                              the split of workers waiting for their own queue and of timer
                              loops waiting out their own timeout
+              --app PREFIX   name a busy thread's culprit by the innermost frame under one of
+                             these comma-separated prefixes, as alloc's --app does, instead of
+                             the innermost frame outside the JDK, which on a framework-heavy
+                             program is always the framework's
 
             durations take a unit: 50ms, 1.5s, 2m. Options belong to their command; a stalls
             option on locks is an error, as is an option given twice, so a typo never passes
@@ -151,7 +155,7 @@ public final class Main {
                 valued.addAll(Set.of("min", "thread", "idle", "lock"));
                 flags.add("by-site");
             }
-            case "stalls" -> valued.addAll(Set.of("thread", "gap", "idle"));
+            case "stalls" -> valued.addAll(Set.of("thread", "gap", "idle", "app"));
             case "health" -> {
             }
             default -> throw new Args.UsageException("unknown command '" + command + "'");
@@ -365,7 +369,7 @@ public final class Main {
     }
 
     private record Stalls(Path recording, int top, Glob threads, long gap, IdleMatcher idle,
-            IdleMatcher workWaits, Path html) implements Question {
+            IdleMatcher workWaits, SiteKey culprit, Path html) implements Question {
     }
 
     /** {@code others} are the recordings after the first, compared with it; empty for one. */
@@ -530,8 +534,9 @@ public final class Main {
     }
 
     /**
-     * What {@code alloc --sites} ranks by: the innermost non-JDK frame, or, when
-     * {@code --app} names package prefixes, the innermost frame in one of them.
+     * What {@code alloc --sites} ranks by and what {@code stalls} names a busy run after: the
+     * innermost non-JDK frame, or, when {@code --app} names package prefixes, the innermost
+     * frame in one of them.
      */
     private static SiteKey siteKey(final Args args) {
         final Optional<String> app = args.option("app");
@@ -591,11 +596,11 @@ public final class Main {
             throw new Args.UsageException("--idle: " + e.getMessage());
         }
         return new Stalls(recording, top, threads, gap, idle, none ? IdleMatcher.none() : IdleMatcher.forWorkWaits(idle),
-                htmlTarget(args, recording, null));
+                siteKey(args), htmlTarget(args, recording, null));
     }
 
     private int stalls(final Stalls q) throws IOException {
-        final StallCollector collector = new StallCollector(q.threads(), q.idle(), q.workWaits(), q.gap());
+        final StallCollector collector = new StallCollector(q.threads(), q.idle(), q.workWaits(), q.gap(), q.culprit());
         JfrReader.read(q.recording(), collector);
         phase("read");
         out.print(json ? Json.stalls(collector.report(), q.top(), VERSION) : Text.stalls(collector.report(), q.top()));
