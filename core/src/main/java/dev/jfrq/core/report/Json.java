@@ -152,7 +152,7 @@ public final class Json {
         w.name("readingsLeftOut").value(cpu.isKnown() ? cpu.leftOut() : Nulls.LONG_NULL);
         w.end();
         w.name("nativeMemory").array();
-        for (final HealthReport.Series s : top(r.nativeMemory(), top + 1)) {
+        for (final HealthReport.Series s : top(r.nativeMemory(), top + 1L)) {
             series(w, s);
         }
         w.end();
@@ -773,8 +773,8 @@ public final class Json {
         return out;
     }
 
-    private static <T> List<T> top(final List<T> list, final int n) {
-        return list.size() > n ? list.subList(0, n) : list;
+    private static <T> List<T> top(final List<T> list, final long n) {
+        return list.size() > n ? list.subList(0, (int) n) : list;
     }
 
     private static Integer size(final Collection<?> c) {

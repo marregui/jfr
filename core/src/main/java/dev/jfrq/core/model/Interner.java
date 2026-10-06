@@ -176,13 +176,21 @@ public final class Interner {
         if (index < 0) {
             return classNamesByIdentity.valueAtQuick(index);
         }
-        final String name = Frame.stableClass(c.getName());
+        final String name = Frame.stableClass(name(c));
         if (classNamesByIdentity.size() >= IDENTITY_LIMIT) {
             classNamesByIdentity.clear();
             index = classNamesByIdentity.keyIndex(c);
         }
         classNamesByIdentity.putAt(index, c, name);
         return name;
+    }
+
+    /**
+     * A class's name as {@link RecordedClass#getName()} gives it, or {@code "null"} where a
+     * damaged constant pool left the class without one: the JDK's accessor throws then.
+     */
+    private static String name(final RecordedClass c) {
+        return String.valueOf(c.getString("name")).replace('/', '.');
     }
 
     public int distinctStacks() {
@@ -209,7 +217,7 @@ public final class Interner {
         // The raw name, address and all: a frame keeps it so it can say it is hidden, and prints
         // and keys itself without the address (Frame.stableName, Frame.pretty).
         final RecordedClass type = m.getType();
-        final Method method = new Method(type == null ? UNKNOWN : type.getName(), m.getName());
+        final Method method = new Method(type == null ? UNKNOWN : name(type), String.valueOf(m.getName()));
         if (methodsByIdentity.size() >= IDENTITY_LIMIT) {
             methodsByIdentity.clear();
             index = methodsByIdentity.keyIndex(m);

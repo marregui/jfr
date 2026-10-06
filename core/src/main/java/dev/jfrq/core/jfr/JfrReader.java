@@ -153,6 +153,10 @@ public final class JfrReader {
                 chunks.copyComplete(file, source);
             }
             stream(source, pass);
+            if (pass.failures > 0) {
+                warnings.add(pass.failures + " event(s) could not be handled and are missing from every figure;"
+                        + " the first failure: " + pass.firstFailure);
+            }
         } finally {
             if (source != file) {
                 Files.deleteIfExists(source);
@@ -196,6 +200,9 @@ public final class JfrReader {
         try (final EventStream stream = EventStream.openFile(file)) {
             stream.setReuse(true);
             stream.setOrdered(false);
+            // Without a handler of its own the stream prints the stack trace of a sink's
+            // exception and drops that event, which leaves every figure short without a word.
+            stream.onError(pass::failed);
             stream.onMetadata(m -> {
                 for (final EventType t : m.getEventTypes()) {
                     pass.typeNames.put(t.getId(), t.getName());
@@ -307,6 +314,15 @@ public final class JfrReader {
         private final IdentityObjObjHashMap<EventType, Dispatch> byType = new IdentityObjObjHashMap<>(256);
         private final ObjObjHashMap<String, ObjObjHashMap<String, String>> settings = new ObjObjHashMap<>(256);
         private final ObjHashSet<ThreadRef> threads = new ObjHashSet<>(256);
+        /** Events a sink failed on (a damaged constant pool can hand a sink nulls), and the first failure. */
+        long failures;
+        Throwable firstFailure;
+
+        void failed(final Throwable t) {
+            if (failures++ == 0) {
+                firstFailure = t;
+            }
+        }
 
         Pass(final Sink[] sinks) {
             final ObjList<Sink> everything = new ObjList<>();
