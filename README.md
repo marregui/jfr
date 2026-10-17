@@ -123,7 +123,7 @@ The index is [docs/README.md](docs/README.md).
 
 ## Status
 
-0.1.0. The command-line interface and the report layouts may change. The verdicts and
+The latest release is 0.1.0. The command-line interface and the report layouts may change. The verdicts and
 the numbers behind them are tested against synthetic timelines and against real
 recordings made in the test suite.
 

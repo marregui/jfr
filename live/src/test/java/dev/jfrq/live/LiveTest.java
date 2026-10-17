@@ -37,6 +37,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import dev.jfrq.cli.Args;
+import dev.jfrq.cli.Main;
 import dev.jfrq.core.jfr.JfrReader;
 import dev.jfrq.core.jfr.RecordingInfo;
 import jdk.jfr.Recording;
@@ -110,8 +111,8 @@ class LiveTest {
         assertTrue(run("-h").out().contains("again"));
         assertTrue(run("help").out().contains("bound"));
         assertTrue(run(PID, "status", "--help").out().contains("usage: jfrq-live"));
-        assertEquals("jfrq-live 0.1.0\n", run("--version").out());
-        assertEquals("jfrq-live 0.1.0\n", run(PID, "status", "--version").out());
+        assertEquals("jfrq-live " + Main.VERSION + "\n", run("--version").out());
+        assertEquals("jfrq-live " + Main.VERSION + "\n", run(PID, "status", "--version").out());
     }
 
     @Test
