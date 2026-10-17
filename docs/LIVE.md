@@ -17,7 +17,7 @@ jfrq-live 4242 stop
 ```
 
 The module is `live/`; `./gradlew installDist` puts the launcher at
-`live/build/install/jfrq-live/bin/jfrq-live`. It needs nothing beyond the JDK:
+`live/build/install/jfrq/bin/jfrq-live`, next to `jfrq`. It needs nothing beyond the JDK:
 `jdk.attach` to reach the process and `jdk.management.jfr` to drive its recorder.
 
 ## 1. The loop

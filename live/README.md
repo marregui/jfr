@@ -41,10 +41,11 @@ $ jfrq-live 4242 stop
 
 ```
 ./gradlew installDist
-live/build/install/jfrq-live/bin/jfrq-live --help
+live/build/install/jfrq/bin/jfrq-live --help
 ```
 
-Put `live/build/install/jfrq-live/bin` on your `PATH`, or call the script by path. The
+Both launchers, `jfrq` and `jfrq-live`, are in that one distribution. Put
+`live/build/install/jfrq/bin` on your `PATH`, or call the script by path. The
 launcher needs `JAVA_HOME` or a `java` on the `PATH` that is JDK 25.
 
 To try it, run the demo service without its in-process recording:

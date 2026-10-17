@@ -1,0 +1,60 @@
+name: release
+
+# Pushing a tag v<version> on master builds, tests and smoke-tests the tools, and opens a draft
+# GitHub Release with the two zips, their SHA-256 sums and a provenance attestation for each.
+# The draft is published by hand, after reading it.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write      # the draft release and its assets
+      id-token: write      # the attestation's signing identity
+      attestations: write  # the attestation itself
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      # A release is a commit master already has, and its notes are written before the tag.
+      - name: Tag, branch and notes
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/master
+          test -f "docs/releases/$GITHUB_REF_NAME.md"
+      - run: ./gradlew build installDist :netty-demo:distZip
+      # The tag, the build's version and the launcher's --version are one number.
+      - name: Versions agree
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          test -f "live/build/distributions/jfrq-$version.zip"
+          test -f "netty-demo/build/distributions/netty-demo-$version.zip"
+          test "$(live/build/install/jfrq/bin/jfrq --version)" = "jfrq $version"
+          test "$(live/build/install/jfrq/bin/jfrq-live --version)" = "jfrq-live $version"
+      - name: Smoke test
+        run: java -cp core/build/libs/core-*-test-fixtures.jar ci/Smoke.java live
+      - name: Assets
+        run: |
+          mkdir dist
+          cp live/build/distributions/jfrq-*.zip netty-demo/build/distributions/netty-demo-*.zip dist/
+          (cd dist && sha256sum *.zip > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.zip
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag \
+            --title "jfrq ${GITHUB_REF_NAME#v}" --notes-file "docs/releases/$GITHUB_REF_NAME.md"

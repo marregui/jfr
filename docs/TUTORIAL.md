@@ -11,8 +11,11 @@ Time needed: about fifteen minutes.
 
 ```
 ./gradlew installDist
-export PATH="$PWD/cli/build/install/jfrq/bin:$PWD/netty-demo/build/install/netty-demo/bin:$PATH"
+export PATH="$PWD/live/build/install/jfrq/bin:$PWD/netty-demo/build/install/netty-demo/bin:$PATH"
 ```
+
+Or, from a [release](https://github.com/marregui/jfrq/releases), unzip `jfrq-<version>.zip`
+and `netty-demo-<version>.zip` and put the `bin/` directory of each on the `PATH`.
 
 Both launchers run the JVM in `JAVA_HOME` when it is set, and the `java` on the `PATH`
 when it is not; either way it must be JDK 25.

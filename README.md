@@ -60,15 +60,29 @@ JDK Mission Control shows the data; `jfr view` prints aggregate tables. Neither 
 
 ## Quick start
 
-Build (JDK 25):
+Install (JDK 25 to run): download `jfrq-<version>.zip` from the
+[latest release](https://github.com/marregui/jfrq/releases/latest), unzip it, and put its
+`bin/` on the `PATH`. It holds both commands, `jfrq` and `jfrq-live`:
+
+```
+unzip jfrq-0.1.0.zip
+export PATH="$PWD/jfrq-0.1.0/bin:$PATH"
+```
+
+The release's `SHA256SUMS` lists each zip's checksum, and
+`gh attestation verify jfrq-0.1.0.zip --repo marregui/jfrq` checks that the zip was built
+by this repository's release workflow.
+
+Or build it (JDK 25):
 
 ```
 git clone https://github.com/marregui/jfrq.git && cd jfrq
 ./gradlew installDist
-export PATH="$PWD/cli/build/install/jfrq/bin:$PWD/live/build/install/jfrq-live/bin:$PWD/netty-demo/build/install/netty-demo/bin:$PATH"
+export PATH="$PWD/live/build/install/jfrq/bin:$PWD/netty-demo/build/install/netty-demo/bin:$PATH"
 ```
 
-Try it on the bundled Netty demo, which injects a lock convoy into its event loops:
+Try it on the bundled Netty demo (`netty-demo-<version>.zip` in the release, or built
+above), which injects a lock convoy into its event loops:
 
 ```
 netty-demo --scenario lock --duration 15s --out demo-lock.jfr

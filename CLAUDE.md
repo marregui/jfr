@@ -13,7 +13,7 @@ Gradle (Kotlin DSL), four modules, no convention plugins: each `*/build.gradle.k
 ```
 ./gradlew build                       # compile + tests + JaCoCo coverage gates (85 % core, 80 % cli and live) + doclint over all Javadoc + Checkstyle UnusedImports
 java -cp core/build/libs/core-0.1.0-test-fixtures.jar ci/Smoke.java live   # after installDist: the launchers on a live JVM, as CI runs them (~50 s)
-./gradlew installDist                 # cli/build/install/jfrq/bin/jfrq, live/build/install/jfrq-live/bin/jfrq-live, netty-demo/build/install/netty-demo/bin/netty-demo
+./gradlew installDist                 # live/build/install/jfrq/bin/{jfrq,jfrq-live} (one distribution, built by live/), netty-demo/build/install/netty-demo/bin/netty-demo
 ./gradlew :core:test                  # one module
 ./gradlew :core:test --tests 'dev.jfrq.core.stalls.StallAnalysisTest'
 ./gradlew :core:test --tests '*StallAnalysisTest.methodName'
@@ -22,6 +22,7 @@ java -cp core/build/libs/core-0.1.0-test-fixtures.jar ci/Smoke.java live   # aft
 - Compilation runs with `-Xlint:all -Werror`: any warning fails the build.
 - `check` depends on `jacocoTestCoverageVerification`; dropping coverage below the module gate fails `build`.
 - Configuration cache, parallel and build cache are on (`gradle.properties`).
+- The version is in two places, `build.gradle.kts` and `Main.VERSION` (plus `LiveTest`'s `--version` checks). A release: notes in `docs/releases/v<version>.md`, merged; then the tag `v<version>` on `master`, pushed. `.github/workflows/release.yml` builds, tests, smoke-tests, checks that the tag, the zip names and both `--version` lines agree, and opens a **draft** release with `jfrq-<version>.zip`, `netty-demo-<version>.zip`, `SHA256SUMS` and a provenance attestation per zip; it is published by hand.
 - Tests in `core/.../jfr/RecordingTest`, `cli/.../MainTest` and the stall/lock tests make **real JFR recordings in-process** (`JfrFixtures.record`), so they take seconds and assert verdicts and orders of magnitude, not exact durations. Pure-logic tests (`StallAnalysisTest`, `ContentionReportTest`, `AllocationTest`) use hand-built timelines with exact expectations. `core/.../jfr/NativeThreads` makes a thread the JVM did not start (FFM `pthread_create` plus an upcall, POSIX only; the core tests run with `--enable-native-access=ALL-UNNAMED`), and `HealthCollectorTest` runs child JVMs for what the test JVM cannot record about itself (NMT, a squeezed heap). `live/.../LiveTest` **attaches to the test JVM itself** (`-Djdk.attach.allowAttachSelf=true` in `live/build.gradle.kts`) and runs the whole loop against a recording it starts there; the recorder is JVM-global, so every test names its recording and addresses it with `--recording`.
 
 Run it after `installDist`:
