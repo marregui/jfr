@@ -14,12 +14,14 @@ to make a recording; [LIVE.md](LIVE.md) covers `jfrq-live`; [JSON.md](JSON.md) l
 
 ```
 ./gradlew build          # compiles, runs 440+ tests, checks coverage, Javadoc (doclint) and imports
-./gradlew installDist    # cli/build/install/jfrq/bin/jfrq, live/build/install/jfrq-live/bin/jfrq-live,
+./gradlew installDist    # live/build/install/jfrq/bin/jfrq and jfrq-live,
                          # netty-demo/build/install/netty-demo/bin/netty-demo
 ```
 
-Put `cli/build/install/jfrq/bin` (and `live/build/install/jfrq-live/bin`) on your `PATH`,
-or call the scripts by path.
+Put `live/build/install/jfrq/bin` on your `PATH`, or call the scripts by path. A release
+zip, `jfrq-<version>.zip` from the
+[releases page](https://github.com/marregui/jfrq/releases), unzips to the same layout:
+`bin/` with both launchers, `lib/` with the jars.
 
 The launcher runs the JVM in `JAVA_HOME` when that is set and a `java` from the `PATH`
 only when it is not; either way it must be JDK 25, so an older `JAVA_HOME` is not rescued

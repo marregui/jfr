@@ -16,7 +16,7 @@ import dev.jfrq.core.report.JsonParser;
 
 /**
  * The installed tools, run the way a user runs them: the {@code bin/} launchers of
- * {@code jfrq} and {@code jfrq-live}, on recordings of {@code ci/Workload.java}. The unit
+ * {@code jfrq} and {@code jfrq-live} in the one distribution {@code live/} builds, on recordings of {@code ci/Workload.java}. The unit
  * tests call {@code Main} in-process; this is what they cannot see: the start scripts, the
  * JVM options they pass, attaching to another JVM, and files written and read back.
  *
@@ -34,8 +34,8 @@ public final class Smoke {
 
     private static final boolean WINDOWS = System.getProperty("os.name", "").startsWith("Windows");
     private static final Path ROOT = Path.of("").toAbsolutePath();
-    private static final Path JFRQ = launcher("cli", "jfrq");
-    private static final Path LIVE = launcher("live", "jfrq-live");
+    private static final Path JFRQ = launcher("jfrq");
+    private static final Path LIVE = launcher("jfrq-live");
     private static final Path OUT = ROOT.resolve("build").resolve("smoke");
     private static final List<String> FAILED = new ArrayList<>();
 
@@ -230,8 +230,8 @@ public final class Smoke {
         return s.isEmpty() ? "" : "    " + s.substring(Math.max(0, s.length() - 2_000)).replace("\n", "\n    ") + "\n";
     }
 
-    private static Path launcher(final String module, final String name) {
-        return ROOT.resolve(module).resolve("build").resolve("install").resolve(name).resolve("bin")
+    private static Path launcher(final String name) {
+        return ROOT.resolve("live").resolve("build").resolve("install").resolve("jfrq").resolve("bin")
                 .resolve(WINDOWS ? name + ".bat" : name);
     }
 
