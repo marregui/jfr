@@ -679,14 +679,13 @@ final class Text {
         sb.append(String.format(Locale.ROOT, "%-10s %d matched\n", "Threads", r.threads().size()));
         // The verdict on the question comes before the stalls, and before the warnings: "0 found"
         // on threads the recording cannot see into is not an answer.
-        // The bound first, on one line; the reasons and the setting that helps below it.
+        // The bound first, on one short line; the reasons and the setting that helps close the
+        // report, so that up to three long sentences do not stand between the reader and the stalls.
         final List<String> unseen = r.unseen();
         final String headline = r.unseenHeadline();
         if (headline != null) {
-            sb.append(String.format(Locale.ROOT, "%-10s %s\n", "Unseen", headline));
-        }
-        for (final String u : unseen) {
-            sb.append(String.format(Locale.ROOT, "%-10s %s\n", "", u));
+            sb.append(String.format(Locale.ROOT, "%-10s %s%s\n", "Unseen", headline,
+                    unseen.isEmpty() ? "" : " (UNSEEN below)"));
         }
         for (final String w : r.warnings()) {
             sb.append("WARNING    ").append(w).append('\n');
@@ -725,6 +724,42 @@ final class Text {
             sb.append(rows(r, shownGaps));
         }
         sb.append(pauses(r, top));
+        if (!unseen.isEmpty()) {
+            sb.append("\nUNSEEN (why, and the setting that helps)\n");
+            sb.append(wrap(StallReport.UNSEEN_SCOPE, "  ", "  "));
+            for (final String u : unseen) {
+                sb.append(wrap(u, "  - ", "    "));
+            }
+        }
+        return sb.toString();
+    }
+
+    /** Columns a sentence of prose is wrapped at. */
+    static final int PROSE_WIDTH = 100;
+
+    /**
+     * {@code text} broken at spaces into lines of at most {@link #PROSE_WIDTH} columns, the
+     * first starting with {@code first} and the rest with {@code rest}; a word longer than a
+     * line stands on its own.
+     */
+    static String wrap(final String text, final String first, final String rest) {
+        final StringBuilder sb = new StringBuilder();
+        String indent = first;
+        int from = 0;
+        while (from < text.length()) {
+            final int room = PROSE_WIDTH - indent.length();
+            int to = text.length();
+            if (to - from > room) {
+                to = text.lastIndexOf(' ', from + room);
+                if (to <= from) {
+                    to = text.indexOf(' ', from + room);
+                    to = to < 0 ? text.length() : to;
+                }
+            }
+            sb.append(indent).append(text, from, to).append('\n');
+            from = to + 1;
+            indent = rest;
+        }
         return sb.toString();
     }
 

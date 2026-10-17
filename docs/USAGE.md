@@ -176,7 +176,7 @@ blocking event, exact to its timestamps; `[samples]` means a run of sampler obse
 rests on samples alone is only as good as the sampling cadence. `jfrq` measures that
 cadence per thread, and `stalls` opens with an `Unseen` line when it is too coarse:
 first, in one line, how short a stall no event explains can be and still go unseen on the
-threads you asked about; then, under it, whether the sampler's pace or the thread's own
+threads you asked about; then, in an `UNSEEN` section that closes the report, whether the sampler's pace or the thread's own
 absences are why, and the sampling period that would help.
 
 ## 9. `health`

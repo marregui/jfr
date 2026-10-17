@@ -73,10 +73,7 @@ public final class Html {
         p.kv("Gap", Durations.format(report.gapNanos()));
         final String headline = report.unseenHeadline();
         if (headline != null) {
-            p.kv("Unseen", headline);
-        }
-        for (final String u : report.unseen()) {
-            p.kv("Why", u);
+            p.kv("Unseen", report.unseen().isEmpty() ? headline : headline + " (why: the last section)");
         }
         p.warnings(report.warnings());
         p.kv("Evidence", "event: exact to the event's timestamps; samples: as good as the sampling density; "
@@ -136,6 +133,14 @@ public final class Html {
             stallTable(p, report, listedGaps);
         }
         pauses(p, report);
+        // Last, as in the text report: the headline above is the bound, these are its reasons.
+        if (!report.unseen().isEmpty()) {
+            p.h2("Unseen: why, and the setting that helps");
+            p.para(StallReport.UNSEEN_SCOPE);
+            for (final String u : report.unseen()) {
+                p.kv("Why", u);
+            }
+        }
         return p.finish();
     }
 

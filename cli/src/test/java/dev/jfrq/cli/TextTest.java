@@ -462,14 +462,33 @@ class TextTest {
                 List.of(), List.of(), List.of("a warning"));
         final String text = Text.stalls(r, 15);
         // Before the warnings, and before the empty list it qualifies.
-        // The bound in one line first, the reasons under it.
-        assertTrue(text.contains("Unseen     unexplained stalls shorter than 750 ms are not observable on 1 of 1 threads; "
-                + "stalls a blocking event or pause explains are exact\n"
-                + "           on 1 of 1 threads, a stall no event explains is seen only from 750 ms"), text);
-        assertTrue(text.indexOf("Unseen") < text.indexOf("WARNING    a warning"), text);
+        // The bound in one short line first; the reasons close the report.
+        assertTrue(text.contains("Unseen     unexplained stalls under 750 ms cannot be seen on 1 of 1 threads "
+                + "(UNSEEN below)\nWARNING    a warning\n"), text);
         assertTrue(text.contains("  none this recording can show: see Unseen above"), text);
+        final String why = section(text, "UNSEEN (");
+        assertTrue(text.indexOf("UNSEEN (") > text.indexOf("STALLS >="), text);
+        assertTrue(why.contains("  " + StallReport.UNSEEN_SCOPE + "\n"), why);
+        assertTrue(why.contains("  - on 1 of 1 threads, a stall no event explains is seen only from 750 ms"), why);
+        why.lines().forEach(line -> assertTrue(line.length() <= Text.PROSE_WIDTH, line));
         // A thread with no stall is counted, not listed: the Unseen line speaks for it.
         assertTrue(section(text, "PER THREAD").contains("1 thread with no stall"), text);
+    }
+
+    @Test
+    void wrapBreaksProseAtSpacesWithinTheWidth() {
+        final String words = "word ".repeat(40).strip();
+        final String wrapped = Text.wrap(words, "  - ", "    ");
+        assertTrue(wrapped.startsWith("  - word word"), wrapped);
+        wrapped.lines().forEach(line -> {
+            assertTrue(line.length() <= Text.PROSE_WIDTH, line);
+            assertFalse(line.endsWith(" "), line);
+        });
+        assertEquals(words, String.join(" ", wrapped.lines().map(String::strip).map(l -> l.replaceFirst("^- ", "")).toList()));
+        // A word longer than a line stands on its own, unbroken.
+        final String longWord = "x".repeat(Text.PROSE_WIDTH + 5);
+        assertEquals("  a\n  " + longWord + "\n  b\n", Text.wrap("a " + longWord + " b", "  ", "  "));
+        assertEquals("  short\n", Text.wrap("short", "  ", "  "));
     }
 
     @Test

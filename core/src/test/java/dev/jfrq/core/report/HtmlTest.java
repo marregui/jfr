@@ -68,6 +68,21 @@ class HtmlTest {
     }
 
     @Test
+    void theUnseenBoundLeadsThePageAndItsReasonsCloseIt() {
+        final StallReport r = new StallReport(info(), 50 * MS,
+                List.of(new StallReport.ThreadSummary(LOOP, 460, 0, 250 * MS, 0, 0, 0, 750 * MS,
+                        StallReport.Sight.NATIVE_SAMPLER, 250 * MS)),
+                List.of(), List.of(), List.of("a warning"));
+        final String html = Html.stalls(r, 10);
+        final int bound = html.indexOf("unexplained stalls under 750 ms cannot be seen on 1 of 1 threads (why: the last section)");
+        final int reasons = html.indexOf("<h2>Unseen: why, and the setting that helps</h2>");
+        assertTrue(bound >= 0 && bound < html.indexOf("a warning"), html);
+        assertTrue(reasons > html.indexOf("<h2>Stalls, longest first"), html);
+        assertTrue(html.indexOf(StallReport.UNSEEN_SCOPE) > reasons, html);
+        assertTrue(html.indexOf("on 1 of 1 threads, a stall no event explains is seen only from 750 ms") > reasons, html);
+    }
+
+    @Test
     void theThreadTableTakesTheSameTopAsTheText() {
         final List<StallReport.ThreadSummary> threads = new ArrayList<>();
         for (int i = 1; i <= 4; i++) {

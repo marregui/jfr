@@ -149,24 +149,20 @@ class StallReportTest {
     void theHeadlineStatesTheBoundInOneLine() {
         // Every limited thread, whatever the reason, in one bound: the best thread's holds on all
         // of them, and the worst's is how far it reaches.
-        assertEquals("unexplained stalls shorter than 510 ms (1.75 s on the worst thread) are not observable on 2 of "
-                + "3 threads; stalls a blocking event or pause explains are exact",
+        assertEquals("unexplained stalls under 510 ms (1.75 s on the worst thread) cannot be seen on 2 of 3 threads",
                 report(20, summary(1, Sight.NATIVE_SAMPLER, 1_750, 571, 571), summary(2, Sight.OWN_ABSENCE, 510, 51, 0),
                         summary(3, Sight.CLEAR, 0, 0, 0)).unseenHeadline());
-        assertEquals("unexplained stalls shorter than 750 ms are not observable on 1 of 1 threads; stalls a blocking "
-                + "event or pause explains are exact", report(20, summary(1, Sight.NATIVE_SAMPLER, 750, 250, 250))
-                .unseenHeadline());
+        assertEquals("unexplained stalls under 750 ms cannot be seen on 1 of 1 threads",
+                report(20, summary(1, Sight.NATIVE_SAMPLER, 750, 250, 250)).unseenHeadline());
         // A bound past the recording is no bound: those threads are counted as not seen at all.
-        assertEquals("unexplained stalls shorter than 750 ms are not observable on 2 of 2 threads, and none at all on "
-                + "1 of them; stalls a blocking event or pause explains are exact",
+        assertEquals("unexplained stalls under 750 ms cannot be seen on 2 of 2 threads, and none at all on 1 of them",
                 report(20, summary(1, Sight.NATIVE_SAMPLER, 750, 250, 250),
                         summary(2, Sight.NATIVE_SAMPLER, 12_000, 4_000, 4_000)).unseenHeadline());
-        assertEquals("unexplained stalls are not observable at all on 1 of 1 threads; stalls a blocking event or pause "
-                + "explains are exact", report(20, summary(1, Sight.OWN_ABSENCE, 0, 0, 0)).unseenHeadline());
+        assertEquals("no unexplained stall can be seen on 1 of 1 threads",
+                report(20, summary(1, Sight.OWN_ABSENCE, 0, 0, 0)).unseenHeadline());
         assertNull(report(20, summary(1, Sight.CLEAR, 0, 0, 0)).unseenHeadline());
         // Ten times apart and more, the worst says nothing a reader can use.
-        assertEquals("unexplained stalls shorter than 85.0 ms (far longer on some) are not "
-                + "observable on 2 of 2 threads; stalls a blocking event or pause explains are exact",
+        assertEquals("unexplained stalls under 85.0 ms (far longer on some) cannot be seen on 2 of 2 threads",
                 report(20, summary(1, Sight.OWN_ABSENCE, 85, 30, 0), summary(2, Sight.OWN_ABSENCE, 9_000, 3_000, 0))
                         .unseenHeadline());
     }

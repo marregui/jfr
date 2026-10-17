@@ -77,7 +77,7 @@ the text report.
 | `thresholdNanos` | per blocking event type |
 | `threadsMatched` | threads the filter matched that had something to judge |
 | `unseenHeadline` | the `Unseen` line: how short an unexplained stall these threads cannot show, and on how many; `null` when every thread's view is clear |
-| `unseen[]` | the sentences under it: what the recording cannot show on these threads, why, and the setting that would help |
+| `unseen[]` | the sentences the text report closes with, under `UNSEEN`: what the recording cannot show on these threads, why, and the setting that would help |
 | `warnings[]` | the `WARNING` lines |
 | `byVerdict[]` | `verdict`, `stalls`, `stalledNanos`, `worstNanos`, largest total first |
 | `threadsWithStalls`, `threadsWithoutStalls` | the counts behind `threads` |
