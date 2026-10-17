@@ -129,8 +129,7 @@ Sampling   ExecutionSample 10.0 ms, NativeMethodSample 10.0 ms
 Thresholds JavaMonitorEnter 1.00 ms, ThreadPark 1.00 ms, ThreadSleep 1.00 ms, SocketRead 1.00 ms, FileRead 1.00 ms
 Gap        50.0 ms
 Threads    2 matched
-Unseen     unexplained stalls shorter than 169 ms (177 ms on the worst thread) are not observable on 2 of 2 threads; stalls a blocking event or pause explains are exact
-           on 2 of 2 threads, a stall no event explains is seen only from 169 ms to 177 ms: each is sampled in native code every ~36.6 ms, about 4 threads in native code sharing the sampler's one native slot per 10.0 ms period. Record with jdk.NativeMethodSample#period=1ms, the shortest the sampler takes, to see them from ~51.5 ms; shorter ones only blocking events can show
+Unseen     unexplained stalls under 169 ms (177 ms on the worst thread) cannot be seen on 2 of 2 threads (UNSEEN below)
 
 BY VERDICT
   Verdict          Stalls  Stalled   Worst
@@ -152,6 +151,13 @@ STALLS >= 50.0 ms: 46 found, showing 2, longest first
         ... 20 more
    2  event-loop-3-2         +0.498s 15:26:28.993Z    178 ms  BLOCKED_MONITOR blocked on monitor dev.jfrq.demo.SessionRegistry@764b6e2f40 held by housekeeper
         same stack as #1
+
+UNSEEN (why, and the setting that helps)
+  Stalls a blocking event or pause explains are exact; these limits are on the rest.
+  - on 2 of 2 threads, a stall no event explains is seen only from 169 ms to 177 ms: each is sampled
+    in native code every ~36.6 ms, about 4 threads in native code sharing the sampler's one native
+    slot per 10.0 ms period. Record with jdk.NativeMethodSample#period=1ms, the shortest the sampler
+    takes, to see them from ~51.5 ms; shorter ones only blocking events can show
 ```
 
 Three things to read off this:
@@ -171,7 +177,8 @@ Three things to read off this:
    the client threads also in native socket reads, each loop is sampled about every 37 ms,
    and routinely unseen for longer, so a stall no event explains would have to last
    169–177 ms to be seen at all; on a busier machine far longer. The line says so before
-   any stall, and what would help: a 1 ms native period would bring it to about 52 ms.
+   any stall; the `UNSEEN` section that closes the report says what would help: a 1 ms
+   native period would bring it to about 52 ms.
    That does not weaken this result: every `BLOCKED_MONITOR` above comes from a
    `jdk.JavaMonitorEnter` event, which is exact whatever the sampling.
 
@@ -502,12 +509,11 @@ a long read dropped by the throttle is not in the file, and the silence it cause
 unexplained. Record with `throttle=off` on those events, as the line in [RECORDING.md](RECORDING.md) does.
 
 The `Unseen` line, right under `Threads`, qualifies the question before any answer to
-it: how short a stall that no event explains can be and still go unseen, and on
-how many of the watched threads. The lines under it say why. When the sampler's pace is
-the limit, it gives the
-`NativeMethodSample` or `ExecutionSample` period that would help and how far it would
-get; when the thread's own absences are (parked, blocked, idle), it says no period helps
-much and blocking events are what will show the stalls. If what it says is longer than
-the stalls you are hunting, record again with what it names, and lower the blocking
-thresholds so the explanation comes from events. `PER THREAD` prints the same number per
-thread as `Unseen below`.
+it: how short a stall that no event explains can be and still go unseen, and on how many
+of the watched threads. The `UNSEEN` section that closes the report says why. When the
+sampler's pace is the limit, it gives the `NativeMethodSample` or `ExecutionSample`
+period that would help and how far it would get; when the thread's own absences are
+(parked, blocked, idle), it says no period helps much and blocking events are what will
+show the stalls. If what it says is longer than the stalls you are hunting, record again
+with what it names, and lower the blocking thresholds so the explanation comes from
+events. `PER THREAD` prints the same number per thread as `Unseen below`.

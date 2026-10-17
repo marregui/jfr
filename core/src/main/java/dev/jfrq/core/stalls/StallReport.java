@@ -32,6 +32,10 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
             + "lists every thread seen in any event, the JVM's own included; stalls can judge only a thread the "
             + "sampler or a blocking event saw.";
 
+    /** What both renderers say the {@link #unseen()} sentences are limits on: the stalls nothing explains. */
+    public static final String UNSEEN_SCOPE = "Stalls a blocking event or pause explains are exact; these limits "
+            + "are on the rest.";
+
     /**
      * What limits a thread's view: nothing, one of the sampler's two slots, or the thread itself.
      * A stall a blocking event or a JVM pause explains is seen whatever this says; this is about
@@ -136,11 +140,11 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
     }
 
     /**
-     * {@link #unseen()} in one line, before its reasons: how short an unexplained stall these
-     * threads cannot show, and on how many of them. {@code null} when every thread's view is
-     * clear. The {@link #unseen()} sentences explain it and name the setting that would help;
-     * this is the line a reader who stops early still needs, since "0 found" means nothing
-     * below it.
+     * {@link #unseen()} in one short line, before its reasons: how short an unexplained stall
+     * these threads cannot show, and on how many of them. {@code null} when every thread's view
+     * is clear. The {@link #unseen()} sentences explain it and name the setting that would help,
+     * at the end of the report; this is the line a reader who stops early still needs, since
+     * "0 found" means nothing below it.
      */
     public String unseenHeadline() {
         final long span = info.span().duration();
@@ -165,9 +169,8 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
             return null;
         }
         final String of = limited + " of " + threads.size() + " threads";
-        final String exact = "; stalls a blocking event or pause explains are exact";
         if (hi == 0) {
-            return "unexplained stalls are not observable at all on " + of + exact;
+            return "no unexplained stall can be seen on " + of;
         }
         // The best thread's bound holds on every one of them; the worst's is how far it reaches,
         // unless the spread is so wide that one number says nothing (84.5 ms against 24m18s over
@@ -177,9 +180,8 @@ public record StallReport(RecordingInfo info, long gapNanos, List<ThreadSummary>
         final String reach = best.equals(worst) ? ""
                 : hi <= WIDE_SPREAD * lo ? " (" + worst + " on the worst thread)"
                 : " (far longer on some)";
-        return "unexplained stalls shorter than " + best + reach
-                + " are not observable on " + of + (never == 0 ? "" : ", and none at all on " + never + " of them")
-                + exact;
+        return "unexplained stalls under " + best + reach
+                + " cannot be seen on " + of + (never == 0 ? "" : ", and none at all on " + never + " of them");
     }
 
     private List<ThreadSummary> withSight(final Sight sight) {

@@ -2,30 +2,29 @@
 
 **Ask a Java Flight Recorder recording one question. Get a verdict, with its evidence.**
 
-[![build](https://github.com/marregui/jfr/actions/workflows/build.yml/badge.svg)](https://github.com/marregui/jfr/actions/workflows/build.yml)
+[![build](https://github.com/marregui/jfrq/actions/workflows/build.yml/badge.svg)](https://github.com/marregui/jfrq/actions/workflows/build.yml)
 [![license](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![JDK](https://img.shields.io/badge/JDK-25-orange)](docs/USAGE.md#1-requirements)
 
 ```
 $ jfrq locks demo-lock.jfr --top 3
-Recording  demo-lock.jfr  15.2 s  starting 2026-10-02T10:22:05.408601Z
+Recording  demo-lock.jfr  15.2 s  starting 2026-10-17T18:20:54.547568Z
 Thresholds JavaMonitorEnter 1.00 ms, ThreadPark 1.00 ms
-Blocked    7.14 s across 51 waits
+Blocked    7.21 s across 52 waits
 
 LOCKS BY TOTAL WAIT
   Lock                                      Kind       Total  Waits      Max  Waiters                         Held by
-  dev.jfrq.demo.SessionRegistry@7818113800  monitor   7.09 s     46   170 ms  event-loop-3-2, event-loop-3-1  housekeeper
-  dev.jfrq.demo.Persistence@7818178000      monitor  46.7 ms      4  17.4 ms  housekeeper                     persistence-flusher
-  int[]@7818111500                          monitor  1.05 ms      1  1.05 ms  event-loop-3-1                  event-loop-3-2
+  dev.jfrq.demo.SessionRegistry@797a1fb480  monitor   7.14 s     46   173 ms  event-loop-3-1, event-loop-3-2  housekeeper
+  dev.jfrq.demo.Persistence@797a270000      monitor  72.9 ms      6  20.7 ms  housekeeper                     persistence-flusher
 
 WHERE THEY WAITED (the longest wait for each lock above)
-  dev.jfrq.demo.SessionRegistry@7818113800  170 ms
+  dev.jfrq.demo.SessionRegistry@797a1fb480  173 ms
         at dev.jfrq.demo.SessionRegistry.touch(SessionRegistry.java:29)
         at dev.jfrq.demo.RequestHandler.channelRead0(RequestHandler.java:49)
   ...
 ```
 
-In a 15.2 s recording, the two event loops spent 7.09 s between them blocked on one
+In a 15.2 s recording, the two event loops spent 7.14 s between them blocked on one
 monitor, held by the `housekeeper` thread, which was itself waiting on
 `persistence-flusher`. `--html` writes the same answer as a self-contained page; this is
 `stalls` on the same file:
@@ -64,7 +63,7 @@ JDK Mission Control shows the data; `jfr view` prints aggregate tables. Neither 
 Build (JDK 25):
 
 ```
-git clone https://github.com/marregui/jfr.git && cd jfr
+git clone https://github.com/marregui/jfrq.git && cd jfrq
 ./gradlew installDist
 export PATH="$PWD/cli/build/install/jfrq/bin:$PWD/live/build/install/jfrq-live/bin:$PWD/netty-demo/build/install/netty-demo/bin:$PATH"
 ```

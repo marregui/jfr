@@ -195,9 +195,10 @@ depend on it.
 **The verdict comes first.** On a live node, `stalls` on 24 event loops printed `0 found`,
 above three per-thread warnings, "21 more", and a table of zeros; the answer to "did the
 loops stall" was "this recording cannot see a loop stall shorter than 1.75 s unless an
-event explains it", and the report did not say so first. So an `Unseen` line leads the report,
-before the warnings and the stalls, one per kind of limit, and an empty stall list points
-at it. The kind decides the remedy:
+event explains it", and the report did not say so first. So a one-line `Unseen` bound leads the report,
+before the warnings and the stalls, and an empty stall list points at it. Its reasons, one
+per kind of limit, close the report in an `UNSEEN` section (the last section of the HTML
+page), so that they do not stand between the reader and the stalls. The kind decides the remedy:
 
 - *The sampler's pace.* A thread where one slot can see it for at least half its life,
   whose routine absence is mostly that slot's round trip (at most twice it), is limited by

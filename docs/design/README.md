@@ -380,7 +380,7 @@ parse within run-to-run variation for both (58 pause events against 277 thousand
   Neither a `stalls` per-thread share nor a `locks` one can exceed 100 %: a thread's
   stalls are disjoint ([stalls.md, section 5](stalls.md#5-merging-and-reporting)).
 - Unexplained silences below `3 × routine absence` are invisible; the `Unseen` line says on
-  how many threads, why, and which sampling period would help ([stalls.md, section 3](stalls.md#3-sampling-cadence-is-measured-not-assumed)). A thread is
+  how many threads, and the closing `UNSEEN` section why and which sampling period would help ([stalls.md, section 3](stalls.md#3-sampling-cadence-is-measured-not-assumed)). A thread is
   sampled at best every 1 ms times the threads sharing its slot; below that, lowering the
   blocking thresholds so the explanation comes from events, or running fewer threads in
   native code during the recording, are the remedies.
